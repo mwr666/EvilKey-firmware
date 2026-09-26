@@ -23,12 +23,14 @@ This repository contains the device firmware, LVGL interface, generated upstream
 ## Watch the real device GUI
 
 <p align="center">
-  <a href="docs/github/evilkey-gui-real-silent.mp4"><img src="docs/github/prototype-ready.png" alt="Play the real EvilKey prototype GUI video" width="420"></a>
+  <a href="https://cdn.hackaday.io/files/2068078848030688/evilkey-gui-real-silent.mp4"><img src="docs/github/prototype-ready.png" alt="Play the real EvilKey prototype GUI video" width="420"></a>
 </p>
 
-<p align="center"><strong><a href="docs/github/evilkey-gui-real-silent.mp4">▶ Play the 23-second real-device video</a></strong></p>
+<p align="center"><strong><a href="https://cdn.hackaday.io/files/2068078848030688/evilkey-gui-real-silent.mp4">▶ Play the 23-second real-device video</a></strong></p>
 
 Silent camera footage shows the home-printed prototype, its screensaver, touch navigation through Settings and the return to READY. The separate interface panels below are code-derived previews; this video does not show live PIN verification, cursor movement or script execution.
+
+[Download the silent MP4 from this repository](https://github.com/mwr666/EvilKey-firmware/raw/refs/heads/main/docs/github/evilkey-gui-real-silent.mp4).
 
 ## Device and interface
 
