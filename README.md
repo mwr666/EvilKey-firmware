@@ -6,7 +6,8 @@
   <strong>Firmware and device GUI</strong> ·
   <a href="https://github.com/mwr666/EvilKey-Manager">Windows Manager</a> ·
   <a href="https://github.com/mwr666/EvilKey-examples">microSD examples</a> ·
-  <a href="https://hackaday.io/project/206807-evilkey-i-needed-a-fido2-key-then-the-maker-brain-took-over">Hackaday project</a>
+  <a href="https://hackaday.io/project/206807-evilkey-i-needed-a-fido2-key-then-the-maker-brain-took-over">Hackaday project</a> ·
+  <a href="https://www.printables.com/model/1855790-evilkey-v1-enclosure-waveshare-esp32-s3-touch-amol">Printable V1 enclosure</a>
 </p>
 
 <p align="center">
@@ -26,6 +27,8 @@ This repository contains the device firmware, LVGL interface, generated upstream
 </p>
 
 <p align="center"><sub>Concept rendering of the planned black SLS enclosure. The current physical case is a home-printed prototype.</sub></p>
+
+The [printable V1 enclosure](https://www.printables.com/model/1855790-evilkey-v1-enclosure-waveshare-esp32-s3-touch-amol) is available as digital STL and 3MF files on Printables. This enclosure revision has been printed and test-fitted with the Waveshare PCB V1; the listing does not include hardware or a physical print.
 
 ### Touch interface
 
