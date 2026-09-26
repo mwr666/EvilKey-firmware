@@ -1,7 +1,23 @@
-REM EvilKey USB Tool input test.
-REM Focus an empty text editor before pressing RUN on the device.
+REM EvilKey USB Tool Windows Notepad demo.
+REM Press RUN on EvilKey while connected to your own unlocked Windows PC.
 DELAY 1000
-STRING EvilKey USB Tool
+GUI m
+DELAY 1000
+GUI r
+DELAY 1500
+STRING notepad
 ENTER
-STRING layout-test-123
+DELAY 3000
+CTRL n
+DELAY 400
+REM The first device test dropped some characters at the default typing rate.
+REM Jitter adds a short pause after every character, not just after each line.
+$_JITTER_ENABLED = TRUE
+$_JITTER_MAX = 120
+DEFAULT_DELAY 80
+STRING YOU HAVE BEEN HACKED
+ENTER
+STRING Relax. This key only opened Notepad.
+ENTER
+STRING The only data stolen was your attention.
 ENTER
