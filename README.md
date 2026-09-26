@@ -18,6 +18,46 @@ EvilKey is FIDO2 firmware for the **Waveshare ESP32-S3 Touch AMOLED 1.64, PCB V1
 
 This repository contains the device firmware, LVGL interface, generated upstream source, preparation tools, source notices and installation instructions. It does not contain the separately licensed Manager or microSD examples.
 
+## Device and interface
+
+<p align="center">
+  <a href="docs/github/evilkey-sls-concept-hero.png"><img src="docs/github/evilkey-sls-concept-hero.png" alt="EvilKey enclosure and USB-C loop concept render" width="100%"></a>
+</p>
+
+<p align="center"><sub>Concept rendering of the planned black SLS enclosure. The current physical case is a home-printed prototype.</sub></p>
+
+### Touch interface
+
+These panels are stills from a code-derived interface preview. They show the intended firmware layout; they are not photographs of the device.
+
+<p align="center">
+  <a href="docs/github/interface/pin.png"><img src="docs/github/interface/pin.png" alt="EvilKey on-device FIDO2 PIN keypad preview" width="100%"></a>
+</p>
+
+<p align="center"><sub>For compatible built-in FIDO2 verification, the PIN can be entered on EvilKey's touchscreen.</sub></p>
+
+#### Air Mouse
+
+<p align="center"><a href="docs/github/interface/mouse.png"><img src="docs/github/interface/mouse.png" alt="Air Mouse touch controls and motion pointer preview" width="100%"></a></p>
+
+#### USB Tool
+
+<p align="center"><a href="docs/github/interface/usb-tool.png"><img src="docs/github/interface/usb-tool.png" alt="USB Tool script selection and RUN control preview" width="100%"></a></p>
+
+<details>
+  <summary>More interface panels: Ready and Diagnostics</summary>
+  <p><a href="docs/github/interface/ready.png"><img src="docs/github/interface/ready.png" alt="EvilKey FIDO2 Ready screen preview" width="100%"></a></p>
+  <p><a href="docs/github/interface/diagnostics.png"><img src="docs/github/interface/diagnostics.png" alt="EvilKey Diagnostics screen preview showing the RGB565 draw buffers" width="100%"></a></p>
+</details>
+
+### USB roles
+
+<p align="center">
+  <a href="docs/github/usb-roles.svg"><img src="docs/github/usb-roles.svg" alt="One EvilKey device with three separately selected USB roles: FIDO and Manager, Air Mouse, and USB Tool" width="100%"></a>
+</p>
+
+Only one USB role is active at a time. Switching roles is an explicit action on the key.
+
 ## Build and install
 
 Read [installation information](firmware/INSTALLATION_INFORMATION.md) first. From `firmware/`, run `python prepare_arduino.py` and `python build_arduino.py` with the pinned Arduino-ESP32 and Waveshare board packages. `python flash_arduino.py` performs a rebuild and asks for a COM port and explicit confirmation. The upload uses `EraseFlash=none` to preserve NVS, but verify the exact board before flashing.
