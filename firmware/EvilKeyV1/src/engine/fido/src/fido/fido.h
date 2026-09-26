@@ -1,0 +1,186 @@
+/*
+ * This file is part of the Pico FIDO distribution (https://github.com/polhenarejos/pico-fido).
+ * Copyright (c) 2022 Pol Henarejos.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, version 3.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#ifndef _FIDO_H_
+#define _FIDO_H_
+
+#if defined(PICO_PLATFORM)
+#include "pico/stdlib.h"
+#endif
+
+#include "../../../crypto/include/mbedtls/ecdsa.h"
+#ifdef PF_MBEDTLS_EDDSA_C
+#include "../../../crypto/include/mbedtls/eddsa.h"
+#endif
+#include "../../../sdk/src/usb/hid/ctap_hid.h"
+
+#define CTAP_PUBKEY_LEN (65)
+#define KEY_PATH_LEN (32)
+#define KEY_PATH_ENTRIES (KEY_PATH_LEN / sizeof(uint32_t))
+#define SHA256_DIGEST_LENGTH (32)
+#define RP_ID_HASH_LEN SHA256_DIGEST_LENGTH
+#define KEY_HANDLE_LEN (KEY_PATH_LEN + SHA256_DIGEST_LENGTH)
+
+extern int scan_files_fido(void);
+extern int derive_key(const uint8_t *app_id, bool new_key, uint8_t *key_handle, int, pf_mbedtls_ecp_keypair *key);
+extern int verify_key(const uint8_t *appId, const uint8_t *keyHandle, pf_mbedtls_ecp_keypair *);
+extern int wait_button_pressed(void);
+extern void init_fido(void);
+extern void init_otp(void);
+extern void scan_all(void);
+extern pf_mbedtls_ecp_group_id fido_curve_to_mbedtls(int curve);
+extern int pf_mbedtls_curve_to_fido(pf_mbedtls_ecp_group_id id);
+extern int fido_load_key(int curve, const uint8_t *cred_id, pf_mbedtls_ecp_keypair *key);
+extern int load_keydev(uint8_t key[32]);
+extern int encrypt(uint8_t protocol, const uint8_t *key, const uint8_t *in, uint16_t in_len, uint8_t *out);
+extern int decrypt(uint8_t protocol, const uint8_t *key, const uint8_t *in, uint16_t in_len, uint8_t *out);
+extern int ecdh(uint8_t protocol, const pf_mbedtls_ecp_point *Q, uint8_t *sharedSecret);
+
+#define FIDO2_ALG_ES256     -7 //ECDSA-SHA256
+#define FIDO2_ALG_EDDSA     -8 //EdDSA
+#define FIDO2_ALG_ESP256    -9 //ECDSA-SHA256 P256
+#define FIDO2_ALG_ED25519   -19 //EDDSA Ed25519
+#define FIDO2_ALG_ES384     -35 //ECDSA-SHA384
+#define FIDO2_ALG_ES512     -36 //ECDSA-SHA512
+#define FIDO2_ALG_ECDH_ES_HKDF_256 -25 //ECDH-ES + HKDF-256
+#define FIDO2_ALG_ES256K    -47
+#define FIDO2_ALG_ESP384    -51 //ECDSA-SHA384 P384
+#define FIDO2_ALG_ESP512    -52 //ECDSA-SHA512 P521
+#define FIDO2_ALG_ED448     -53 //EDDSA Ed448
+#define FIDO2_ALG_RS256     -257
+#define FIDO2_ALG_RS384     -258
+#define FIDO2_ALG_RS512     -259
+#define FIDO2_ALG_ESB256    -265 //ECDSA-SHA256 BP256r1
+#define FIDO2_ALG_ESB384    -267 //ECDSA-SHA384 BP384r1
+#define FIDO2_ALG_ESB512    -268 //ECDSA-SHA512 BP512r1
+
+#define FIDO2_CURVE_P256        1
+#define FIDO2_CURVE_P384        2
+#define FIDO2_CURVE_P521        3
+#define FIDO2_CURVE_X25519      4
+#define FIDO2_CURVE_X448        5
+#define FIDO2_CURVE_ED25519     6
+#define FIDO2_CURVE_ED448       7
+#define FIDO2_CURVE_P256K1      8
+#define FIDO2_CURVE_BP256R1     9
+#define FIDO2_CURVE_BP384R1     10
+#define FIDO2_CURVE_BP512R1     11
+
+#define FIDO2_AUT_FLAG_UP       0x1
+#define FIDO2_AUT_FLAG_UV       0x4
+#define FIDO2_AUT_FLAG_AT       0x40
+#define FIDO2_AUT_FLAG_ED       0x80
+
+#define FIDO2_OPT_EA            0x01 // Enterprise Attestation
+#define FIDO2_OPT_AUV           0x02 // User Verification
+#define FIDO2_OPT_NORK          0x04 // No Resident Key
+#define FIDO2_OPT_MCUV_NOTRQD   0x08 // User Verification Not Required
+
+#ifndef MAX_PIN_RETRIES
+#define MAX_PIN_RETRIES 8
+#endif
+#define PIN_RETRY_COUNT_MASK 0x7f // Retry counts are limited to 0..MAX_PIN_RETRIES.
+#define PIN_RETRY_POWER_CYCLE 0x80 // Persistent soft-lock marker in the existing PIN EF.
+extern bool getUserPresentFlagValue(void);
+extern bool getUserVerifiedFlagValue(void);
+extern void clearUserPresentFlag(void);
+extern void clearUserVerifiedFlag(void);
+extern void clearPinUvAuthTokenPermissionsExceptLbw(void);
+extern void send_keepalive(void);
+extern uint32_t get_sign_counter(void);
+extern uint8_t get_opts(void);
+extern void set_opts(uint8_t);
+#define MAX_CREDENTIAL_COUNT_IN_LIST 16
+#define MAX_CRED_ID_LENGTH        1024
+#define MAX_RESIDENT_CREDENTIALS  256
+#define MAX_CREDBLOB_LENGTH       128
+#define MAX_MSG_SIZE              1024
+#define MAX_PIN_LENGTH            63
+#define MAX_FRAGMENT_LENGTH       (MAX_MSG_SIZE - 64)
+#define MAX_LARGE_BLOB_SIZE       2048
+#define MAX_RPIDS_MINPIN_LENGTH   120
+#define STATEFUL_WALK_IDLE_MS     (30 * 1000)
+typedef struct known_app {
+    const uint8_t *rp_id_hash;
+    const char *label;
+    const bool *use_sign_count;
+    const bool *use_self_attestation;
+} known_app_t;
+
+extern const known_app_t *find_app_by_rp_id_hash(const uint8_t *rp_id_hash);
+
+#define TRANSPORT_TIME_LIMIT (30 * 1000) //USB
+
+bool check_user_presence(void);
+void fido_led_3_blinks(void);
+int fido_process_apdu(void);
+int cmd_register(void);
+int cmd_authenticate(void);
+int cmd_version(void);
+int calculate_oath(uint8_t truncate, const uint8_t *key, size_t key_len, const uint8_t *chal, size_t chal_len);
+int encrypt_keydev_f1(const uint8_t keydev[32]);
+int resetPinUvAuthToken(void);
+int resetPersistentPinUvAuthToken(void);
+
+typedef struct pinUvAuthToken {
+    uint8_t *data;
+    size_t len;
+    bool in_use;
+    uint8_t permissions;
+    uint8_t rp_id_hash[RP_ID_HASH_LEN];
+    bool has_rp_id;
+    bool user_present;
+    bool user_verified;
+} pinUvAuthToken_t;
+
+typedef struct persistentPinUvAuthToken {
+    uint8_t *data;
+    size_t len;
+    uint8_t permissions;
+} persistentPinUvAuthToken_t;
+
+extern uint32_t user_present_time_limit;
+
+extern pinUvAuthToken_t paut;
+extern persistentPinUvAuthToken_t ppaut;
+
+extern int verify(uint8_t protocol, const uint8_t *key, const uint8_t *data, uint16_t len, uint8_t *sign);
+extern int verify_hmac_secret(uint8_t protocol, const uint8_t *key, const uint8_t *data, uint16_t len, const uint8_t *sign, uint16_t sign_len);
+
+extern uint8_t session_pin[32];
+extern bool keydev_unlocked;
+extern uint8_t certdev_sha256[32];
+
+typedef enum {
+    DEV_STATE_DEV_ID = 0x1,
+    DEV_STATE_CRED_STATE = 0x2,
+    DEV_STATE_ALL = DEV_STATE_DEV_ID | DEV_STATE_CRED_STATE
+} dev_state_t;
+extern int dev_state_update(dev_state_t state);
+
+typedef enum {
+    PIN_POLICY_NONE = 0x0,
+    PIN_POLICY_UPPER = 0x1,
+    PIN_POLICY_LOWER = 0x2,
+    PIN_POLICY_DIGIT = 0x4,
+    PIN_POLICY_SYMBOL = 0x8,
+    PIN_POLICY_ALL = PIN_POLICY_UPPER | PIN_POLICY_LOWER | PIN_POLICY_DIGIT | PIN_POLICY_SYMBOL,
+    PIN_POLICY_ALPHANUMERIC = PIN_POLICY_UPPER | PIN_POLICY_LOWER | PIN_POLICY_DIGIT,
+    PIN_POLICY_COMPLEX = PIN_POLICY_ALPHANUMERIC | PIN_POLICY_SYMBOL
+} pin_policy_t;
+
+#endif //_FIDO_H

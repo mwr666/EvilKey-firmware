@@ -1,0 +1,25 @@
+{
+  "port_version": "0.3.0",
+  "board": "Waveshare ESP32-S3-Touch-AMOLED-1.64 V1, SKU 31197",
+  "pico_fido_url": "https://github.com/polhenarejos/pico-fido.git",
+  "pico_fido_commit": "fc7c60e9b45338fe815a43bb228d234322e48d97",
+  "pico_keys_sdk_commit": "507ac45956b7f1c763bb5e88a6411438093d10c7",
+  "esp_idf_target_version": "v5.5.1",
+  "esp_tinyusb_version": "1.7.6",
+  "upstream_git_blob_sha1": {
+    "CMakeLists.txt": "3a2a8f5e848b9763cda328e5495cffa154cdc151",
+    "pico-keys-sdk/src/main.c": "7a910acfda4c69a1533cdca4f3f08657d8b0821f",
+    "pico-keys-sdk/src/button.c": "75be7c6545813972f1deaa080df4c51ad52b9f9e",
+    "pico-keys-sdk/src/led/led.c": "145cafb84ed902c18e217b0d91cf882d153caef0",
+    "pico-keys-sdk/src/otp/otp_esp32.c": "e75ade712479c0cf424ad78ceeb13c2400cc1695",
+    "pico-keys-sdk/config/esp32/components/pico-keys-sdk/CMakeLists.txt": "ed50ebeba81f8bf1ca31976ed23758fd59f57226",
+    "pico-keys-sdk/config/esp32/components/pico-keys-sdk/idf_component.yml": "5ce2f4262b04d4cf663abc4bc48317eaacdedb1a",
+    "pico-keys-sdk/src/usb/usb.c": "646fbe53881c1eba877b87f0940d3e19c5a51740",
+    "pico-keys-sdk/src/usb/usb_descriptors.c": "b6b8c610e55729037b5d078d80c9c23fd796fa5f"
+  },
+  "lvgl_commit": "4495f428630cc1741bd8bfd977f080e8460e8e8d",
+  "s3_ducky_url": "https://github.com/kanishka-sahoo/s3-ducky.git",
+  "s3_ducky_commit": "e1e172c26961b865da699969c109a99c78311434",
+  "arduino_keyboard_layout_url": "https://github.com/arduino-libraries/Keyboard.git",
+  "arduino_keyboard_layout_commit": "3f7bad0a41839689684e3b46ce9deb0232f8ec2d"
+}

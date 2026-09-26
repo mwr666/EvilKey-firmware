@@ -1,0 +1,290 @@
+#include "../../../../pf_build_config.h"
+/*
+ * This file is part of the Pico FIDO distribution (https://github.com/polhenarejos/pico-fido).
+ * Copyright (c) 2022 Pol Henarejos.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, version 3.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include "../../../sdk/src/picokeys.h"
+#if defined(PICO_PLATFORM)
+#include "pico/stdlib.h"
+#endif
+#include "../../../sdk/src/usb/hid/ctap_hid.h"
+#include "ctap.h"
+#include "fido.h"
+#include "../../../sdk/src/usb/usb.h"
+#include "../../../sdk/src/apdu.h"
+#include "management.h"
+#include "ctap2_cbor.h"
+#include "version.h"
+
+const bool _btrue = true, _bfalse = false;
+
+int cbor_get_assertion(const uint8_t *data, size_t len, bool next);
+
+const uint8_t aaguid[16] = { 0x89, 0xFB, 0x94, 0xB7, 0x06, 0xC9, 0x36, 0x73, 0x9B, 0x7E, 0x30, 0x52, 0x6D, 0x96, 0x81, 0x45 }; // First 16 bytes of SHA256("Pico FIDO2")
+
+static const uint8_t *volatile cbor_data = NULL;
+static volatile size_t cbor_len = 0;
+static volatile uint8_t cbor_cmd = 0;
+
+int cbor_parse(uint8_t cmd, const uint8_t *data, size_t len) {
+    pin_uv_auth_token_tick();
+    cbor_cred_mgmt_tick();
+    cbor_large_blobs_tick();
+    if (len == 0 && cmd == CTAPHID_CBOR) {
+        return CTAP1_ERR_INVALID_LEN;
+    }
+    if (len > 0) {
+        DEBUG_DATA(data + 1, len - 1);
+    }
+    if (cap_supported(CAP_FIDO2)) {
+        if (cmd == CTAPHID_CBOR) {
+            if (data[0] != CTAP_GET_NEXT_ASSERTION) {
+                reset_gna_state();
+            }
+            if (data[0] == CTAP_MAKE_CREDENTIAL) {
+                return cbor_make_credential(data + 1, len - 1);
+            }
+            if (data[0] == CTAP_GET_INFO) {
+                return cbor_get_info();
+            }
+            else if (data[0] == CTAP_RESET) {
+                return cbor_reset();
+            }
+            else if (data[0] == CTAP_CLIENT_PIN) {
+                return cbor_client_pin(data + 1, len - 1);
+            }
+            else if (data[0] == CTAP_GET_ASSERTION) {
+                return cbor_get_assertion(data + 1, len - 1, false);
+            }
+            else if (data[0] == CTAP_GET_NEXT_ASSERTION) {
+                return cbor_get_next_assertion(data + 1, len - 1);
+            }
+            else if (data[0] == CTAP_SELECTION) {
+                return cbor_selection();
+            }
+            else if (data[0] == CTAP_CREDENTIAL_MGMT || data[0] == 0x41) {
+                return cbor_cred_mgmt(data + 1, len - 1);
+            }
+            else if (data[0] == CTAP_CONFIG) {
+                return cbor_config(data + 1, len - 1);
+            }
+            else if (data[0] == CTAP_LARGE_BLOBS) {
+                return cbor_large_blobs(data + 1, len - 1);
+            }
+        }
+        else if (cmd == CTAP_VENDOR_CBOR) {
+            return cbor_vendor(data, len);
+        }
+        else if (cmd == 0xC2) {
+            /* PF_PROFILE_PATCH_023: only management page zero exists. */
+            const int page_error = pf_profile_check_management_page(data, len);
+            if (page_error != 0) return page_error;
+            if (man_get_config() == 0) {
+                memmove(res_APDU-1, res_APDU, res_APDU_size);
+                res_APDU_size -= 1;
+                return 0;
+            }
+        }
+    }
+    return CTAP1_ERR_INVALID_CMD;
+}
+
+void *cbor_thread(void *arg);
+void *cbor_thread(void *arg) {
+    (void)arg;
+    card_init_core1();
+    while (1) {
+        uint32_t m;
+        queue_remove_blocking(&usb_to_card_q, &m);
+        uint32_t flag = m + 1;
+        queue_add_blocking(&card_to_usb_q, &flag);
+
+        if (m == EV_EXIT) {
+            break;
+        }
+        const uint8_t *data = (const uint8_t *)cbor_data;
+        size_t len = cbor_len;
+        uint8_t cmd = cbor_cmd;
+        apdu.sw = (uint16_t)cbor_parse(cmd, data, len);
+        if (apdu.sw == 0) {
+            DEBUG_DATA(res_APDU, res_APDU_size);
+        }
+        if (apdu.sw != 0) {
+            if (cmd == CTAPHID_CBOR && len > 0) {
+                res_APDU[-1] = (uint8_t)apdu.sw;
+                res_APDU_size = 0;
+                apdu.sw = 0;
+            }
+            else if (apdu.sw > CTAP1_ERR_INVALID_CHANNEL) {
+                res_APDU[-1] = (uint8_t)apdu.sw;
+                apdu.sw = 0;
+            }
+            else {
+                res_APDU[0] = (uint8_t)apdu.sw;
+            }
+        }
+
+        finished_data_size = res_APDU_size + 1;
+
+        flag = EV_EXEC_FINISHED;
+        queue_add_blocking(&card_to_usb_q, &flag);
+    }
+    return NULL;
+}
+
+int cbor_process(uint8_t last_cmd, const uint8_t *data, size_t len) {
+    cbor_data = data;
+    cbor_len = len;
+    cbor_cmd = last_cmd;
+    ctap_resp->init.data[0] = 0;
+    res_APDU = ctap_resp->init.data + 1;
+    res_APDU_size = 0;
+    return 2; // CBOR processing
+}
+
+static CborError COSE_key_params(int crv, int alg, pf_mbedtls_ecp_group *grp, pf_mbedtls_ecp_point *Q, CborEncoder *mapEncoderParent, CborEncoder *mapEncoder) {
+    CborError error = CborNoError;
+    int kty = 1;
+    if (crv == FIDO2_CURVE_P256 || crv == FIDO2_CURVE_P384 || crv == FIDO2_CURVE_P521 ||
+        crv == FIDO2_CURVE_P256K1) {
+        kty = 2;
+    }
+
+    CBOR_CHECK(cbor_encoder_create_map(mapEncoderParent, mapEncoder, kty == 2 ? 5 : 4));
+
+    CBOR_CHECK(cbor_encode_uint(mapEncoder, 1));
+    CBOR_CHECK(cbor_encode_uint(mapEncoder, kty));
+
+    CBOR_CHECK(cbor_encode_uint(mapEncoder, 3));
+    CBOR_CHECK(cbor_encode_negative_int(mapEncoder, -alg));
+
+    CBOR_CHECK(cbor_encode_negative_int(mapEncoder, 1));
+    CBOR_CHECK(cbor_encode_uint(mapEncoder, crv));
+
+
+    CBOR_CHECK(cbor_encode_negative_int(mapEncoder, 2));
+    uint8_t pkey[67];
+    if (kty == 2) {
+        size_t plen = pf_mbedtls_mpi_size(&grp->P);
+        CBOR_CHECK(pf_mbedtls_mpi_write_binary(&Q->X, pkey, plen));
+        CBOR_CHECK(cbor_encode_byte_string(mapEncoder, pkey, plen));
+
+        CBOR_CHECK(cbor_encode_negative_int(mapEncoder, 3));
+
+        CBOR_CHECK(pf_mbedtls_mpi_write_binary(&Q->Y, pkey, plen));
+        CBOR_CHECK(cbor_encode_byte_string(mapEncoder, pkey, plen));
+    }
+    else {
+        size_t olen = 0;
+        CBOR_CHECK(pf_mbedtls_ecp_point_write_binary(grp, Q, PF_MBEDTLS_ECP_PF_COMPRESSED, &olen, pkey,
+                                                  sizeof(pkey)));
+        CBOR_CHECK(cbor_encode_byte_string(mapEncoder, pkey, olen));
+    }
+
+    CBOR_CHECK(cbor_encoder_close_container(mapEncoderParent, mapEncoder));
+err:
+    return error;
+}
+CborError COSE_key(pf_mbedtls_ecp_keypair *key, int alg, CborEncoder *mapEncoderParent, CborEncoder *mapEncoder) {
+    int crv = pf_mbedtls_curve_to_fido(key->grp.id);
+    return COSE_key_params(crv, alg, &key->grp, &key->Q, mapEncoderParent, mapEncoder);
+}
+
+CborError COSE_cached_key(const uint8_t *data, size_t data_len, CborEncoder *mapEncoderParent, CborEncoder *mapEncoder) {
+    if (!data || data_len == 0 || !mapEncoderParent || !mapEncoder) {
+        return CborErrorIllegalType;
+    }
+    CborParser parser;
+    CborValue value;
+    int64_t kty = 0;
+    int64_t alg = 0;
+    int64_t crv = 0;
+    CborByteString x = { 0 };
+    CborByteString y = { 0 };
+    CborError error = cbor_parser_init(data, data_len, 0, &parser, &value);
+    if (error == CborNoError) {
+        error = COSE_read_key(&value, &kty, &alg, &crv, &x, &y);
+    }
+    if (error != CborNoError || !x.present || x.len == 0) {
+        CBOR_FREE_BYTE_STRING(x);
+        CBOR_FREE_BYTE_STRING(y);
+        return error == CborNoError ? CborErrorImproperValue : error;
+    }
+    CBOR_CHECK(cbor_encoder_create_map(mapEncoderParent, mapEncoder, y.present ? 5 : 4));
+    CBOR_CHECK(cbor_encode_int(mapEncoder, 1));
+    CBOR_CHECK(cbor_encode_int(mapEncoder, kty));
+    CBOR_CHECK(cbor_encode_int(mapEncoder, 3));
+    CBOR_CHECK(cbor_encode_int(mapEncoder, alg));
+    CBOR_CHECK(cbor_encode_int(mapEncoder, -1));
+    CBOR_CHECK(cbor_encode_int(mapEncoder, crv));
+    CBOR_CHECK(cbor_encode_int(mapEncoder, -2));
+    CBOR_CHECK(cbor_encode_byte_string(mapEncoder, x.data, x.len));
+    if (y.present) {
+        CBOR_CHECK(cbor_encode_int(mapEncoder, -3));
+        CBOR_CHECK(cbor_encode_byte_string(mapEncoder, y.data, y.len));
+    }
+    CBOR_CHECK(cbor_encoder_close_container(mapEncoderParent, mapEncoder));
+err:
+    CBOR_FREE_BYTE_STRING(x);
+    CBOR_FREE_BYTE_STRING(y);
+    return error;
+}
+CborError COSE_key_shared(pf_mbedtls_ecdh_context *key,
+                          CborEncoder *mapEncoderParent,
+                          CborEncoder *mapEncoder) {
+    int crv = pf_mbedtls_curve_to_fido(key->ctx.mbed_ecdh.grp.id), alg = FIDO2_ALG_ECDH_ES_HKDF_256;
+    return COSE_key_params(crv, alg, &key->ctx.mbed_ecdh.grp, &key->ctx.mbed_ecdh.Q, mapEncoderParent, mapEncoder);
+}
+CborError COSE_public_key(int alg, CborEncoder *mapEncoderParent, CborEncoder *mapEncoder) {
+    CborError error = CborNoError;
+    CBOR_CHECK(cbor_encoder_create_map(mapEncoderParent, mapEncoder, 2));
+    CBOR_CHECK(cbor_encode_text_stringz(mapEncoder, "alg"));
+    CBOR_CHECK(cbor_encode_negative_int(mapEncoder, -alg));
+    CBOR_CHECK(cbor_encode_text_stringz(mapEncoder, "type"));
+    CBOR_CHECK(cbor_encode_text_stringz(mapEncoder, "public-key"));
+    CBOR_CHECK(cbor_encoder_close_container(mapEncoderParent, mapEncoder));
+err:
+    return error;
+}
+CborError COSE_read_key(CborValue *f, int64_t *kty, int64_t *alg, int64_t *crv, CborByteString *kax, CborByteString *kay) {
+    int64_t kkey = 0;
+    CborError error = CborNoError;
+    CBOR_PARSE_MAP_START(*f, 0)
+    {
+        CBOR_FIELD_GET_INT(kkey, 0);
+        if (kkey == 1) {
+            CBOR_FIELD_GET_INT(*kty, 0);
+        }
+        else if (kkey == 3) {
+            CBOR_FIELD_GET_INT(*alg, 0);
+        }
+        else if (kkey == -1) {
+            CBOR_FIELD_GET_INT(*crv, 0);
+        }
+        else if (kkey == -2) {
+            CBOR_FIELD_GET_BYTES(*kax, 0);
+        }
+        else if (kkey == -3) {
+            CBOR_FIELD_GET_BYTES(*kay, 0);
+        }
+        else {
+            CBOR_ADVANCE(0);
+        }
+    }
+    CBOR_PARSE_MAP_END(*f, 0);
+err:
+    return error;
+}

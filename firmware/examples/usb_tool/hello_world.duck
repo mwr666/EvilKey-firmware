@@ -1,0 +1,7 @@
+REM EvilKey USB Tool input test.
+REM Focus an empty text editor before pressing RUN on the device.
+DELAY 1000
+STRING EvilKey USB Tool
+ENTER
+STRING layout-test-123
+ENTER

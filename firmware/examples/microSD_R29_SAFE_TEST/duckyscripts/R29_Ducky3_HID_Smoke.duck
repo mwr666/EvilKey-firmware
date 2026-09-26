@@ -1,0 +1,14 @@
+REM PicoFido R29 safe DuckyScript 3 HID parser smoke test
+REM Open a text editor on your own test machine before pressing RUN.
+ATTACKMODE HID
+DELAY 1500
+STRINGLN PicoFido R29 HID-only DuckyScript 3 smoke test
+VAR $COUNT = 3
+WHILE ($COUNT > 0)
+    STRING Random pair: 
+    RANDOM_SPECIAL
+    RANDOM_CHAR
+    ENTER
+    $COUNT = ($COUNT - 1)
+END_WHILE
+STRINGLN PASS - parser reached end of script

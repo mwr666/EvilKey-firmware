@@ -1,0 +1,157 @@
+{
+  "basis": "PicoFido_0.2.6_Manager_1.0.0_FULL.zip",
+  "revision": "R1",
+  "firmware_runtime": "0.2.6-dev",
+  "manager_runtime": "1.0.0",
+  "excluded_from_diff": [
+    "SHA256SUMS.txt",
+    "docs/R1_CHANGESET.json",
+    "firmware/docs/R1_CHANGESET.json"
+  ],
+  "changed": [
+    {
+      "path": "CHANGELOG.md",
+      "old_sha256": "85fe0145fb21707d2edda0bcf65082f8aab10db0138541f684cb8d274a4af97a",
+      "new_sha256": "a2150928f7991388d545513ef2e68b9b0be0b1df60a31b460905d06663f6a262"
+    },
+    {
+      "path": "README_PL.md",
+      "old_sha256": "878652026c46a78805fb9e26ffbabb5ee5b526336fe510a20915071e2130f740",
+      "new_sha256": "32d68d0234d718c370c4efc4c31bceeea21094f8e92e61c2955458225e0ea68b"
+    },
+    {
+      "path": "RELEASE.json",
+      "old_sha256": "fb77af978a7f6d0a4f865492c21f25a71eaef7c719a336ac5017456c44f18537",
+      "new_sha256": "93448e56c203e9b22ac1c75c807a606a35ffdd923b4cb87355013f5535cc6114"
+    },
+    {
+      "path": "docs/QUICK_START_PL.md",
+      "old_sha256": "878652026c46a78805fb9e26ffbabb5ee5b526336fe510a20915071e2130f740",
+      "new_sha256": "4f31bc671fd1644195ee2a9344786394d3532a7da6805d8fb446278d84f54cff"
+    },
+    {
+      "path": "docs/TEST_REPORT_PL.md",
+      "old_sha256": "60f3b1758c504c0f66a7d7a08d165a2d3f19da48c0a7a9a89a899275eda9bdf5",
+      "new_sha256": "7f9d4dd31434769e4c5a85017a5da647373fc693ff7192e561c40673c34cdf7a"
+    },
+    {
+      "path": "firmware/ARDUINO_PORT.json",
+      "old_sha256": "9b85eca74fdf482ed4e58cbbea460113065c01d915a39ce037c00ecbfbc132c0",
+      "new_sha256": "a79038f8f06e89623a081da75246fd7f2fc50b88e72bf54cf9653cbcab8272b8"
+    },
+    {
+      "path": "firmware/CHANGELOG.md",
+      "old_sha256": "e41c1b763906535d55f2c6e350573980d596d0c8ad6e398ad77cef21b4b6e2bf",
+      "new_sha256": "043cbb3d12fb6147bc4547a4ef25d877dbe851e39aa562b2d8cd89630ce19351"
+    },
+    {
+      "path": "firmware/README_MANAGER_PL.md",
+      "old_sha256": "e3d5b720d1230cfa270e52b975994f30419535ece602027bcd4f77fad272f97d",
+      "new_sha256": "d51bc5315aec20d5ff53356a3c4195d2459ad8808317b94b8f519cea2bc026ec"
+    },
+    {
+      "path": "firmware/README_PL.md",
+      "old_sha256": "e3d5b720d1230cfa270e52b975994f30419535ece602027bcd4f77fad272f97d",
+      "new_sha256": "d51bc5315aec20d5ff53356a3c4195d2459ad8808317b94b8f519cea2bc026ec"
+    },
+    {
+      "path": "firmware/build_arduino.py",
+      "old_sha256": "3e5c6659ae6f1dab394d720697ff43d658e5e70c5783648baf0aac9d1070ace7",
+      "new_sha256": "24769d8d963a3a5a12e23fca9586a9a95d7af83809bd9edb07f92bdaceebe945"
+    },
+    {
+      "path": "firmware/docs/TEST_REPORT_PL.md",
+      "old_sha256": "60f3b1758c504c0f66a7d7a08d165a2d3f19da48c0a7a9a89a899275eda9bdf5",
+      "new_sha256": "7f9d4dd31434769e4c5a85017a5da647373fc693ff7192e561c40673c34cdf7a"
+    },
+    {
+      "path": "firmware/prepare_arduino.py",
+      "old_sha256": "53fd7a19782516ba51cac4b1c5a6e2c7b3b1c2b789b31bb48883bba9f6e2f971",
+      "new_sha256": "70d9e792ec64e1562590071a56b898075b8df3f6716d947fca157fce8975ceee"
+    },
+    {
+      "path": "firmware/tests/release_026/test_manager_auth.c",
+      "old_sha256": "83f16c88be67f2788567e1fba17b78357942c81d8642d71ff73bee8dab489fd5",
+      "new_sha256": "3319113c1ef8eb9340ffbad200fede67893a8e933f9e15337e9ab092d0eaa7af"
+    },
+    {
+      "path": "firmware/tools/manager_source.py",
+      "old_sha256": "b2717c2cd60011d0e191b068b0355189476f150c35651e68ebeff889eaa61c86",
+      "new_sha256": "c038f1eaa16a8f79ba6e2da519b567afe18f116b01964c37f5cb17347137c50d"
+    },
+    {
+      "path": "tests/test_manager.py",
+      "old_sha256": "acd3e43f4d12e0f480681ec7f389112f02b7acb3cd8855612d787e75aaa0d40f",
+      "new_sha256": "4c1acde8751b84b0fe24b18e3d3bd150b6051da6595d6cf07b27148992aa737c"
+    }
+  ],
+  "removed": [
+    {
+      "path": "firmware/templates/port/ws_manager_config.inc",
+      "old_sha256": "50a240f3d11ad012c738fcd01e7ef0d0fe73dd91ffc0e3328b71dcbdf7cb3e6b"
+    }
+  ],
+  "added": [
+    {
+      "path": "START_R1_PL.md",
+      "new_sha256": "ace2a84602b4fb752275579a7b28c1f099c0f7c6e432b0a023266bbde540f5c1"
+    },
+    {
+      "path": "docs/TEST_REPORT_R1_PL.md",
+      "new_sha256": "8db0ab21db475ea08758a2772616091d407ba9d7bcdf067596616b6e59607282"
+    },
+    {
+      "path": "docs/test-logs/r1/c-normal.log",
+      "new_sha256": "d7c9ee6529d2d42b0866dcac2201adca3d5ede8285e4ed1a71acca39e3875b57"
+    },
+    {
+      "path": "docs/test-logs/r1/c-sanitized.log",
+      "new_sha256": "f078a4560e9073a804d9b2d53c02ca5a13af8d2e16862cda465002a3b56eeb34"
+    },
+    {
+      "path": "docs/test-logs/r1/environment.log",
+      "new_sha256": "07ddae7e20dd85fb7c7e71eb8fc8bfd45653b8b85a134591c1b1356930698035"
+    },
+    {
+      "path": "docs/test-logs/r1/python-tests.log",
+      "new_sha256": "fbddb176b1284035be37415cbaa1f16dc3b80f16654746fdf24f547d772fa72f"
+    },
+    {
+      "path": "firmware/README_R1_PL.md",
+      "new_sha256": "2796565a5c8e10c057cd7748ed3a19756747a4af2eadccc12c1c7177e3fbc25d"
+    },
+    {
+      "path": "firmware/docs/TEST_REPORT_R1_PL.md",
+      "new_sha256": "6492b00b668410fdd1c5ca86cf65e63010359570e66701a6ed2bdb2d53d3d45b"
+    },
+    {
+      "path": "firmware/docs/test-logs/r1/c-normal.log",
+      "new_sha256": "d7c9ee6529d2d42b0866dcac2201adca3d5ede8285e4ed1a71acca39e3875b57"
+    },
+    {
+      "path": "firmware/docs/test-logs/r1/c-sanitized.log",
+      "new_sha256": "f078a4560e9073a804d9b2d53c02ca5a13af8d2e16862cda465002a3b56eeb34"
+    },
+    {
+      "path": "firmware/docs/test-logs/r1/environment.log",
+      "new_sha256": "07ddae7e20dd85fb7c7e71eb8fc8bfd45653b8b85a134591c1b1356930698035"
+    },
+    {
+      "path": "firmware/docs/test-logs/r1/python-tests.log",
+      "new_sha256": "fbddb176b1284035be37415cbaa1f16dc3b80f16654746fdf24f547d772fa72f"
+    },
+    {
+      "path": "firmware/templates/port/ws_manager_config.h",
+      "new_sha256": "50a240f3d11ad012c738fcd01e7ef0d0fe73dd91ffc0e3328b71dcbdf7cb3e6b"
+    },
+    {
+      "path": "tests/test_arduino_layout.py",
+      "new_sha256": "51cf1c3563a2d1b889ab9b27c3c0724732c54bd392b3545338fb12133df373e2"
+    }
+  ],
+  "integrity_checks": {
+    "manager_code_byte_identical": true,
+    "board_sources_unchanged_except_header_rename": true,
+    "sketch_configuration_and_partitions_byte_identical": true
+  }
+}

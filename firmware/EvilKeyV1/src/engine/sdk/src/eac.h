@@ -1,0 +1,46 @@
+/*
+ * This file is part of the Pico Keys SDK distribution (https://github.com/polhenarejos/pico-keys-sdk).
+ * Copyright (c) 2022 Pol Henarejos.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, version 3.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#ifndef _EAC_H_
+#define _EAC_H_
+
+#include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
+
+#include "byte_array.h"
+
+typedef enum MSE_protocol {
+    MSE_AES = 0,
+    MSE_3DES,
+    MSE_NONE
+} MSE_protocol;
+
+extern void sm_derive_all_keys(const_byte_array_t input);
+extern void sm_set_protocol(MSE_protocol proto);
+extern MSE_protocol sm_get_protocol(void);
+extern uint8_t *sm_get_nonce(void);
+extern int sm_sign(const_byte_array_t input, uint8_t out[16]);
+int sm_verify(void);
+void sm_update_iv(void);
+uint16_t sm_get_le(void);
+extern int sm_unwrap(void);
+uint16_t sm_remove_padding(const_byte_array_t data);
+extern int sm_wrap(void);
+extern bool is_secured_apdu(void);
+
+#endif

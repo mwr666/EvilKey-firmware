@@ -1,0 +1,2 @@
+# Optional PC-side UV probe; not needed for Arduino compilation.
+fido2>=2.0,<3.0

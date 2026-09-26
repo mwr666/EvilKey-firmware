@@ -1,0 +1,432 @@
+#include "../../../pf_build_config.h"
+/*
+ * This file is part of the Pico Keys SDK distribution (https://github.com/polhenarejos/pico-keys-sdk).
+ * Copyright (c) 2022 Pol Henarejos.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, version 3.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include "picokeys.h"
+#include "serial.h"
+#include "../../crypto/include/mbedtls/md.h"
+#include "../../crypto/include/mbedtls/sha256.h"
+#include "../../crypto/include/mbedtls/aes.h"
+#include "../../crypto/include/mbedtls/hkdf.h"
+#include "../../crypto/include/mbedtls/gcm.h"
+#include "../../crypto/include/mbedtls/base64.h"
+#include "crypto_utils.h"
+#include "otp/otp.h"
+#include "rng/random.h"
+
+static const pf_mbedtls_md_info_t *SHA256(void) {
+    return pf_mbedtls_md_info_from_type(PF_MBEDTLS_MD_SHA256);
+}
+
+void derive_kbase(uint8_t kbase[32]) {
+    const uint8_t nootp_salt[] = "NO-OTP";
+    if (otp_key_1) {
+        pf_mbedtls_hkdf(SHA256(), pico_serial_hash, sizeof(pico_serial_hash), otp_key_1, 32, (const uint8_t *)"DEVICE/ROOT", 12, kbase, 32);
+    }
+    else {
+        pf_mbedtls_hkdf(SHA256(), nootp_salt, sizeof(nootp_salt)-1, pico_serial_hash, sizeof(pico_serial_hash), (const uint8_t *)"DEVICE/ROOT", 12, kbase, 32);
+    }
+}
+
+void derive_kver(const_byte_array_t pin, uint8_t kver[32]) {
+    uint8_t kbase[32];
+    derive_kbase(kbase);
+    pf_mbedtls_md_hmac(SHA256(), kbase, 32, pin.data, pin.len, kver);
+    pf_mbedtls_platform_zeroize(kbase, sizeof(kbase));
+}
+
+void pin_derive_verifier(const_byte_array_t pin, uint8_t verifier[32]) {
+    uint8_t kver[32];
+    derive_kver(pin, kver);
+    pf_mbedtls_hkdf(SHA256(), pico_serial_hash, sizeof(pico_serial_hash), kver, 32, (const uint8_t *)"PIN/VERIFY", 10, verifier, 32);
+    pf_mbedtls_platform_zeroize(kver, sizeof(kver));
+}
+
+void pin_derive_session(const_byte_array_t pin, uint8_t pin_token[32]) {
+    uint8_t kver[32];
+    derive_kver(pin, kver);
+    pf_mbedtls_hkdf(SHA256(), pico_serial_hash, sizeof(pico_serial_hash), kver, 32, (const uint8_t *)"PIN/TOKEN", 9, pin_token, 32);
+    pf_mbedtls_platform_zeroize(kver, sizeof(kver));
+}
+
+void pin_derive_kenc(const uint8_t pin_token[32], uint8_t kenc[32]) {
+    pf_mbedtls_hkdf(SHA256(), pico_serial_hash, sizeof(pico_serial_hash), pin_token, 32, (const uint8_t *)"PIN/ENC", 7, kenc, 32);
+}
+
+void pin_derive_kenc2(const uint8_t pin_token[32], uint8_t kenc[32]) {
+    uint8_t kbase[64];
+    derive_kbase(kbase);
+    memcpy(kbase + 32, pin_token, 32);
+    pf_mbedtls_hkdf(SHA256(), pico_serial_hash, sizeof(pico_serial_hash), kbase, 64, (const uint8_t *)"PIN/ENC2", 8, kenc, 32);
+    pf_mbedtls_platform_zeroize(kbase, sizeof(kbase));
+}
+
+// ------------------------------------------------------------------
+// Encrypt 32-byte device key using AES-256-GCM
+// Output: [nonce|ciphertext|tag]  =  12 + in_len + 16 = 60 bytes
+// ------------------------------------------------------------------
+int encrypt_with_aad(const uint8_t key[32], const_byte_array_t input, pin_kdf_version_t version, uint8_t *out_buf) {
+    uint8_t *nonce = out_buf;
+    uint8_t *ct    = out_buf + 12;
+    uint8_t *tag   = out_buf + 12 + input.len;
+
+    random_fill_buffer(BYTE_ARRAY(nonce, 12));
+
+    pf_mbedtls_gcm_context gcm;
+    pf_mbedtls_gcm_init(&gcm);
+    uint8_t kenc[32];
+    if (version == PIN_KDF_V2) {
+        pin_derive_kenc2(key, kenc);
+    }
+    else if (version == PIN_KDF_V1) {
+        pin_derive_kenc(key, kenc);
+    }
+    else {
+        pf_mbedtls_gcm_free(&gcm);
+        return PICOKEYS_WRONG_DATA;
+    }
+    int rc = pf_mbedtls_gcm_setkey(&gcm, PF_MBEDTLS_CIPHER_ID_AES, kenc, 256);
+    pf_mbedtls_platform_zeroize(kenc, sizeof(kenc));
+    if (rc != 0) {
+        return rc;
+    }
+
+    rc = pf_mbedtls_gcm_crypt_and_tag(&gcm, PF_MBEDTLS_GCM_ENCRYPT, input.len, nonce, 12, pico_serial_hash, sizeof(pico_serial_hash), input.data, ct, 16, tag);
+    pf_mbedtls_gcm_free(&gcm);
+    return rc;
+}
+
+// ------------------------------------------------------------------
+// Decrypt & verify 32-byte device key using AES-256-GCM
+// Input: [nonce|ciphertext|tag]  =  in_len bytes
+// Output: decrypted = in_len - 12 - 16 bytes
+// ------------------------------------------------------------------
+int decrypt_with_aad(const uint8_t key[32], const_byte_array_t input, pin_kdf_version_t version, uint8_t *out_buf) {
+    if (!input.data || input.len < 28) {
+        return PICOKEYS_WRONG_LENGTH;
+    }
+
+    const uint8_t *nonce = input.data;
+    const uint8_t *ct    = input.data + 12;
+    const uint8_t *tag   = input.data + input.len - 16;
+
+    pf_mbedtls_gcm_context gcm;
+    uint8_t kenc[32];
+    if (version == PIN_KDF_V2) {
+        pin_derive_kenc2(key, kenc);
+    }
+    else if (version == PIN_KDF_V1) {
+        pin_derive_kenc(key, kenc);
+    }
+    else {
+        return PICOKEYS_WRONG_DATA;
+    }
+    pf_mbedtls_gcm_init(&gcm);
+    int ret = pf_mbedtls_gcm_setkey(&gcm, PF_MBEDTLS_CIPHER_ID_AES, kenc, 256);
+    pf_mbedtls_platform_zeroize(kenc, sizeof(kenc));
+    if (ret != 0) {
+        return ret;
+    }
+
+    PF_MBEDTLS_MPI_CHK(pf_mbedtls_gcm_auth_decrypt(&gcm, input.len - 16 - 12, nonce, 12, pico_serial_hash, sizeof(pico_serial_hash), tag, 16, ct, out_buf));
+    cleanup:
+    pf_mbedtls_gcm_free(&gcm);
+    return ret;
+}
+
+// Old functions, kept for compatibility. NOT SECURE, use the new ones above.
+void double_hash_pin(const_byte_array_t pin, uint8_t output[32]) {
+    uint8_t o1[32];
+    hash_multi(pin, o1);
+    for (size_t i = 0; i < sizeof(o1); i++) {
+        o1[i] ^= pin.data[i % pin.len];
+    }
+    hash_multi(CONST_BYTE_ARRAY(o1, sizeof(o1)), output);
+}
+
+void hash_multi(const_byte_array_t input, uint8_t output[32]) {
+    pf_mbedtls_sha256_context ctx;
+    uint16_t len = 0;
+
+    if (!input.data || input.len == 0 || input.len > UINT16_MAX) {
+        memset(output, 0, 32);
+        return;
+    }
+    len = (uint16_t)input.len;
+
+    pf_mbedtls_sha256_init(&ctx);
+    uint16_t iters = 256;
+    pf_mbedtls_sha256_starts(&ctx, 0);
+#ifndef ENABLE_EMULATION
+    pf_mbedtls_sha256_update(&ctx, pico_serial.id, sizeof(pico_serial.id));
+#endif
+
+    while (iters > len) {
+        pf_mbedtls_sha256_update(&ctx, input.data, len);
+        iters -= len;
+    }
+    if (iters > 0) { // remaining iterations
+        pf_mbedtls_sha256_update(&ctx, input.data, iters);
+    }
+    pf_mbedtls_sha256_finish(&ctx, output);
+    pf_mbedtls_sha256_free(&ctx);
+}
+
+void hash256(const_byte_array_t input, uint8_t output[32]) {
+    pf_mbedtls_sha256_context ctx;
+    pf_mbedtls_sha256_init(&ctx);
+
+    pf_mbedtls_sha256_starts(&ctx, 0);
+    pf_mbedtls_sha256_update(&ctx, input.data, input.len);
+
+    pf_mbedtls_sha256_finish(&ctx, output);
+    pf_mbedtls_sha256_free(&ctx);
+}
+
+void generic_hash(pf_mbedtls_md_type_t md, const_byte_array_t input, uint8_t *output) {
+    pf_mbedtls_md(pf_mbedtls_md_info_from_type(md), input.data, input.len, output);
+}
+
+int aes_encrypt(const_byte_array_t key, const uint8_t *iv, int mode, byte_array_t data) {
+    if (!key.data || (key.len != 16 && key.len != 24 && key.len != 32)) {
+        return PICOKEYS_WRONG_LENGTH;
+    }
+    pf_mbedtls_aes_context aes;
+    pf_mbedtls_aes_init(&aes);
+    uint8_t tmp_iv[IV_SIZE];
+    size_t iv_offset = 0;
+    memset(tmp_iv, 0, IV_SIZE);
+    if (iv) {
+        memcpy(tmp_iv, iv, IV_SIZE);
+    }
+    int r = pf_mbedtls_aes_setkey_enc(&aes, key.data, (unsigned int)(key.len * 8));
+    if (r != 0) {
+        pf_mbedtls_aes_free(&aes);
+        pf_mbedtls_platform_zeroize(tmp_iv, sizeof(tmp_iv));
+        return PICOKEYS_EXEC_ERROR;
+    }
+    int rc = 0;
+    if (mode == PICOKEYS_AES_MODE_CBC) {
+        rc = pf_mbedtls_aes_crypt_cbc(&aes, PF_MBEDTLS_AES_ENCRYPT, data.len, tmp_iv, data.data, data.data);
+    }
+    else {
+        rc = pf_mbedtls_aes_crypt_cfb128(&aes, PF_MBEDTLS_AES_ENCRYPT, data.len, &iv_offset, tmp_iv, data.data, data.data);
+    }
+    pf_mbedtls_aes_free(&aes);
+    pf_mbedtls_platform_zeroize(tmp_iv, sizeof(tmp_iv));
+    return rc;
+}
+
+int aes_decrypt(const_byte_array_t key, const uint8_t *iv, int mode, byte_array_t data) {
+    if (!key.data || (key.len != 16 && key.len != 24 && key.len != 32)) {
+        return PICOKEYS_WRONG_LENGTH;
+    }
+    pf_mbedtls_aes_context aes;
+    pf_mbedtls_aes_init(&aes);
+    uint8_t tmp_iv[IV_SIZE];
+    size_t iv_offset = 0;
+    memset(tmp_iv, 0, IV_SIZE);
+    if (iv) {
+        memcpy(tmp_iv, iv, IV_SIZE);
+    }
+    int r = pf_mbedtls_aes_setkey_dec(&aes, key.data, (unsigned int)(key.len * 8));
+    if (r != 0) {
+        pf_mbedtls_aes_free(&aes);
+        pf_mbedtls_platform_zeroize(tmp_iv, sizeof(tmp_iv));
+        return PICOKEYS_EXEC_ERROR;
+    }
+    int rc = 0;
+    if (mode == PICOKEYS_AES_MODE_CBC) {
+        rc = pf_mbedtls_aes_crypt_cbc(&aes, PF_MBEDTLS_AES_DECRYPT, data.len, tmp_iv, data.data, data.data);
+    }
+    else {
+        r = pf_mbedtls_aes_setkey_enc(&aes, key.data, (unsigned int)(key.len * 8)); //CFB requires set_enc instead set_dec
+        if (r != 0) {
+            pf_mbedtls_aes_free(&aes);
+            pf_mbedtls_platform_zeroize(tmp_iv, sizeof(tmp_iv));
+            return PICOKEYS_EXEC_ERROR;
+        }
+        rc = pf_mbedtls_aes_crypt_cfb128(&aes, PF_MBEDTLS_AES_DECRYPT, data.len, &iv_offset, tmp_iv, data.data, data.data);
+    }
+    pf_mbedtls_aes_free(&aes);
+    pf_mbedtls_platform_zeroize(tmp_iv, sizeof(tmp_iv));
+    return rc;
+}
+
+int aes_encrypt_cfb_256(const uint8_t *key, const uint8_t *iv, byte_array_t data) {
+    if (data.len > UINT16_MAX) {
+        return PICOKEYS_WRONG_LENGTH;
+    }
+    return aes_encrypt(CONST_BYTE_ARRAY(key, 32), iv, PICOKEYS_AES_MODE_CFB, data);
+}
+int aes_decrypt_cfb_256(const uint8_t *key, const uint8_t *iv, byte_array_t data) {
+    if (data.len > UINT16_MAX) {
+        return PICOKEYS_WRONG_LENGTH;
+    }
+    return aes_decrypt(CONST_BYTE_ARRAY(key, 32), iv, PICOKEYS_AES_MODE_CFB, data);
+}
+
+struct lv_data {
+    unsigned char *value;
+    uint8_t len;
+};
+
+struct ec_curve_mbed_id {
+    struct lv_data curve;
+    pf_mbedtls_ecp_group_id id;
+};
+struct ec_curve_mbed_id ec_curves_mbed[] = {
+    {   { (unsigned char *)
+          "\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFE\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF",
+          24 }, PF_MBEDTLS_ECP_DP_SECP192R1 },
+    {   { (unsigned char *)
+          "\xFF\xFF\xFF\xFF\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF",
+          32 }, PF_MBEDTLS_ECP_DP_SECP256R1 },
+    {   { (unsigned char *)
+          "\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFE\xFF\xFF\xFF\xFF\x00\x00\x00\x00\x00\x00\x00\x00\xFF\xFF\xFF\xFF",
+          48 }, PF_MBEDTLS_ECP_DP_SECP384R1 },
+    {   { (unsigned char *)
+          "\x01\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF",
+          66 }, PF_MBEDTLS_ECP_DP_SECP521R1 },
+    {   { (unsigned char *)
+          "\xA9\xFB\x57\xDB\xA1\xEE\xA9\xBC\x3E\x66\x0A\x90\x9D\x83\x8D\x72\x6E\x3B\xF6\x23\xD5\x26\x20\x28\x20\x13\x48\x1D\x1F\x6E\x53\x77",
+          32 }, PF_MBEDTLS_ECP_DP_BP256R1 },
+    {   { (unsigned char *)
+          "\x8C\xB9\x1E\x82\xA3\x38\x6D\x28\x0F\x5D\x6F\x7E\x50\xE6\x41\xDF\x15\x2F\x71\x09\xED\x54\x56\xB4\x12\xB1\xDA\x19\x7F\xB7\x11\x23\xAC\xD3\xA7\x29\x90\x1D\x1A\x71\x87\x47\x00\x13\x31\x07\xEC\x53",
+          48 }, PF_MBEDTLS_ECP_DP_BP384R1 },
+    {   { (unsigned char *)
+          "\xAA\xDD\x9D\xB8\xDB\xE9\xC4\x8B\x3F\xD4\xE6\xAE\x33\xC9\xFC\x07\xCB\x30\x8D\xB3\xB3\xC9\xD2\x0E\xD6\x63\x9C\xCA\x70\x33\x08\x71\x7D\x4D\x9B\x00\x9B\xC6\x68\x42\xAE\xCD\xA1\x2A\xE6\xA3\x80\xE6\x28\x81\xFF\x2F\x2D\x82\xC6\x85\x28\xAA\x60\x56\x58\x3A\x48\xF3",
+          64 }, PF_MBEDTLS_ECP_DP_BP512R1 },
+    {   { (unsigned char *)
+          "\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFE\xFF\xFF\xEE\x37",
+          24 }, PF_MBEDTLS_ECP_DP_SECP192K1 },
+    {   { (unsigned char *)
+          "\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFE\xFF\xFF\xFC\x2F",
+          32 }, PF_MBEDTLS_ECP_DP_SECP256K1 },
+    {   { (unsigned char *)
+          "\x7f\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xed",
+          32 }, PF_MBEDTLS_ECP_DP_CURVE25519 },
+    {   { (unsigned char *)
+          "\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff",
+          56 }, PF_MBEDTLS_ECP_DP_CURVE448 },
+
+    {   { NULL, 0 }, PF_MBEDTLS_ECP_DP_NONE }
+};
+
+pf_mbedtls_ecp_group_id ec_get_curve_from_prime(const_byte_array_t prime) {
+    for (struct ec_curve_mbed_id *ec = ec_curves_mbed; ec->id != PF_MBEDTLS_ECP_DP_NONE; ec++) {
+        if (prime.len == ec->curve.len && memcmp(prime.data, ec->curve.value, prime.len) == 0) {
+            return ec->id;
+        }
+    }
+    return PF_MBEDTLS_ECP_DP_NONE;
+}
+
+#define POLY 0xedb88320
+
+uint32_t crc32c(const_byte_array_t data) {
+    uint32_t crc = 0xffffffff;
+    for (size_t i = 0; i < data.len; i++) {
+        crc ^= data.data[i];
+        for (int k = 0; k < 8; k++) {
+            crc = (crc >> 1) ^ (POLY & (0 - (crc & 1)));
+        }
+    }
+    return ~crc;
+}
+
+int base64url_encode(byte_buffer_t *dst, const_byte_array_t src) {
+    if (!dst || dst->len > dst->capacity || (!dst->data && dst->capacity > 0) || (!src.data && src.len > 0)) {
+        return PICOKEYS_ERR_NULL_PARAM;
+    }
+    size_t written = 0;
+    uint8_t *output = dst->data ? dst->data + dst->len : NULL;
+    int rc = pf_mbedtls_base64_encode(output, dst->capacity - dst->len, &written, src.data, src.len);
+    if (rc != 0) {
+        return rc;
+    }
+    for (size_t i = 0; i < written; i++) {
+        if (output[i] == '+') {
+            output[i] = '-';
+        }
+        else if (output[i] == '/') {
+            output[i] = '_';
+        }
+    }
+    if (written == 0) {
+        return 0;
+    }
+    uint8_t *p = output + written - 1;
+    while (*p == '=') {
+        *p-- = '\0';
+        written--;
+    }
+    dst->len += written;
+    return 0;
+}
+
+int base64url_decode(byte_buffer_t *dst, const_byte_array_t src) {
+    if (!dst || dst->len > dst->capacity || (!dst->data && dst->capacity > 0) || (!src.data && src.len > 0)) {
+        return PICOKEYS_ERR_NULL_PARAM;
+    }
+    // First convert from base64url to standard base64
+    if ((src.len % 4) == 1) return PF_MBEDTLS_ERR_BASE64_INVALID_CHARACTER;
+    size_t padding = (4 - (src.len % 4)) % 4;
+    unsigned char *b64_src = malloc(src.len + padding);
+    if (b64_src == NULL) {
+        return PICOKEYS_ERR_MEMORY_FATAL;
+    }
+    for (size_t i = 0; i < src.len; i++) {
+        if (src.data[i] == '-') {
+            b64_src[i] = '+';
+        }
+        else if (src.data[i] == '_') {
+            b64_src[i] = '/';
+        }
+        else {
+            b64_src[i] = src.data[i];
+        }
+    }
+    for (size_t i = 0; i < padding; i++) {
+        b64_src[src.len + i] = '=';
+    }
+    size_t b64_len = src.len + padding;
+
+    size_t written = 0;
+    uint8_t *output = dst->data ? dst->data + dst->len : NULL;
+    int rc = pf_mbedtls_base64_decode(output, dst->capacity - dst->len, &written, b64_src, b64_len);
+    free(b64_src);
+    if (rc == 0) {
+        dst->len += written;
+    }
+    return rc;
+}
+
+int b64url_decoded_len(size_t n, size_t *out_len) {
+    if (out_len == NULL) return -1;
+    if ((n % 4) == 1) return -2; // longitud base64url invàlida
+
+    size_t pad = (4 - (n % 4)) % 4;   // 0,1,2
+    size_t total = n + pad;
+    size_t out = (total / 4) * 3;
+
+    if (pad == 1) out -= 1;
+    else if (pad == 2) out -= 2;
+
+    *out_len = out;
+    return 0;
+}

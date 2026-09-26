@@ -1,0 +1,132 @@
+{
+  "port_version": "0.3.0",
+  "target": "Arduino IDE 2.x / Arduino-ESP32 3.3.12 recommended (3.3.11 supported)",
+  "board": "Waveshare ESP32-S3-Touch-AMOLED-1.64 PCB V1",
+  "usb": "native USB-OTG: FIDO CTAP HID OR explicit-run USB Tool HID; optional microSD MSC Manager Drive is a separate mutually-exclusive profile",
+  "status": "EvilKey 0.3.0 flashed to COM5 and upload verified; user confirmed final-image Air Mouse and FIDO smoke test",
+  "dependencies": {
+    "pico-fido": "fc7c60e9b45338fe815a43bb228d234322e48d97",
+    "pico-keys-sdk": "507ac45956b7f1c763bb5e88a6411438093d10c7",
+    "mbedtls-eddsa": "fc39404125e93ee00e6758605e6c6f2c8db440f1",
+    "tinycbor": "c0aad2fb2137a31b9845fbaae3653540c410f215",
+    "lvgl": "4495f428630cc1741bd8bfd977f080e8460e8e8d (v8.4.0)",
+    "s3-ducky": "e1e172c26961b865da699969c109a99c78311434"
+  },
+  "touch_defaults": {
+    "confirmation": true,
+    "local_uv": true,
+    "boot_fallback": false,
+    "pin_input_timeout_seconds": 120,
+    "uv_retries": 8
+  },
+  "gui": {
+    "framework": "LVGL 8.4.0 (source vendored by prepare_arduino.py from pinned commit)",
+    "canvas": "280x456 RGB565",
+    "draw_buffer_rows": 64,
+    "accent_rgb": "0x4DE3C1",
+    "language": "English",
+    "security_boundary": "LVGL presentation only; UP/UV decisions remain in state machines; R13 borrows the existing pinpad only for the narrow local READ ONLY -> READ/WRITE authorization",
+    "extra_full_framebuffer": false,
+    "visual_style": "EvilKey dark and mint UI; shared 3D screensaver and nine-page Settings with Diagnostics and Air Mouse",
+    "lvgl_heap_bytes": 65536,
+    "native_graphics": "LVGL alpha-mask logo plus lines/circles/cards for spinner, touch, check, cross, clock, lock, moon, warning, USB and backspace",
+    "fonts": "Montserrat 14/18/20/28/34",
+    "animation": "R22 active poll 8 ms; animation/screensaver phase from absolute time every 16 ms (~62.5 phase steps/s); static cadence 50 ms; runtime animation setting remains authoritative",
+    "pin_layout": "R6 geometry unchanged: 3x4 keypad and cancel hit rectangles remain defined only by ws_ui_layout.h/ws_pinpad",
+    "draw_buffers": 2,
+    "draw_buffer_memory": "target: two 64-row RGB565 buffers in internal DMA SRAM; fallback: one 64/48/32/16-row buffer",
+    "lvgl_heap_memory": "64 KiB TLSF pool in PSRAM via LV_MEM_POOL_ALLOC",
+    "flush": "R22 zero-copy asynchronous esp_lcd DMA; LV_COLOR_16_SWAP=1; lv_disp_flush_ready on color-transfer completion",
+    "psram_hot_path": false,
+    "settings_pages": 9
+  },
+  "package_revision": "0.3.0",
+  "packaging_fix": "R14_ARDUINO_3_3_12; R17_ARDUINO_STAGEABLE_LOCAL_UV_HEADER; R18_SCOPED_SETTINGS_PIN_CANCEL; R22_ASYNC_DOUBLE_BUFFER_ZERO_COPY; R26_USB_TOOL; R27_HAK5_COMPAT_FONT_FIX; R28_DYNAMIC_PAYLOAD_INDEX_PSRAM_FALLBACK; R34_TINYUSB_HOST_FINGERPRINT_S2",
+  "manager_drive": {
+    "compiled": true,
+    "default_enabled": false,
+    "read_only": false,
+    "toggle_surface": "SETTINGS -> USB & STORAGE from READY/STANDBY only",
+    "toggle_requires_restart": true,
+    "sd_bus": "SPI/HSPI",
+    "sd_pins": {
+      "cs": 38,
+      "mosi": 39,
+      "miso": 40,
+      "sclk": 41
+    },
+    "sd_clock_hz": 20000000,
+    "composite_usb": {
+      "vid": "0xFEFF",
+      "pid": "0xFCFC",
+      "product": "EvilKey + Manager DEV",
+      "manufacturer": "EvilKey",
+      "bcd_device": "0x0101"
+    },
+    "fido_only_profile_unchanged": true,
+    "read_only_default": false,
+    "runtime_manager_toggle": true,
+    "write_enable_policy": "On-device READ ONLY -> READ/WRITE requires fresh FIDO PIN; stale CTAP cancel state is discarded at prompt start; READ/WRITE -> READ ONLY and MSC ON/OFF require no PIN"
+  },
+  "arduino_core_policy": {
+    "recommended": "3.3.12",
+    "supported": [
+      "3.3.11",
+      "3.3.12"
+    ],
+    "future_versions": "fail closed until explicitly validated"
+  },
+  "usb_tool": {
+    "compiled": true,
+    "default_enabled": false,
+    "interpreter": "s3-ducky pinned e1e172c26961b865da699969c109a99c78311434",
+    "payload_directory": "/duckyscripts plus recursive /payloads or /hak5/payloads",
+    "extensions": [
+      "payload.txt (recursive Hak5 tree)",
+      ".txt under /duckyscripts",
+      ".duck",
+      ".ds"
+    ],
+    "max_visible_scripts": 320,
+    "max_payload_bytes": 262144,
+    "autorun": false,
+    "start_policy": "local AMOLED RUN action only",
+    "host_os_detection": "passive Hak5-compatible Windows/Linux/macOS snapshot from exact configuration descriptor request count plus host lock-LED reply",
+    "arduino_core_patch": "S2 reversible: usbd stack 16384 B plus GET CONFIGURATION DESCRIPTOR observation hook",
+    "keyboard_layouts": "dynamic Hak5 languages/*.json + built-in us/pl-programmer/de/fr/es fallbacks",
+    "usb_identity": {
+      "vid": "0xFEFF",
+      "pid": "0xFCFB",
+      "product": "EvilKey USB Tool DEV"
+    },
+    "hid_reports": [
+      "keyboard",
+      "relative mouse",
+      "absolute mouse",
+      "consumer/media",
+      "system control"
+    ],
+    "manager_drive_mutually_exclusive": true,
+    "hak5_language_directories": [
+      "/languages",
+      "/hak5/languages",
+      "/duckyscripts/languages",
+      "/duckyscripts/hak5/languages"
+    ],
+    "hak5_payload_directories": [
+      "/payloads",
+      "/hak5/payloads",
+      "/duckyscripts/hak5/payloads"
+    ],
+    "hak5_reference_commit": "4fa639fd06972cd7efd9c48cc73136443f9cffb1",
+    "hak5_reference_counts": {
+      "languages": 26,
+      "payload_txt": 268,
+      "max_payload_path_chars": 122
+    },
+    "unsupported": [
+      "general UTF-8/non-ASCII STRING expansion",
+      "Rubber Ducky hardware-specific features not implemented by pinned s3-ducky"
+    ]
+  }
+}

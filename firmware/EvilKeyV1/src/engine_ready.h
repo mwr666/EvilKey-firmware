@@ -1,0 +1,4 @@
+#pragma once
+#define PF_ENGINE_GENERATED 1
+#define PF_DEVICE_PROFILE_PATCH 1
+#define PF_LOCAL_UV_PATCH 1

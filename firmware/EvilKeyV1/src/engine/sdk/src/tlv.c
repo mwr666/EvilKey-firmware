@@ -1,0 +1,147 @@
+#include "../../../pf_build_config.h"
+/*
+ * This file is part of the Pico Keys SDK distribution (https://github.com/polhenarejos/pico-keys-sdk).
+ * Copyright (c) 2022 Pol Henarejos.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, version 3.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include "picokeys.h"
+#include "tlv.h"
+
+int tlv_ctx_init(byte_array_t data, tlv_ctx_t *ctx) {
+    if (!ctx) {
+        return PICOKEYS_ERR_NULL_PARAM;
+    }
+    *ctx = data;
+    return PICOKEYS_OK;
+}
+
+int tlv_ctx_clear(tlv_ctx_t *ctx) {
+    if (!ctx) {
+        return PICOKEYS_ERR_NULL_PARAM;
+    }
+    ctx->data = NULL;
+    ctx->len = 0;
+    return PICOKEYS_OK;
+}
+
+size_t tlv_len(const tlv_ctx_t *ctx) {
+    if (ctx->data && ctx->len > 0) {
+        return ctx->len;
+    }
+    return 0;
+}
+
+uint32_t tlv_get_uint(tlv_ctx_t *ctx) {
+    uint32_t d = ctx->data[0];
+    for (uint16_t lt = 1; lt < MIN(ctx->len, sizeof(uint32_t)); lt++) {
+        d <<= 8;
+        d |= ctx->data[lt];
+    }
+    return d;
+}
+
+uint16_t tlv_len_tag(uint16_t tag, uint16_t len) {
+    uint16_t ret = 1 + tlv_format_len(len, NULL) + len;
+    if (tag > 0x00ff) {
+        return ret + 1;
+    }
+    return ret;
+}
+
+uint8_t tlv_format_len(uint16_t len, uint8_t *out) {
+    if (len < 128) {
+        if (out) {
+            *out = (uint8_t)len;
+        }
+        return 1;
+    }
+    else if (len < 256) {
+        if (out) {
+            *out++ = 0x81;
+            *out++ = (uint8_t)len;
+        }
+        return 2;
+    }
+    if (out) {
+        *out++ = 0x82;
+        put_uint16_be(len, out);
+    }
+    return 3;
+}
+
+int tlv_walk(const tlv_ctx_t *ctxi, uint8_t **p, tlv_item_t *item) {
+    if (!ctxi || !ctxi->data || !p) {
+        return 0;
+    }
+    if (!*p) {
+        *p = (uint8_t *) ctxi->data;
+    }
+    if (*p < ctxi->data || (size_t)(*p - ctxi->data) >= ctxi->len) {
+        return 0;
+    }
+    uint16_t tg = 0x0, tgl = 0;
+    tg = *(*p)++;
+    if ((tg & 0x1f) == 0x1f) {
+        if ((size_t)(*p - ctxi->data) >= ctxi->len) {
+            return 0;
+        }
+        tg <<= 8;
+        tg |= *(*p)++;
+    }
+    if ((size_t)(*p - ctxi->data) >= ctxi->len) {
+        /* Some OATH commands use a trailing tag as a zero-length marker. */
+        tgl = 0;
+    }
+    else {
+        tgl = *(*p)++;
+    }
+    if (tgl == 0x82) {
+        if (ctxi->len - (size_t)(*p - ctxi->data) < 2) {
+            return 0;
+        }
+        tgl = *(*p)++ << 8;
+        tgl |= *(*p)++;
+    }
+    else if (tgl == 0x81) {
+        if ((size_t)(*p - ctxi->data) >= ctxi->len) {
+            return 0;
+        }
+        tgl = *(*p)++;
+    }
+    if (tgl > ctxi->len - (size_t)(*p - ctxi->data)) {
+        return 0;
+    }
+    if (item) {
+        item->tag = tg;
+        item->value = CONST_BYTE_ARRAY(*p, tgl);
+    }
+    *p = *p + tgl;
+    return 1;
+}
+
+bool tlv_find_tag(const tlv_ctx_t *ctxi, uint16_t itag, tlv_ctx_t *ctxo) {
+    uint8_t *p = NULL;
+    tlv_item_t item;
+    while (tlv_walk(ctxi, &p, &item)) {
+        if (itag == item.tag) {
+            if (ctxo != NULL) {
+                ctxo->data = (uint8_t *)item.value.data;
+                ctxo->len = (uint16_t)item.value.len;
+            }
+            return true;
+        }
+    }
+    return false;
+}
