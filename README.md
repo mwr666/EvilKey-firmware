@@ -20,6 +20,16 @@ EvilKey is FIDO2 firmware for the **Waveshare ESP32-S3 Touch AMOLED 1.64, PCB V1
 
 This repository contains the device firmware, LVGL interface, generated upstream source, preparation tools, source notices and installation instructions. It does not contain the separately licensed Manager or microSD examples.
 
+## Watch the real device GUI
+
+<p align="center">
+  <a href="docs/github/evilkey-gui-real-silent.mp4"><img src="docs/github/prototype-ready.png" alt="Play the real EvilKey prototype GUI video" width="420"></a>
+</p>
+
+<p align="center"><strong><a href="docs/github/evilkey-gui-real-silent.mp4">▶ Play the 23-second real-device video</a></strong></p>
+
+Silent camera footage shows the home-printed prototype, its screensaver, touch navigation through Settings and the return to READY. The separate interface panels below are code-derived previews; this video does not show live PIN verification, cursor movement or script execution.
+
 ## Device and interface
 
 <p align="center">
