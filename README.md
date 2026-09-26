@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/github/evilkey-lvgl-logo-motion.gif" alt="Animated EvilKey logo from the device GUI" width="128">
+  <img src="docs/github/evilkey-lvgl-logo-motion.webp" alt="Animated EvilKey logo with the device screensaver glitch" width="128">
 </p>
 
 # EvilKey firmware
