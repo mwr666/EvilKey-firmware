@@ -31,6 +31,8 @@ The [firmware guide](firmware/README.md) explains source generation and the two 
 
 I welcome ideas for new EvilKey features. Open an issue with the intended behavior, hardware assumptions and a practical test plan.
 
+Voluntary support is available through [GitHub Sponsors](https://github.com/sponsors/mwr666). Sponsorship is not a software purchase or a kit preorder.
+
 ## License and provenance
 
 The EvilKey firmware and device GUI are distributed under GNU AGPL version 3 with upstream notices retained. See [LICENSE.md](LICENSE.md), [NOTICE.md](NOTICE.md), [firmware license](firmware/LICENSE.md) and [source provenance](firmware/docs/SOURCES.md). The Waveshare module is third-party hardware; EvilKey is an independent project.
