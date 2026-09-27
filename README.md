@@ -61,9 +61,17 @@ The microSD card is needed to reproduce the `hello_world.duck` demo; FIDO2 and A
 
 The [printable V1 enclosure](https://www.printables.com/model/1855790-evilkey-v1-enclosure-waveshare-esp32-s3-touch-amol) is available as digital STL and 3MF files on Printables. This enclosure revision has been printed and test-fitted with the Waveshare PCB V1; the listing does not include hardware or a physical print.
 
+### On-device PIN — real prototype
+
+<p align="center">
+  <a href="docs/github/evilkey-on-device-pin-real.jpg"><img src="docs/github/evilkey-on-device-pin-real.jpg" alt="Photograph of the EvilKey prototype showing its on-device PIN keypad" width="360"></a>
+</p>
+
+<p align="center"><sub>Real photo of the PCB V1 prototype. The keypad is used for compatible built-in FIDO2 user-verification requests; clients can still request host-side ClientPIN.</sub></p>
+
 ### Touch interface
 
-These panels are stills from a code-derived interface preview. They show the intended firmware layout; they are not photographs of the device.
+The following panels are stills from a code-derived interface preview. They show the intended firmware layout; the photograph above shows the actual device.
 
 <p align="center">
   <a href="docs/github/interface/pin.png"><img src="docs/github/interface/pin.png" alt="EvilKey on-device FIDO2 PIN keypad preview" width="100%"></a>
