@@ -36,11 +36,9 @@ Silent camera footage shows the home-printed prototype, its screensaver, touch n
 
 <p align="center"><a href="https://youtube.com/shorts/k0a0o6s1Ayg"><img src="docs/github/evilkey-usb-tool-demo-poster.jpg" alt="Watch the real EvilKey USB Tool Short" width="420"></a></p>
 
-[▶ Watch the USB Tool Short](https://youtube.com/shorts/k0a0o6s1Ayg) · [Silent MP4 on Hackaday](https://cdn.hackaday.io/files/2068078848030688/evilkey-usb-tool-hello-world-real-silent.mp4)
+[▶ Watch the USB Tool Short](https://youtube.com/shorts/k0a0o6s1Ayg)
 
 USB Tool is a separate USB role. Select a script on EvilKey's touchscreen and press **RUN**; connecting the key does not start a payload. It can send scripted keyboard and mouse input, store results on microSD and use Keystroke Reflection as a return channel when a mass-storage drive is unavailable. Scripts can move files or collect data within the connected host session's permissions and defenses. The Short shows only a harmless HID test on the owner's Windows computer: minimizing windows, opening Notepad and typing a joke. It does **not** demonstrate file transfer, data collection or bypassing a security control. The edit joins two real camera takes with captions and a logo outro.
-
-[Download the MP4 from this repository](docs/github/evilkey-usb-tool-hello-world-real-silent.mp4).
 
 ## Hardware for the PCB V1 USB Tool demo
 
