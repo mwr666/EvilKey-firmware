@@ -40,6 +40,19 @@ Silent camera footage shows the home-printed prototype, its screensaver, touch n
 
 [Download the MP4 from this repository](docs/github/evilkey-usb-tool-hello-world-real-silent.mp4).
 
+## Hardware for the PCB V1 USB Tool demo
+
+| Quantity | Component |
+| --- | --- |
+| 1 | Waveshare ESP32-S3 Touch AMOLED 1.64, **PCB V1** |
+| 1 | Short data-capable USB-C cable/loop (Unitek C14179ABK-style in the prototype) |
+| 1 | Printed V1 enclosure (the current prototype is home printed) |
+| 4 | M2 × 5 mm screws for the module |
+| 1 | M5 × 10 mm flat-point grub screw for the cable loop |
+| 1 | **FAT32-formatted microSD card** for USB Tool scripts |
+
+The microSD card is needed to reproduce the `hello_world.duck` demo; FIDO2 and Air Mouse work without it. Copy the [public examples](https://github.com/mwr666/EvilKey-examples) `duckyscripts/` tree to the card root; the tested script is `/duckyscripts/test/hello_world.duck`. Card capacity is not specified. See the [Hackaday component list](https://hackaday.io/project/206807/components) and [build instructions](https://hackaday.io/project/206807/instructions).
+
 ## Device and interface
 
 <p align="center">
