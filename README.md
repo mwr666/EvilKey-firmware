@@ -30,6 +30,14 @@ This repository contains the device firmware, LVGL interface, generated upstream
 
 The silent Short shows the real home-printed prototype and its AMOLED touch interface, ending with an animated EvilKey logo. The separate interface panels below are code-derived previews; this footage does not show live PIN verification, cursor movement or script execution.
 
+## Watch Air Mouse on the real device
+
+<p align="center"><a href="https://youtube.com/shorts/b0x_XzGABB8"><img src="docs/github/evilkey-air-mouse-short-poster.png" alt="Watch EvilKey Air Mouse steer a real computer cursor" width="420"></a></p>
+
+[▶ Watch the Air Mouse Short](https://youtube.com/shorts/b0x_XzGABB8)
+
+On the PCB V1 prototype, I select the separate Air Mouse USB role and press **START**. Holding **MOVE** lets the QMI8658 motion sensor steer the computer cursor; releasing it stops movement. The touchscreen handles left and right clicks and scrolling. Holding **EXIT** returns to the normal security-key role. The key, cursor and touch sounds are real footage; the 3D logo and glitch at the end are the brand animation. FIDO2 and Air Mouse are separate USB roles.
+
 ## Watch USB Tool run a script
 
 <p align="center"><a href="https://youtube.com/shorts/k0a0o6s1Ayg"><img src="docs/github/evilkey-usb-tool-demo-poster.jpg" alt="Watch the real EvilKey USB Tool Short" width="420"></a></p>
