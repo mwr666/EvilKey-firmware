@@ -6,8 +6,19 @@
  */
 #include <Arduino.h>
 #include "src/PicoFidoArduino.h"
+#if defined(EVILKEY_APPS_LINK_PROBE)
+#include "src/apps/ek_vm.h"
+static volatile uintptr_t s_apps_probe_symbols[4];
+#endif
 
 void setup() {
+#if defined(EVILKEY_APPS_LINK_PROBE)
+  // Compile-only measurement: retain the VM entry points in the linked BIN.
+  s_apps_probe_symbols[0] = (uintptr_t)&ek_vm_open;
+  s_apps_probe_symbols[1] = (uintptr_t)&ek_vm_init;
+  s_apps_probe_symbols[2] = (uintptr_t)&ek_vm_step;
+  s_apps_probe_symbols[3] = (uintptr_t)&ek_vm_close;
+#endif
   // UART0, NOT native USB CDC. A serial monitor is not needed to start FIDO.
   Serial0.begin(115200);
   delay(50);

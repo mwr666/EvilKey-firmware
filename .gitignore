@@ -6,3 +6,6 @@ test-output/
 build-arduino/
 *.log
 *.tmp
+release/
+*.ekapp
+*.wasm

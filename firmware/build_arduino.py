@@ -8,7 +8,10 @@ import shutil
 import subprocess
 import sys
 ROOT=Path(__file__).resolve().parent
-argparse.ArgumentParser(description=__doc__).parse_args()
+parser=argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--apps-vm-link-probe',action='store_true',
+                    help='Link all Apps VM entry points to measure BIN size; compile only')
+args=parser.parse_args()
 if not (ROOT/'EvilKeyV1/src/engine_ready.h').is_file():
     raise SystemExit('Run python prepare_arduino.py first.')
 from prepare_arduino import validate_output
@@ -26,10 +29,15 @@ subprocess.run([sys.executable,str(ROOT/'tools/check_usb_stack.py'),'--require']
 fqbn=('esp32:esp32:waveshare_esp32_s3_touch_amoled_164:USBMode=default,'
       'CDCOnBoot=default,MSCOnBoot=default,DFUOnBoot=default,PSRAM=enabled,'
       'FlashMode=qio,PartitionScheme=app3M_fat9M_16MB,EraseFlash=none')
-out=ROOT/'build-arduino'
+out=ROOT/('build-arduino-apps-probe' if args.apps_vm_link_probe else 'build-arduino')
 try:
-    subprocess.run([cli,'compile','--fqbn',fqbn,'--build-path',str(out),
-                    '--warnings','default',str(ROOT/'EvilKeyV1')],check=True)
+    command=[cli,'compile','--fqbn',fqbn,'--build-path',str(out),
+             '--warnings','default']
+    if args.apps_vm_link_probe:
+        command.extend(['--build-property',
+                        'compiler.cpp.extra_flags=-DEVILKEY_APPS_LINK_PROBE'])
+    command.append(str(ROOT/'EvilKeyV1'))
+    subprocess.run(command,check=True)
 except subprocess.CalledProcessError as exc:
     raise SystemExit(exc.returncode)
 image=out/'EvilKeyV1.ino.bin'
@@ -45,6 +53,7 @@ build_info={
     'image_size':image.stat().st_size,
     'image_sha256':hashlib.sha256(image.read_bytes()).hexdigest(),
     'erase_flash':'none',
+    'apps_vm_link_probe':args.apps_vm_link_probe,
 }
 (out/'evilkey-build.json').write_text(
     json.dumps(build_info,indent=2)+'\n',encoding='utf-8')

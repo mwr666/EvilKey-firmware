@@ -1,3 +1,4 @@
+#include "../../pf_build_config.h"
 /* SPDX-License-Identifier: AGPL-3.0-or-later
  * LVGL 8.4 presentation layer for Waveshare ESP32-S3-Touch-AMOLED-1.64 V1.
  *
@@ -25,6 +26,8 @@
 #include "ws_pins.h"
 #include "ws_ui_layout.h"
 #include "ws_gui_theme.h"
+#include "../../apps/ek_service.h"
+#include "../../apps/ek_exit_dialog.h"
 #include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -65,7 +68,7 @@ static const char *TAG="ws_lvgl";
 #define ICON_PARTS_MAX 16U
 #define ICON_COUNT 10U
 #define SETTINGS_ROWS 2U
-#define SETTINGS_DOTS 9U
+#define SETTINGS_DOTS 10U
 
 typedef enum {
     HERO_KEY=0,
@@ -116,6 +119,13 @@ static lv_color_t *s_pixels_b;
 static uint32_t s_draw_pixels;
 static esp_err_t s_flush_error=ESP_OK;
 static bool s_ready;
+static uint16_t *s_apps_pixels;
+static uint32_t s_apps_frame;
+static lv_img_dsc_t s_apps_img={
+    .header={.cf=LV_IMG_CF_TRUE_COLOR,.always_zero=0,.reserved=0,
+             .w=EK_APPS_WIDTH,.h=EK_APPS_HEIGHT},
+    .data_size=EK_APPS_PIXELS*sizeof(uint16_t),.data=NULL
+};
 
 /* One current indexed frame per layer. These are LVGL image sources, not DMA
  * buffers. Prefer PSRAM so the validated internal DMA draw buffers retain
@@ -318,6 +328,11 @@ typedef struct {
     lv_obj_t *settings_footer;
     lv_obj_t *settings_return;
     lv_obj_t *settings_dot[SETTINGS_DOTS];
+    lv_obj_t *apps_group;
+    lv_obj_t *apps_image;
+    lv_obj_t *apps_exit_overlay;
+    lv_obj_t *apps_exit_no;
+    lv_obj_t *apps_exit_yes;
 
     lv_obj_t *air_mouse_group;
     lv_obj_t *air_mouse_move;
@@ -946,6 +961,34 @@ static void build_settings(void)
                                   LV_OPA_COVER,COL_FAINT,0,LV_OPA_TRANSP);
 }
 
+static void build_apps(void)
+{
+    ui.apps_group=group_at(ui.screen,0,0,WS_LCD_WIDTH,WS_LCD_HEIGHT);
+    if(s_apps_pixels) {
+        ui.apps_image=lv_img_create(ui.apps_group);
+        lv_img_set_src(ui.apps_image,&s_apps_img);
+        lv_obj_set_pos(ui.apps_image,0,0);
+    } else {
+        label(ui.apps_group,"App display memory unavailable",&lv_font_montserrat_18,
+              12,190,256,64);
+    }
+    ui.apps_exit_overlay=group_at(ui.apps_group,0,0,WS_LCD_WIDTH,WS_LCD_HEIGHT);
+    lv_obj_set_style_bg_color(ui.apps_exit_overlay,color(0x000000UL),0);
+    lv_obj_set_style_bg_opa(ui.apps_exit_overlay,(lv_opa_t)184,0);
+    lv_obj_t *dialog=card(ui.apps_exit_overlay,18,132,244,188,20);
+    set_card(dialog,COL_PANEL2,RGB24_DEFAULT,2);
+    label(dialog,"LEAVE APP?",&lv_font_montserrat_28,12,17,220,40);
+    label(dialog,"Are you sure?",&lv_font_montserrat_18,12,65,220,30);
+    ui.apps_exit_no=card(dialog,EK_EXIT_NO_X-18,EK_EXIT_Y-132,
+                         EK_EXIT_BUTTON_W,EK_EXIT_BUTTON_H,14);
+    ui.apps_exit_yes=card(dialog,EK_EXIT_YES_X-18,EK_EXIT_Y-132,
+                          EK_EXIT_BUTTON_W,EK_EXIT_BUTTON_H,14);
+    label(ui.apps_exit_no,"NO",&lv_font_montserrat_20,4,16,90,30);
+    label(ui.apps_exit_yes,"YES",&lv_font_montserrat_20,4,16,90,30);
+    hidden(ui.apps_exit_overlay,true);
+    hidden(ui.apps_group,true);
+}
+
 static void build_air_mouse(void)
 {
     ui.air_mouse_group=group_at(ui.screen,0,0,WS_LCD_WIDTH,WS_LCD_HEIGHT);
@@ -1235,6 +1278,13 @@ esp_err_t ws_lvgl_init(void)
     build_settings();
     build_air_mouse();
     build_pin();
+    s_apps_pixels=(uint16_t *)heap_caps_malloc(EK_APPS_PIXELS*sizeof(uint16_t),
+                                                MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    if(s_apps_pixels) {
+        memset(s_apps_pixels,0,EK_APPS_PIXELS*sizeof(uint16_t));
+        s_apps_img.data=(const uint8_t *)s_apps_pixels;
+    }
+    build_apps();
     for(unsigned i=0;i<3;++i) hidden(ui.progress_dot[i],true);
     hidden(ui.result_flare,true);
     hidden(ui.screensaver_group,true);
@@ -1582,6 +1632,7 @@ static const char *settings_default_subtitle(uint8_t page)
     case WS_SETTINGS_PAGE_USB:return "USB Mass Storage / microSD";
     case WS_SETTINGS_PAGE_USB_TOOL:return "HID automation / DuckyScript";
     case WS_SETTINGS_PAGE_DIAGNOSTICS:return "Display and memory";
+    case WS_SETTINGS_PAGE_APPS:return "microSD bytecode apps";
     case WS_SETTINGS_PAGE_HOME:
     default:return "SWIPE UP / DOWN";
     }
@@ -1634,6 +1685,7 @@ static void update_settings(const ws_ui_snapshot_t *v,uint32_t accent)
     case WS_SETTINGS_PAGE_USB:title="USB & STORAGE";break;
     case WS_SETTINGS_PAGE_USB_TOOL:title="USB TOOL";break;
     case WS_SETTINGS_PAGE_DIAGNOSTICS:title="DIAGNOSTICS";break;
+    case WS_SETTINGS_PAGE_APPS:title="APPS";break;
     case WS_SETTINGS_PAGE_HOME:
     default:break;
     }
@@ -1649,6 +1701,10 @@ static void update_settings(const ws_ui_snapshot_t *v,uint32_t accent)
     else if(v->settings_feedback==WS_SETTINGS_FEEDBACK_PIN_CANCELLED) { sub="Write access cancelled";sub_col=COL_MUTED; }
     else if(v->settings_feedback==WS_SETTINGS_FEEDBACK_PIN_TIMEOUT) { sub="PIN timeout - still READ ONLY";sub_col=COL_WARN; }
     else if(v->settings_feedback==WS_SETTINGS_FEEDBACK_ERROR) { sub="Could not save";sub_col=COL_BAD; }
+    if(page==WS_SETTINGS_PAGE_APPS) {
+        sub=v->apps_status[0]?v->apps_status:"Apps worker unavailable";
+        sub_col=v->apps_mounted?accent:COL_MUTED;
+    }
 
     set_text(ui.settings_title,title,COL_TEXT);
     set_text(ui.settings_subtitle,sub,sub_col);
@@ -1798,6 +1854,19 @@ static void update_settings(const ws_ui_snapshot_t *v,uint32_t accent)
         set_text(ui.diagnostics_title,"DRAW BUFFER",COL_MUTED);
         break;
     }
+    case WS_SETTINGS_PAGE_APPS:
+        snprintf(value,sizeof(value),"microSD %u/%u",
+                 v->apps_count?(unsigned)v->apps_selected+1U:0U,
+                 (unsigned)v->apps_count);
+        settings_row_set(&ui.settings_row[0],value,
+            v->apps_id[0]?v->apps_id:"No packages",false,
+            settings_pressed(v,WS_SETTINGS_ACTION_APPS_PREV),
+            settings_pressed(v,WS_SETTINGS_ACTION_APPS_NEXT),false,accent);
+        lv_obj_set_style_text_font(ui.settings_row[0].value_label,&lv_font_montserrat_14,0);
+        settings_row_set(&ui.settings_row[1],"Run from card",
+            v->apps_count?"RUN":"NO APPS",true,false,false,
+            settings_pressed(v,WS_SETTINGS_ACTION_APPS_RUN),accent);
+        break;
     case WS_SETTINGS_PAGE_HOME:
     default:
         break;
@@ -2040,13 +2109,14 @@ static void main_state(const ws_ui_snapshot_t *v,uint32_t accent)
         hidden(ui.approve,true);
         hidden(ui.cancel,true);
 
-        /* R15 keeps authentication/result screens visually isolated. Settings
-         * navigation exists only on READY/STANDBY; write-enable PIN is modal. */
+        /* Authentication/result screens stay visually isolated. Settings
+         * navigation is available in idle states; write-enable PIN is modal. */
         const bool idle=ws_ui_settings_allowed(v->state);
         hidden(ui.usb,!idle);
         hidden(ui.settings_swipe,!idle);
         if(idle) {
-            set_text(ui.usb,"USB connected",v->state==WS_UI_SUSPENDED?COL_MUTED:accent);
+            set_text(ui.usb,v->state==WS_UI_DISCONNECTED?"USB data unavailable":"USB connected",
+                v->state==WS_UI_READY?accent:COL_MUTED);
             lv_obj_set_pos(ui.usb,8,382);
             set_text(ui.settings_swipe,"SETTINGS  <  SWIPE  >  SAVER",COL_FAINT);
             lv_obj_set_style_text_align(ui.settings_swipe,LV_TEXT_ALIGN_CENTER,0);
@@ -2202,7 +2272,11 @@ static bool settings_content_changed(const ws_ui_snapshot_t *a,const ws_ui_snaps
         strcmp(a->usb_tool_language_name,b->usb_tool_language_name)!=0 ||
         a->usb_tool_restarting!=b->usb_tool_restarting ||
         a->air_mouse_available!=b->air_mouse_available ||
-        a->air_mouse_restarting!=b->air_mouse_restarting;
+        a->air_mouse_restarting!=b->air_mouse_restarting ||
+        a->apps_ready!=b->apps_ready || a->apps_mounted!=b->apps_mounted ||
+        a->apps_running!=b->apps_running || a->apps_count!=b->apps_count ||
+        a->apps_selected!=b->apps_selected ||
+        strcmp(a->apps_id,b->apps_id)!=0 || strcmp(a->apps_status,b->apps_status)!=0;
 }
 
 static void update_air_mouse(const ws_ui_snapshot_t *v,uint32_t accent)
@@ -2285,7 +2359,35 @@ esp_err_t ws_lvgl_render(const ws_ui_snapshot_t *v)
     const bool first=!s_last_view_valid;
     const bool was_pin=s_last_view_valid && s_last_view.state==WS_UI_PIN;
 
-    if(v->air_mouse_active) {
+    const bool app_visible=v->apps_running && ws_ui_settings_allowed(v->state) &&
+        v->settings_page==WS_SETTINGS_PAGE_APPS && v->settings_transition==255U;
+    hidden(ui.apps_group,!app_visible);
+    if(app_visible) {
+        hidden(ui.apps_exit_overlay,!v->apps_exit_confirm);
+        if(v->apps_exit_confirm) {
+            set_card_flat(ui.apps_exit_no,
+                v->apps_exit_pressed==EK_EXIT_BUTTON_NO?accent:COL_PANEL,
+                v->apps_exit_pressed==EK_EXIT_BUTTON_NO?accent:COL_BORDER,2);
+            set_card_flat(ui.apps_exit_yes,
+                v->apps_exit_pressed==EK_EXIT_BUTTON_YES?COL_BAD:COL_BAD_DIM,
+                COL_BAD,2);
+        }
+        hidden(ui.air_mouse_group,true);
+        hidden(ui.air_mouse_settings_group,true);
+        hidden(ui.pin_group,true);
+        hidden(ui.main_group,true);
+        hidden(ui.settings_group,true);
+        hidden(ui.screensaver_group,true);
+        if(s_apps_pixels && ui.apps_image &&
+           ek_apps_copy_frame(s_apps_pixels,EK_APPS_PIXELS,&s_apps_frame)) {
+            for(size_t i=0;i<EK_APPS_PIXELS;++i) {
+                uint16_t c=s_apps_pixels[i];
+                s_apps_pixels[i]=(uint16_t)((c<<8)|(c>>8));
+            }
+            lv_img_cache_invalidate_src(&s_apps_img);
+            lv_obj_invalidate(ui.apps_image);
+        }
+    } else if(v->air_mouse_active) {
         hidden(ui.air_mouse_group,v->air_mouse_settings_open);
         hidden(ui.air_mouse_settings_group,!v->air_mouse_settings_open);
         hidden(ui.pin_group,true);

@@ -1,7 +1,12 @@
 .cache/
+PicoFidoV1/src/engine/
+PicoFidoV1/src/engine_ready.h
+PicoFidoV1/GENERATED_MANIFEST.json
+PicoFidoV1/data/upstream-licenses/
 __pycache__/
 *.pyc
 test-output/
 build-arduino/
+build-arduino-apps-probe/
 
 .venv*/

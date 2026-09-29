@@ -16,7 +16,7 @@
 
 # EvilKey firmware
 
-EvilKey is FIDO2 firmware for the **Waveshare ESP32-S3 Touch AMOLED 1.64, PCB V1**. Its touch GUI includes a local PIN keypad for compatible built-in user verification requests, an IMU-powered Air Mouse, diagnostics, USB storage controls and a deliberately activated USB Tool. Standard host-side ClientPIN remains supported. [On-device PIN details](docs/ON_DEVICE_PIN.md) explain the scope and validation limits.
+EvilKey 0.4.0 is FIDO2 firmware for the **Waveshare ESP32-S3 Touch AMOLED 1.64, PCB V1**. Its touch GUI includes a local PIN keypad for compatible built-in user verification requests, an IMU-powered Air Mouse, diagnostics, USB storage controls, a deliberately activated USB Tool, and Apps loaded from microSD. Standard host-side ClientPIN remains supported. [On-device PIN details](docs/ON_DEVICE_PIN.md) explain the scope and validation limits.
 
 This repository contains the device firmware, LVGL interface, generated upstream source, preparation tools, source notices and installation instructions. It does not contain the separately licensed Manager or microSD examples.
 
@@ -108,6 +108,20 @@ The following panels are stills from a code-derived interface preview. They show
 </p>
 
 Only one USB role is active at a time. Switching roles is an explicit action on the key.
+
+## Apps from microSD
+
+Apps are separate `.ekapp` bytecode files in `/evilkey/apps/` on a FAT microSD
+card. In the normal FIDO USB role, open **Settings → Apps**, choose an app and
+press **RUN**. Swipe right while an app runs to open the firmware's shared
+**Yes/No** exit confirmation. Replacing or removing an app is done by changing
+its file on the card; the firmware does not install it or write to NVS for Apps.
+
+The [public ABI v3 specification](apps/ABI_V3.md) and [MIT SDK](apps/sdk/README.md)
+describe the format and device interface. This repository contains the
+interpreter and SDK, without any separately licensed application source or
+app package. The firmware verifies a package's structure and digest before
+launch; that digest detects corruption but does not authenticate its author.
 
 ## Build and install
 

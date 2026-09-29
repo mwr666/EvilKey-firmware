@@ -119,6 +119,14 @@ static volatile uint8_t s_descriptor_attackmode=1U;
 static bool s_descriptor_tool_role;
 static bool s_descriptor_manager_drive;
 static bool s_descriptor_air_mouse_role;
+static bool s_descriptor_ready;
+
+/* Apps may own the card only in the plain FIDO descriptor role. In all MSC
+ * roles the host or USB Tool owns the same physical microSD medium. */
+extern "C" bool pf_apps_storage_role_allowed(void) {
+    return s_descriptor_ready && !s_descriptor_tool_role &&
+           !s_descriptor_manager_drive && !s_descriptor_air_mouse_role;
+}
 
 static const uint8_t s_config_air_mouse_hid[] = {
     TUD_CONFIG_DESCRIPTOR(1,1,0,PF_USB_HID_CONFIG_LEN,0,500),
@@ -798,7 +806,8 @@ extern "C" bool pf_arduino_usb_start(void) {
     USB.usbAttributes(0x80); // Bus powered; no remote-wakeup claim.
     USB.webUSB(false);
     USB.onEvent(usb_event);
-    return USB.begin();
+    s_descriptor_ready=USB.begin();
+    return s_descriptor_ready;
 }
 
 bool PicoFidoArduinoClass::begin() {

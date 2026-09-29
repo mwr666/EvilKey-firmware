@@ -50,7 +50,7 @@ if handler.find("if (pf_air_mouse_role()) return;") < 0 or handler.find("if (pf_
 ui = read(port / "ws_ui.h")
 require(ui, "WS_SETTINGS_PAGE_DIAGNOSTICS = 5", "WS_SETTINGS_PAGE_AIR_MOUSE = 6",
         "WS_SETTINGS_PAGE_USB = 7", "WS_SETTINGS_PAGE_USB_TOOL = 8",
-        "WS_SETTINGS_PAGE_COUNT = 9")
+        "WS_SETTINGS_PAGE_COUNT = 10")
 layout = read(port / "ws_ui_layout.h")
 rects = []
 rect_by_name = {}

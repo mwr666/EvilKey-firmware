@@ -10,7 +10,7 @@ typedef enum {
     WS_UI_TIMEOUT, WS_UI_SUSPENDED, WS_UI_PIN, WS_UI_PIN_BAD, WS_UI_PIN_BLOCKED, WS_UI_INPUT_ERROR
 } ws_ui_state_t;
 
-/* READY/STANDBY settings navigation is gesture-only in R15.  Keep the
+/* Idle-state settings navigation is gesture-only in R15.  Keep the
  * idle action type for ABI/source compatibility, but there is no tappable
  * settings target on the idle screens. */
 typedef enum {
@@ -28,7 +28,8 @@ typedef enum {
     WS_SETTINGS_PAGE_AIR_MOUSE = 6,
     WS_SETTINGS_PAGE_USB = 7,
     WS_SETTINGS_PAGE_USB_TOOL = 8,
-    WS_SETTINGS_PAGE_COUNT = 9
+    WS_SETTINGS_PAGE_APPS = 9,
+    WS_SETTINGS_PAGE_COUNT = 10
 } ws_settings_page_t;
 
 /* Presentation/control actions for the non-authentication Settings screen.
@@ -59,7 +60,10 @@ typedef enum {
     WS_SETTINGS_ACTION_USB_LAYOUT_PREV,
     WS_SETTINGS_ACTION_USB_LAYOUT_NEXT,
     WS_SETTINGS_ACTION_DIAGNOSTICS_TOGGLE,
-    WS_SETTINGS_ACTION_AIR_MOUSE_START
+    WS_SETTINGS_ACTION_AIR_MOUSE_START,
+    WS_SETTINGS_ACTION_APPS_PREV,
+    WS_SETTINGS_ACTION_APPS_NEXT,
+    WS_SETTINGS_ACTION_APPS_RUN
 } ws_settings_action_t;
 
 typedef enum {
@@ -108,8 +112,8 @@ typedef struct {
      * idle screen, 255 means Settings fully visible.  settings_page_offset is
      * a presentation-only vertical slide of the newly selected settings page. */
     /* Full-screen logo screensaver is presentation-only and reachable from
-     * READY/STANDBY. Transition is 0..255; motion uses a separate 1024-step
-     * loop so every ring closes on a whole revolution without a visible jump. */
+     * idle states, including USB disconnected. Transition is 0..255; motion
+     * uses a separate 1024-step loop so every ring closes without a jump. */
     uint8_t screensaver_transition;
     uint16_t screensaver_phase;
     /* R25: text fade starts when the saver is opened instead of following the
@@ -179,6 +183,13 @@ typedef struct {
     char usb_tool_script_name[80];
     char usb_tool_language_name[28];
     char usb_tool_status_text[64];
+    /* Apps are presentation-only. They cannot authorize FIDO operations. */
+    bool apps_ready,apps_mounted,apps_running,apps_exit_confirm;
+    uint8_t apps_exit_pressed;
+    uint8_t apps_count,apps_selected;
+    uint32_t apps_frame;
+    char apps_id[32];
+    char apps_status[80];
 } ws_ui_snapshot_t;
 
 ws_action_t ws_ui_hit_test(uint16_t x, uint16_t y);

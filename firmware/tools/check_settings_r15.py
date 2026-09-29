@@ -15,13 +15,13 @@ def main():
            'WS_SETTINGS_PAGE_APPEARANCE','WS_SETTINGS_PAGE_POWER','WS_SETTINGS_PAGE_AUTH',
            'WS_SETTINGS_PAGE_DIAGNOSTICS = 5','WS_SETTINGS_PAGE_AIR_MOUSE = 6',
            'WS_SETTINGS_PAGE_USB = 7','WS_SETTINGS_PAGE_USB_TOOL = 8',
-           'WS_SETTINGS_PAGE_COUNT = 9','settings_page_offset')
+           'WS_SETTINGS_PAGE_COUNT = 10','settings_page_offset')
     ui=need(PORT/'ws_ui.c','return WS_IDLE_ACTION_NONE;','for(int row=0;row<2;++row)',
             'WS_SETTINGS_PAGE_DISPLAY','WS_SETTINGS_PAGE_USB')
     layout=need(PORT/'ws_ui_layout.h','#define WS_SETTINGS_ROW_H 112',
                 '#define WS_SETTINGS_CONTROL_H 52','#define WS_SETTINGS_WIDE_W 240',
                 '#define WS_SETTINGS_SWIPE_Y 48')
-    lv=need(PORT/'ws_lvgl.c','#define SETTINGS_ROWS 2U','#define SETTINGS_DOTS 9U',
+    lv=need(PORT/'ws_lvgl.c','#define SETTINGS_ROWS 2U','#define SETTINGS_DOTS 10U',
             'build_gear_icon(&ui.settings_gear,120)',
             '"SETTINGS  <  SWIPE  >  SAVER"','"SWIPE UP / DOWN"',
             '"DISPLAY"','"APPEARANCE"','"SCREEN POWER"','"FIDO TIMING"','"USB & STORAGE"','"USB TOOL"',
@@ -40,7 +40,7 @@ def main():
                'pf_uv_unlock_and_migrate_pin(', 'upgraded[2]=1')
     need(FW/'tests/release_026/test_gui_ui1.c','no hidden/tappable Settings icon','eight Settings screens')
     need(FW/'tests/release_026/test_board_ui1.c','PASS board R15','open_usb_settings()')
-    print('PASS: swipe-only Settings landing screen + nine-page vertical navigation')
+    print('PASS: swipe-only Settings landing screen + ten-page vertical navigation')
     print('PASS: R15 large controls and no READY/STANDBY tappable gear')
     print('PASS: R19 motion tuning keeps the R15 Settings model while shortening travel and increasing cadence')
     print('PASS: R16 local PIN readiness is host-independent; R15 legacy migration remains')

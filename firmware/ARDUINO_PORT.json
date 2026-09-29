@@ -1,9 +1,9 @@
 {
-  "port_version": "0.3.0",
+  "port_version": "0.4.0",
   "target": "Arduino IDE 2.x / Arduino-ESP32 3.3.12 recommended (3.3.11 supported)",
   "board": "Waveshare ESP32-S3-Touch-AMOLED-1.64 PCB V1",
   "usb": "native USB-OTG: FIDO CTAP HID OR explicit-run USB Tool HID; optional microSD MSC Manager Drive is a separate mutually-exclusive profile",
-  "status": "EvilKey 0.3.0 flashed to COM5 and upload verified; user confirmed final-image Air Mouse and FIDO smoke test",
+  "status": "EvilKey 0.4.0 standalone public-source BIN SHA-256 4903b8c9b095caa86196c292c85afb00441742257b8ad9e8966eed663eaf7633 uploaded to COM5 app partition and write verified; owner confirmed app operation and existing credentials available after reboot",
   "dependencies": {
     "pico-fido": "fc7c60e9b45338fe815a43bb228d234322e48d97",
     "pico-keys-sdk": "507ac45956b7f1c763bb5e88a6411438093d10c7",
@@ -27,7 +27,7 @@
     "language": "English",
     "security_boundary": "LVGL presentation only; UP/UV decisions remain in state machines; R13 borrows the existing pinpad only for the narrow local READ ONLY -> READ/WRITE authorization",
     "extra_full_framebuffer": false,
-    "visual_style": "EvilKey dark and mint UI; shared 3D screensaver and nine-page Settings with Diagnostics and Air Mouse",
+    "visual_style": "EvilKey dark and mint UI; shared 3D screensaver and ten-page Settings with Apps, Diagnostics and Air Mouse",
     "lvgl_heap_bytes": 65536,
     "native_graphics": "LVGL alpha-mask logo plus lines/circles/cards for spinner, touch, check, cross, clock, lock, moon, warning, USB and backspace",
     "fonts": "Montserrat 14/18/20/28/34",
@@ -38,15 +38,15 @@
     "lvgl_heap_memory": "64 KiB TLSF pool in PSRAM via LV_MEM_POOL_ALLOC",
     "flush": "R22 zero-copy asynchronous esp_lcd DMA; LV_COLOR_16_SWAP=1; lv_disp_flush_ready on color-transfer completion",
     "psram_hot_path": false,
-    "settings_pages": 9
+    "settings_pages": 10
   },
-  "package_revision": "0.3.0",
+  "package_revision": "0.4.0",
   "packaging_fix": "R14_ARDUINO_3_3_12; R17_ARDUINO_STAGEABLE_LOCAL_UV_HEADER; R18_SCOPED_SETTINGS_PIN_CANCEL; R22_ASYNC_DOUBLE_BUFFER_ZERO_COPY; R26_USB_TOOL; R27_HAK5_COMPAT_FONT_FIX; R28_DYNAMIC_PAYLOAD_INDEX_PSRAM_FALLBACK; R34_TINYUSB_HOST_FINGERPRINT_S2",
   "manager_drive": {
     "compiled": true,
     "default_enabled": false,
     "read_only": false,
-    "toggle_surface": "SETTINGS -> USB & STORAGE from READY/STANDBY only",
+    "toggle_surface": "SETTINGS -> USB & STORAGE from idle states, including USB disconnected",
     "toggle_requires_restart": true,
     "sd_bus": "SPI/HSPI",
     "sd_pins": {

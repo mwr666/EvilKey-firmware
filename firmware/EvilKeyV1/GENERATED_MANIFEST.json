@@ -1,6 +1,6 @@
 {
   "profile": "arduino-v1-development",
-  "port_version": "0.3.0",
+  "port_version": "0.4.0",
   "arduino_core": "3.3.12-recommended;3.3.11-supported",
   "revisions": {
     "fido": "fc7c60e9b45338fe815a43bb228d234322e48d97",
@@ -13,14 +13,14 @@
   "translation_units": 369,
   "generated_sha256": {
     "board/local_uv_binding.h": "a53a31b0b29c60a8e970de453d10fbe436cf29b5a82303181f40b30cfdefc6ea",
-    "board/ws_board.c": "2e350d3844503626691b2b7c1921e846990acd5f384db521cd0c56ec416f774c",
+    "board/ws_board.c": "44ffe43d955399a55c67340eab73fe1b62d7d56ef011086e8f3ee36273751098",
     "board/ws_board.h": "58faed1f1f48c42917bd35370ad0cb5474c56d7f7e8a3a5fe9a4b13af58cf31b",
     "board/ws_crypto_port.c": "a1d08047d27ae3041bb5464d8bb0b801f359476c2bf1d98db34fbb1703a3e280",
     "board/ws_gui_assets.h": "9c45ca781118954569dc0260132be1bc5c87e234cc2bfa1e66a5c9a3ea59cc7b",
     "board/ws_gui_theme.h": "5e7f0f756ba74237fe96c957a922c83d32791e93f0e953a310fbd8a054c6d06d",
     "board/ws_local_uv.h": "f3fd4b3d55a26cd8ae00c61b7c5f875193641fe90d4332678a56edc2235dbbe9",
     "board/ws_logo_assets.h": "de69ca74f5edd6539ee3c7da1eb71676f8dd270df7432c88fe652cc9ee1a6643",
-    "board/ws_lvgl.c": "d23784acc94c24ae891cb519929eaabcd4173c61bfeb1ffa205e01881ef7c8a8",
+    "board/ws_lvgl.c": "60868307aa19a9577224da957e7bae512a2acff4a6b4de447eeedab0472853f7",
     "board/ws_lvgl.h": "5e2b339bfaff03f3415f7fd473eee69d39aabb8c3f7f8b5356784458eeb89796",
     "board/ws_manager_config.h": "b03bf4db9f4140090aae0b508a2028d0fbcaf6fd1cdab6126c52ea45b575194c",
     "board/ws_manager_drive_state.c": "2a424aa160c179bd325dd564ee8d0b26e515b4420ed255b97efc2ee9662ae3c4",
@@ -36,8 +36,8 @@
     "board/ws_settings.h": "9e3b20b5c635232a46323f926a2d9cd188e4ffcbd98e8bd5839f5701d5135b0e",
     "board/ws_settings_codec.c": "2d4847d1102c0bd128800d7c4e3a37f1c1af4564865e46fd769c8cf9ce48b707",
     "board/ws_settings_store.c": "57ae0af90a0f54cb5850eb44956823bede3b56e50c5b51619b5c63fa458759a7",
-    "board/ws_ui.c": "504a1d2f2d6601fda1c771e074214ef5fff87a5ee8b7e806a3c9f7603f2be245",
-    "board/ws_ui.h": "45b7dc72f4c18cc7fc758c8eab84904ff1cf42d9cbecf29622ab61c9bf67d442",
+    "board/ws_ui.c": "71d02271ccf3c60dfe2d9f8410d5d44e8069d786737a662104f8fb84768bccd8",
+    "board/ws_ui.h": "397087f9b90ec541cf5fec53ff2489ef0824915324f3696cb2876a50791ce587",
     "board/ws_ui_layout.h": "58744ebaf6d897b24b4134bb54cb13f222e6eaf343eef6aee19ab6953d131dfb",
     "board/ws_usb_tool_state.c": "94dd995f1a9e8cbfe3a0f998a345f1a798b8edbba834f9c76ceb9fa25b9d23ec",
     "board/ws_usb_tool_state.h": "d6b89faadff697f14e8826790801c2aa5fc4f63c840df1fd0b09339ecfa62982",
@@ -850,7 +850,7 @@
     "CRYSTAL_SCREENSAVER_R37",
     "CRYSTAL_CONTRAST_R38"
   ],
-  "package_revision": "R38_HIGH_CONTRAST_CRYSTAL",
+  "package_revision": "EVILKEY_0_4_0_APPS_ABI_V2",
   "external_usbd_stack_bytes_required": 16384,
   "validation": "source-generation checks only; not a hardware certification"
 }

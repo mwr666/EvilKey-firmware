@@ -33,6 +33,8 @@
 #include "ws_pins.h"
 #include "ws_ui.h"
 #include "ws_ui_layout.h"
+#include "../../apps/ek_service.h"
+#include "../../apps/ek_exit_dialog.h"
 #include "ws_pinpad.h"
 #include "ws_local_uv.h"
 #include "ws_uv_retries.h"
@@ -98,6 +100,7 @@ static uint16_t s_touch_x,s_touch_y;
  * the FIDO presence state or a FIDO UV/token session. */
 static bool s_settings_open;
 static bool s_settings_touch_was_down;
+static EkExitDialog s_app_exit_dialog;
 static uint8_t s_settings_page;
 static uint8_t s_settings_transition;
 static uint8_t s_settings_transition_from;
@@ -478,6 +481,9 @@ static bool settings_apply_action(ws_settings_action_t action,ws_settings_t *set
             ESP_LOGI(TAG,"Air Mouse requested; restarting into mouse-only USB role");
         } else settings_feedback(WS_SETTINGS_FEEDBACK_ERROR,now);
         return false;
+    case WS_SETTINGS_ACTION_APPS_PREV:ek_apps_request(EK_APPS_PREV);return false;
+    case WS_SETTINGS_ACTION_APPS_NEXT:ek_apps_request(EK_APPS_NEXT);return false;
+    case WS_SETTINGS_ACTION_APPS_RUN:ek_apps_request(EK_APPS_RUN);return false;
     case WS_SETTINGS_ACTION_BRIGHTNESS_MINUS:
         next.brightness=(uint8_t)(next.brightness<=20U?8U:next.brightness-13U);
         if(next.dim_brightness>next.brightness)next.dim_brightness=next.brightness;
@@ -1009,7 +1015,14 @@ static bool view_content_changed(const ws_ui_snapshot_t *a,const ws_ui_snapshot_
         a->manager_drive_storage_ok!=b->manager_drive_storage_ok ||
         a->manager_drive_read_only!=b->manager_drive_read_only ||
         a->manager_drive_pressed!=b->manager_drive_pressed ||
-        a->manager_drive_restarting!=b->manager_drive_restarting;
+        a->manager_drive_restarting!=b->manager_drive_restarting ||
+        a->apps_ready!=b->apps_ready || a->apps_mounted!=b->apps_mounted ||
+        a->apps_running!=b->apps_running ||
+        a->apps_exit_confirm!=b->apps_exit_confirm ||
+        a->apps_exit_pressed!=b->apps_exit_pressed ||
+        a->apps_count!=b->apps_count ||
+        a->apps_selected!=b->apps_selected || a->apps_frame!=b->apps_frame ||
+        strcmp(a->apps_id,b->apps_id)!=0 || strcmp(a->apps_status,b->apps_status)!=0;
 }
 
 /* Sole owner of panel I/O. The small step is also exercised by host tests.
@@ -1102,6 +1115,7 @@ void ws_board_init(void)
     s_display_bright=false;
     memset(&s_view,0,sizeof(s_view));
     s_view.state=WS_UI_DISCONNECTED;
+    if(!ek_apps_start()) ESP_LOGW(TAG,"Apps worker unavailable; FIDO remains available");
     ESP_LOGW(TAG,"DEVELOPMENT ONLY: keys in unencrypted NVS, no eFuse programming");
 #ifdef CONFIG_WS_V1_DISPLAY
     esp_err_t err=ws_panel_init();
@@ -1326,9 +1340,9 @@ void ws_board_poll(void)
             ws_screen_power_wake(&s_screen,now);
         } else v.state=WS_UI_READY;
     }
-    /* R21 Settings and the logo screensaver are reachable only from
-     * READY/STANDBY. Any authentication/processing/result state evicts both
-     * immediately so presentation can never obscure a security prompt. */
+    /* Settings and the logo screensaver are reachable from idle states,
+     * including USB disconnected. Authentication, processing and result states
+     * evict both immediately so presentation cannot obscure a security prompt. */
     bool settings_idle_state=ws_ui_settings_allowed(v.state);
     if(!settings_idle_state) {
         settings_force_closed();
@@ -1338,6 +1352,11 @@ void ws_board_poll(void)
         screensaver_transition_tick(now);
         settings_page_tick(now);
     }
+    const bool apps_visible=settings_idle_state && s_settings_transition==255U &&
+        s_settings_page==WS_SETTINGS_PAGE_APPS && s_screensaver_transition==0U;
+    ek_apps_set_visible(apps_visible);
+    EkAppsState apps;
+    ek_apps_snapshot(&apps);
 
     if(s_settings_feedback!=WS_SETTINGS_FEEDBACK_NONE &&
        (uint32_t)(now-s_settings_feedback_at)>=WS_SETTINGS_FEEDBACK_MS)
@@ -1349,7 +1368,18 @@ void ws_board_poll(void)
         (s_settings_transition==0U || s_settings_transition==255U) &&
         (s_screensaver_transition==0U || s_screensaver_transition==255U) &&
         s_settings_page_offset==0;
-    if(settings_fresh_touch && idle_nav_stable) {
+    if(apps_visible && apps.running) {
+        EkExitEvent exit_event=ek_exit_dialog_touch(&s_app_exit_dialog,
+            settings_fresh_touch,s_touch.down,s_touch_x,s_touch_y);
+        if(exit_event==EK_EXIT_EVENT_CONFIRM) ek_apps_request(EK_APPS_STOP);
+        ek_apps_set_modal(s_app_exit_dialog.visible);
+        if(!s_app_exit_dialog.visible && exit_event!=EK_EXIT_EVENT_CONFIRM &&
+           settings_fresh_touch && s_touch.down)
+            ek_apps_touch(s_touch_x,s_touch_y,true);
+        else ek_apps_touch(-1,-1,false);
+        if(settings_fresh_touch && s_touch.down) ws_screen_power_wake(&s_screen,now);
+        s_settings_touch_was_down=false;
+    } else if(settings_fresh_touch && idle_nav_stable) {
         if(s_touch.down) {
             if(!s_settings_touch_was_down) {
                 s_settings_start_x=s_settings_last_x=s_touch_x;
@@ -1449,6 +1479,11 @@ void ws_board_poll(void)
         s_settings_touch_was_down=false;
         s_settings_touch_action=0U;
     }
+    if(!apps_visible || !apps.running) {
+        ek_apps_touch(-1,-1,false);
+        ek_apps_set_modal(false);
+        ek_exit_dialog_reset(&s_app_exit_dialog);
+    }
 
     /* Re-read after local commits so the same rendered frame reflects the
      * persisted revision/value rather than the pre-tap snapshot. */
@@ -1463,6 +1498,13 @@ void ws_board_poll(void)
     v.settings_transition=s_settings_transition;v.settings_page=s_settings_page;
     v.settings_page_offset=s_settings_page_offset;
     v.settings_open=s_settings_open;v.settings_feedback=s_settings_feedback;
+    ek_apps_snapshot(&apps);
+    v.apps_ready=apps.ready;v.apps_mounted=apps.mounted;v.apps_running=apps.running;
+    v.apps_exit_confirm=s_app_exit_dialog.visible;
+    v.apps_exit_pressed=(uint8_t)s_app_exit_dialog.pressed;
+    v.apps_count=apps.count;v.apps_selected=apps.selected;v.apps_frame=apps.frame;
+    memcpy(v.apps_id,apps.id,sizeof(v.apps_id));
+    memcpy(v.apps_status,apps.status,sizeof(v.apps_status));
     v.air_mouse_available=s_air_mouse_sensor_ok && s_touch_available &&
         !ws_usb_tool_enabled() && !ws_manager_drive_enabled();
     v.air_mouse_restarting=s_air_mouse_restart_pending;

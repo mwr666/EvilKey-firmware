@@ -96,12 +96,12 @@ static void test_usb_tool_hit_map(void)
 static void test_settings_allowed_states(void)
 {
     for(int state=0;state<=WS_UI_INPUT_ERROR;++state) {
-        bool expected=state==WS_UI_READY || state==WS_UI_SUSPENDED;
+        bool expected=state==WS_UI_DISCONNECTED || state==WS_UI_READY || state==WS_UI_SUSPENDED;
         assert(ws_ui_settings_allowed((ws_ui_state_t)state)==expected);
         assert(ws_ui_manager_drive_allowed((ws_ui_state_t)state)==expected);
     }
     assert(!ws_ui_settings_allowed((ws_ui_state_t)999));
-    puts("PASS: Settings and MSC configuration remain restricted to READY and STANDBY");
+    puts("PASS: idle UI works without USB enumeration while security states stay locked");
 }
 
 static void test_snapshot_no_pin_plaintext(void)

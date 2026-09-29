@@ -1,5 +1,21 @@
 # Firmware changelog
 
+## 0.4.0 — 2026-09-30
+
+- Added an Apps interpreter for separate `.ekapp` bytecode packages on microSD.
+  ABI v3 takes touch coordinates and reads validated drawing commands from
+  Wasm memory without guest imports. The firmware provides a shared exit
+  confirmation for every app.
+- Require package header revision 2 with owner, license, version, ABI and
+  digest metadata. The loader rejects earlier revisions and does not write to
+  microSD, NVS or FIDO credential partitions while launching apps.
+- Kept Apps, Settings and the screensaver accessible when USB supplies power
+  without a host connection.
+- The owner reported successful firmware and app use on physical hardware.
+  The public-source BIN SHA-256 recorded in `VALIDATION.md` was uploaded to
+  the app partition and its written data verified. The owner confirmed that
+  the app worked and existing credentials remained available after reboot.
+
 ## 0.3.0 — 2026-09-25
 
 - Added a mouse-only USB HID role using QMI8658C tilt and touchscreen click/scroll controls.

@@ -24,7 +24,7 @@ def main():
         'WS_SETTINGS_ACTION_MANAGER_DRIVE_TOGGLE',
         'WS_SETTINGS_ACTION_MANAGER_RO_TOGGLE',
         'return WS_IDLE_ACTION_NONE;',
-        'return state==WS_UI_READY || state==WS_UI_SUSPENDED;')
+        'return state==WS_UI_DISCONNECTED || state==WS_UI_READY || state==WS_UI_SUSPENDED;')
     if 'WS_IDLE_ACTION_SETTINGS' in ui:
         raise SystemExit('FAIL: READY/STANDBY still exposes a tappable Settings icon target')
     lvgl=require(PORT/'ws_lvgl.c',
@@ -37,10 +37,10 @@ def main():
     require(FW/'tests/release_026/test_gui_ui1.c',
         'READY/STANDBY has no hidden/tappable Settings icon',
         'eight Settings screens',
-        'Settings and MSC configuration remain restricted to READY and STANDBY')
+        'idle UI works without USB enumeration while security states stay locked')
     require(ROOT/'docs/MANAGER_DRIVE.md','SETTINGS','USB & STORAGE')
     print('PASS: MSC enable/disable and microSD access mode live only in on-device Settings')
     print('PASS: READY/STANDBY exposes Settings by swipe-left only; no top-right tap target remains')
-    print('PASS: Settings is reachable only from READY/STANDBY and is evicted by authentication states')
+    print('PASS: Settings is reachable in idle states and is evicted by authentication states')
 
 if __name__=='__main__': main()

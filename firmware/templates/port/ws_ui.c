@@ -83,6 +83,10 @@ ws_settings_action_t ws_ui_settings_hit_test(uint8_t page,uint16_t x,uint16_t y)
         return row==0 && in_wide(x)?WS_SETTINGS_ACTION_DIAGNOSTICS_TOGGLE:WS_SETTINGS_ACTION_NONE;
     case WS_SETTINGS_PAGE_AIR_MOUSE:
         return row==0 && in_wide(x)?WS_SETTINGS_ACTION_AIR_MOUSE_START:WS_SETTINGS_ACTION_NONE;
+    case WS_SETTINGS_PAGE_APPS:
+        if(row==0) return in_minus(x)?WS_SETTINGS_ACTION_APPS_PREV:
+                         in_plus(x)?WS_SETTINGS_ACTION_APPS_NEXT:WS_SETTINGS_ACTION_NONE;
+        return in_wide(x)?WS_SETTINGS_ACTION_APPS_RUN:WS_SETTINGS_ACTION_NONE;
     case WS_SETTINGS_PAGE_HOME:
     case WS_SETTINGS_PAGE_COUNT:
     default:
@@ -135,7 +139,7 @@ ws_usb_tool_action_t ws_ui_usb_tool_hit_test(uint16_t x,uint16_t y)
 
 bool ws_ui_settings_allowed(ws_ui_state_t state)
 {
-    return state==WS_UI_READY || state==WS_UI_SUSPENDED;
+    return state==WS_UI_DISCONNECTED || state==WS_UI_READY || state==WS_UI_SUSPENDED;
 }
 
 bool ws_ui_manager_drive_allowed(ws_ui_state_t state)

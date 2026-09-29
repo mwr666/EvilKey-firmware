@@ -19,7 +19,7 @@ def main()->None:
         'hero_orbit','hero_glint','spinner_arc_a','spinner_arc_b','progress_dot[3]','result_flare',
         'build_settings_hint(','build_settings(','update_settings(',
         'settings_transition','settings_page_offset',
-        '#define SETTINGS_ROWS 2U','#define SETTINGS_DOTS 9U',
+        '#define SETTINGS_ROWS 2U','#define SETTINGS_DOTS 10U',
         '#define COL_BG      0x000000UL','#define COL_PANEL   0x101C20UL',
         '#define COL_PANEL2  0x18282CUL','#define COL_BORDER  0x2A3C42UL',
         '#define COL_BAD     0xFF7685UL')
@@ -51,7 +51,7 @@ def main()->None:
         raise SystemExit('FAIL: legacy low-resolution animation cadence remains')
     print('PASS: RGB565-polished dark/mint palette, two-colour EvilKey logo and presentation-only LVGL boundary retained')
     print('PASS: PIN keypad/cancel geometry remains unchanged')
-    print('PASS: Settings uses a large landing gear plus nine spacious vertically-swiped pages')
+    print('PASS: Settings uses a large landing gear plus ten spacious vertically-swiped pages')
     print('PASS: R22 uses a 64-step ~62.5 Hz absolute-time phase with LVGL dirty-rectangle rendering')
 
 if __name__=='__main__': main()
