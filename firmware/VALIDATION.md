@@ -2,13 +2,21 @@
 
 ## 0.5.0 ABI v4 source candidate
 
-The standalone public-source application image is 1,909,376 bytes (SHA-256
-`ebcaa0e456e48c8fc43e4ef2520e49c40e24df1f3eb52adc602cf16bd3f05f62`).
+The standalone public-source application image is 1,910,240 bytes (SHA-256
+`cfce4b1292225169aa74b75a3f48ae8eb2c8d71b7d0b9e4832defa00dfc7f286`).
 Arduino-ESP32 3.3.12 compiled it with `EraseFlash=none`; the unchanged
-0x1F0000-byte factory partition has 122,240 bytes free. Synthetic ABI v4,
-shared exit-dialog, `.save` rollback and nine app-only flasher tests passed.
-No private application package was used or included. Physical-device
-acceptance and public release remain pending.
+0x1F0000-byte factory partition has 121,376 bytes free. The corrected Apps
+mailbox, Wasm3 allocations and bytecode copy use PSRAM; missing save files are
+probed before opening. Earlier synthetic ABI v4, shared exit-dialog, `.save`
+rollback and nine app-only flasher tests passed. Those host checks have not
+been rerun for this exact image. No separately licensed application package
+was used or included. The exact public-source image at
+`release/EvilKey_0.5.0.bin` was written to COM5 at `0x10000` after the device
+partition table matched the build; esptool verified the written data hash.
+After reboot, the owner confirmed USB/FIDO, existing credentials, two
+independent ABI v4 apps and their save/continue flows. This is a device smoke
+test, not endurance, interrupted-write or concurrent CTAP qualification.
+Public release is separate from this validation.
 
 ## 0.4.0 Apps and ABI v3
 

@@ -18,7 +18,12 @@ int ek_storage_load(const char *id, uint8_t **payload, size_t *wasm_size,
 /* Returns 1 for a valid record (including an empty payload), 0 otherwise. */
 int ek_storage_save_load(const char *id, uint8_t *out, size_t capacity,
                          size_t *out_size);
-int ek_storage_save_write(const char *id, const uint8_t *data, size_t size);
+enum { EK_SAVE_PROBE=1, EK_SAVE_CREATE=2, EK_SAVE_ALLOC=3,
+       EK_SAVE_OPEN=4, EK_SAVE_SCAN=5, EK_SAVE_PREPARE=6,
+       EK_SAVE_WRITE=7, EK_SAVE_FLUSH=8 };
+typedef void (*EkStorageSaveTrace)(void *user, unsigned phase);
+int ek_storage_save_write(const char *id, const uint8_t *data, size_t size,
+                          EkStorageSaveTrace trace, void *trace_user);
 const char *ek_storage_error(void);
 
 #ifdef __cplusplus

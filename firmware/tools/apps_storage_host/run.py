@@ -20,7 +20,7 @@ def main() -> None:
     apps = root / "firmware/EvilKeyV1/src/apps"
     with tempfile.TemporaryDirectory(prefix="evilkey-save-test-") as directory:
         exe = Path(directory) / "save_test.exe"
-        command = [args.zig, "c++", "-std=c++17", "-O2", f"-I{here}",
+        command = [args.zig, "c++", "-std=c++17", "-O2", "-DEK_STORAGE_HOST_TEST", f"-I{here}",
                    "-x", "c++", str(here / "save_test.cpp"),
                    str(apps / "ek_storage.cpp"), str(apps / "ek_package.c"),
                    str(apps / "ek_assets.c"), "-o", str(exe)]

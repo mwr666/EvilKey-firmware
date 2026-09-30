@@ -21,6 +21,10 @@
 // The one place any of the m3_host.h implementations is built - see that header
 #include "m3_host.h"
 
+#if defined(ARDUINO_ARCH_ESP32)
+#  include <esp_heap_caps.h>
+#endif
+
 #if d_m3HasWin32Host
 #  include "m3_host_win32.h"
 #elif d_m3HasPosixHost
@@ -144,12 +148,20 @@ void* m3_Realloc_Impl (void* i_ptr, size_t i_newSize, size_t i_oldSize)
 
 void* m3_Malloc_Impl (size_t i_size)
 {
+#if defined(ARDUINO_ARCH_ESP32)
+    return heap_caps_calloc(1, i_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
     return calloc(i_size, 1);
+#endif
 }
 
 void m3_Free_Impl (void* io_ptr)
 {
+#if defined(ARDUINO_ARCH_ESP32)
+    heap_caps_free(io_ptr);
+#else
     free(io_ptr);
+#endif
 }
 
 void* m3_Realloc_Impl (void* i_ptr, size_t i_newSize, size_t i_oldSize)
@@ -158,7 +170,12 @@ void* m3_Realloc_Impl (void* i_ptr, size_t i_newSize, size_t i_oldSize)
         return i_ptr;
     }
 
+#if defined(ARDUINO_ARCH_ESP32)
+    void* newPtr = heap_caps_realloc(i_ptr, i_newSize,
+                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
     void* newPtr = realloc(i_ptr, i_newSize);
+#endif
 
     if (M3_LIKELY(newPtr)) {
         if (i_newSize > i_oldSize) {

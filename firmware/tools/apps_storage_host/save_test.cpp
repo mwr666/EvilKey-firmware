@@ -27,13 +27,13 @@ int main(void) {
     size_t size = 77;
     CHECK(!ek_storage_save_load("example", output, sizeof(output), &size));
     CHECK(size == 0);
-    CHECK(ek_storage_save_write("example", first, sizeof(first)));
+    CHECK(ek_storage_save_write("example", first, sizeof(first), nullptr, nullptr));
     CHECK(SD.save.size() == 9216); /* two nine-sector records */
     CHECK(ek_storage_save_load("example", output, sizeof(output), &size));
     CHECK(size == sizeof(first) && !memcmp(first, output, size));
-    CHECK(!ek_storage_save_write("example", second, sizeof(second)));
+    CHECK(!ek_storage_save_write("example", second, sizeof(second), nullptr, nullptr));
     fake_ms += 1000;
-    CHECK(ek_storage_save_write("example", second, sizeof(second)));
+    CHECK(ek_storage_save_write("example", second, sizeof(second), nullptr, nullptr));
     CHECK(ek_storage_save_load("example", output, sizeof(output), &size));
     CHECK(size == sizeof(second) && !memcmp(second, output, size));
 
@@ -44,7 +44,7 @@ int main(void) {
     CHECK(size == sizeof(first) && !memcmp(first, output, size));
 
     fake_ms += 1000;
-    CHECK(ek_storage_save_write("example", nullptr, 0));
+    CHECK(ek_storage_save_write("example", nullptr, 0, nullptr, nullptr));
     size = 77;
     CHECK(ek_storage_save_load("example", output, sizeof(output), &size));
     CHECK(size == 0); /* valid empty save is distinct from a missing file */

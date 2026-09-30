@@ -31,28 +31,50 @@ static uint8_t *s_payload;
 static EkAssets s_assets;
 static char s_running_id[32];
 static EkVm s_vm;
+/* The 4 KiB save mailbox must not live on the 16 KiB Apps task stack or in
+ * internal BSS needed by TinyUSB. Only the Apps worker uses this PSRAM copy. */
+static EvilKeyAppInput *s_input;
+static bool s_save_queued;
+static uint32_t s_save_queued_size;
 static bool s_vm_open;
 static bool s_started;
 static bool s_previous_app_reset;
 static uint32_t s_app_time_ms,s_last_wall_ms;
-static constexpr uint32_t kCrashMark=0x454B4150U;
+static constexpr uint32_t kCrashMark=0x454B4154U;
 enum AppStage : uint32_t { APP_IDLE=0, APP_LOAD=1, APP_FRAMES=2,
-                           APP_VM_OPEN=3, APP_INIT=4, APP_RUNNING=5 };
-struct AppCrashMark { uint32_t magic, stage, inverse; };
+                           APP_VM_OPEN=3, APP_INPUT=4, APP_SAVE_LOAD=5,
+                           APP_INIT=6, APP_RUNNING=7, APP_SAVE_PROBE=8,
+                           APP_SAVE_CREATE=9, APP_SAVE_ALLOC=10,
+                           APP_SAVE_OPEN=11, APP_SAVE_SCAN=12,
+                           APP_SAVE_PREPARE=13, APP_SAVE_WRITE=14,
+                           APP_SAVE_FLUSH=15 };
+struct AppCrashMark { uint32_t magic, stage, inverse, stack_free, heap_free; };
 RTC_NOINIT_ATTR static AppCrashMark s_crash_mark;
 
 static void mark_stage(AppStage stage) {
     s_crash_mark.magic=kCrashMark;
     s_crash_mark.stage=stage;
     s_crash_mark.inverse=~static_cast<uint32_t>(stage);
+    s_crash_mark.stack_free=(uint32_t)uxTaskGetStackHighWaterMark(nullptr);
+    s_crash_mark.heap_free=(uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
 }
 static const char *stage_name(uint32_t stage) {
     switch (stage) {
     case APP_LOAD:return "microSD";
     case APP_FRAMES:return "display memory";
     case APP_VM_OPEN:return "VM open";
+    case APP_INPUT:return "input snapshot";
+    case APP_SAVE_LOAD:return "save load";
     case APP_INIT:return "app_init";
     case APP_RUNNING:return "app runtime";
+    case APP_SAVE_PROBE:return "save probe";
+    case APP_SAVE_CREATE:return "save create";
+    case APP_SAVE_ALLOC:return "save alloc";
+    case APP_SAVE_OPEN:return "save open";
+    case APP_SAVE_SCAN:return "save scan";
+    case APP_SAVE_PREPARE:return "save prepare";
+    case APP_SAVE_WRITE:return "save write";
+    case APP_SAVE_FLUSH:return "save flush";
     default:return "unknown";
     }
 }
@@ -157,7 +179,32 @@ static void text_draw(void *,int32_t x,int32_t y,uint32_t scale,
     }
 }
 static int save_app(void *,const uint8_t *data,uint32_t size) {
-    return ek_storage_save_write(s_running_id,data,size);
+    if (!s_input || s_save_queued || size>EVILKEY_APP_MAX_SAVE_BYTES ||
+        (!data && size)) return 0;
+    if (size) memcpy(s_input->save_data,data,size);
+    s_save_queued_size=size;
+    s_save_queued=true;
+    return 1;
+}
+static void save_progress(void *,unsigned phase) {
+    switch (phase) {
+    case EK_SAVE_PROBE:mark_stage(APP_SAVE_PROBE);break;
+    case EK_SAVE_CREATE:mark_stage(APP_SAVE_CREATE);break;
+    case EK_SAVE_ALLOC:mark_stage(APP_SAVE_ALLOC);break;
+    case EK_SAVE_OPEN:mark_stage(APP_SAVE_OPEN);break;
+    case EK_SAVE_SCAN:mark_stage(APP_SAVE_SCAN);break;
+    case EK_SAVE_PREPARE:mark_stage(APP_SAVE_PREPARE);break;
+    case EK_SAVE_WRITE:mark_stage(APP_SAVE_WRITE);break;
+    case EK_SAVE_FLUSH:mark_stage(APP_SAVE_FLUSH);break;
+    }
+}
+static void flush_save(void) {
+    if (!s_save_queued) return;
+    bool ok=ek_storage_save_write(s_running_id,s_input->save_data,
+                                  s_save_queued_size,save_progress,nullptr)!=0;
+    s_save_queued=false;
+    s_vm.save_status=ok?EVILKEY_APP_SAVE_OK:EVILKEY_APP_SAVE_FAILED;
+    mark_stage(APP_RUNNING);
 }
 static void input_snapshot(EvilKeyAppInput *input,uint32_t now_ms) {
     memset(input,0,sizeof(*input));
@@ -184,6 +231,7 @@ static void refresh_list(unsigned requested) {
 }
 static void stop_vm(void) {
     if (s_vm_open) {ek_vm_close(&s_vm);s_vm_open=false;}
+    s_save_queued=false;s_save_queued_size=0;
     free(s_payload);s_payload=nullptr;
     memset(&s_assets,0,sizeof(s_assets));s_running_id[0]=0;
     free(s_back);s_back=nullptr;
@@ -220,6 +268,16 @@ static void run_selected(const char *id) {
         stop_vm();state_text("App assets invalid");return;
     }
     snprintf(s_running_id,sizeof(s_running_id),"%s",id);
+    mark_stage(APP_INPUT);
+    input_snapshot(s_input,0);
+    mark_stage(APP_SAVE_LOAD);
+    log_memory("before save load");
+    size_t saved_size=0;
+    if (ek_storage_save_load(id,s_input->save_data,sizeof(s_input->save_data),
+                             &saved_size)) {
+        s_input->save_size=(uint32_t)saved_size;
+        s_input->save_status=EVILKEY_APP_SAVE_LOADED;
+    }
     EkVmHost host={nullptr,rect,present,blit,text_draw,save_app,&s_assets};
     host.blit_region=blit_region;
     mark_stage(APP_VM_OPEN);
@@ -232,18 +290,11 @@ static void run_selected(const char *id) {
     s_vm_open=true;
     mark_stage(APP_INIT);
     log_memory("before app_init");
-    EvilKeyAppInput input;
-    input_snapshot(&input,0);
-    size_t saved_size=0;
-    if (ek_storage_save_load(id,input.save_data,sizeof(input.save_data),
-                             &saved_size)) {
-        input.save_size=(uint32_t)saved_size;
-        input.save_status=EVILKEY_APP_SAVE_LOADED;
-    }
-    if (!ek_vm_init(&s_vm,&input)) {
+    if (!ek_vm_init(&s_vm,s_input)) {
         char error[80];snprintf(error,sizeof(error),"%s",ek_vm_error(&s_vm));
         stop_vm();state_text(error);return;
     }
+    flush_save();
     s_app_time_ms=0;
     s_last_wall_ms=millis();
     xSemaphoreTake(s_guard,portMAX_DELAY);
@@ -291,11 +342,12 @@ static void task(void *) {
                 s_app_time_ms+=wall-s_last_wall_ms;
                 s_last_wall_ms=wall;
             }
-            EvilKeyAppInput input;
-            input_snapshot(&input,s_app_time_ms);
-            if (!modal && !ek_vm_step(&s_vm,&input)) {
-                char error[80];snprintf(error,sizeof(error),"%s",ek_vm_error(&s_vm));
-                stop_vm();state_text(error);
+            input_snapshot(s_input,s_app_time_ms);
+            if (!modal) {
+                if (!ek_vm_step(&s_vm,s_input)) {
+                    char error[80];snprintf(error,sizeof(error),"%s",ek_vm_error(&s_vm));
+                    stop_vm();state_text(error);
+                } else flush_save();
             }
         } else if (command==EK_APPS_PREV || command==EK_APPS_NEXT) {
             unsigned count=s_state.count;
@@ -312,21 +364,27 @@ extern "C" int ek_apps_start(void) {
     if (s_started) return 1;
     s_guard=xSemaphoreCreateMutex();
     if (!s_guard) return 0;
+    s_input=(EvilKeyAppInput *)heap_caps_malloc(sizeof(*s_input),
+                                                MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    if (!s_input) {vSemaphoreDelete(s_guard);s_guard=nullptr;return 0;}
     esp_reset_reason_t reason=esp_reset_reason();
     bool unexpected=reason==ESP_RST_PANIC || reason==ESP_RST_INT_WDT ||
                     reason==ESP_RST_TASK_WDT || reason==ESP_RST_WDT ||
                     reason==ESP_RST_BROWNOUT;
     if (unexpected && s_crash_mark.magic==kCrashMark &&
-        s_crash_mark.stage>=APP_LOAD && s_crash_mark.stage<=APP_RUNNING &&
+        s_crash_mark.stage>=APP_LOAD && s_crash_mark.stage<=APP_SAVE_FLUSH &&
         s_crash_mark.inverse==~s_crash_mark.stage) {
         s_previous_app_reset=true;
-        snprintf(s_state.status,sizeof(s_state.status),"Last reset: %s",
-                 stage_name(s_crash_mark.stage));
+        snprintf(s_state.status,sizeof(s_state.status),"%s R%u S%u H%u",
+                 stage_name(s_crash_mark.stage),(unsigned)reason,
+                 (unsigned)s_crash_mark.stack_free,
+                 (unsigned)s_crash_mark.heap_free);
     } else {
         snprintf(s_state.status,sizeof(s_state.status),"Open Apps to mount microSD");
     }
     mark_stage(APP_IDLE);
     if (xTaskCreate(task,"ek_apps",16384,nullptr,1,nullptr)!=pdPASS) {
+        free(s_input);s_input=nullptr;
         vSemaphoreDelete(s_guard);s_guard=nullptr;return 0;
     }
     xSemaphoreTake(s_guard,portMAX_DELAY);

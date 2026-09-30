@@ -7,6 +7,9 @@
 #include "wasm3/m3_config.h"
 #include <stdlib.h>
 #include <string.h>
+#if defined(ARDUINO_ARCH_ESP32)
+#include <esp_heap_caps.h>
+#endif
 
 #if !d_m3HasGasMetering
 #error "EvilKey Apps requires Wasm3 gas metering"
@@ -167,7 +170,12 @@ int ek_vm_open(EkVm *vm, const uint8_t *bytes, size_t size, EkVmHost host) {
         !host.present || !host.blit || !host.text || !host.save) {
         set_error(vm,"invalid EvilKey app input"); return 0;
     }
+#if defined(ARDUINO_ARCH_ESP32)
+    vm->bytes = (uint8_t *)heap_caps_malloc(size,
+                                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
     vm->bytes = (uint8_t *)malloc(size);
+#endif
     if (!vm->bytes) { set_error(vm,"bytecode allocation failed"); return 0; }
     memcpy(vm->bytes,bytes,size);
     vm->environment = m3_NewEnvironment();
@@ -231,15 +239,21 @@ static int deliver_input(EkVm *vm, const EvilKeyAppInput *input) {
                                   sizeof(EvilKeyAppInput))) {
         set_error(vm,"app input pointer out of bounds"); return 0;
     }
-    EvilKeyAppInput copy = *input;
-    copy.abi = EVILKEY_APP_ABI_VERSION;
+    uint8_t *destination = memory+vm->input_offset;
+    memcpy(destination,input,sizeof(*input));
+    const uint32_t abi = EVILKEY_APP_ABI_VERSION;
+    memcpy(destination+offsetof(EvilKeyAppInput,abi),&abi,sizeof(abi));
     if (vm->save_status != EVILKEY_APP_SAVE_NONE) {
-        copy.save_status = vm->save_status;
-        copy.save_size = 0;
-        memset(copy.save_data,0,sizeof(copy.save_data));
+        const uint32_t status = vm->save_status;
+        const uint32_t empty = 0;
+        memcpy(destination+offsetof(EvilKeyAppInput,save_status),
+               &status,sizeof(status));
+        memcpy(destination+offsetof(EvilKeyAppInput,save_size),
+               &empty,sizeof(empty));
+        memset(destination+offsetof(EvilKeyAppInput,save_data),0,
+               EVILKEY_APP_MAX_SAVE_BYTES);
         vm->save_status = EVILKEY_APP_SAVE_NONE;
     }
-    memcpy(memory+vm->input_offset,&copy,sizeof(copy));
     return 1;
 }
 int ek_vm_init(EkVm *vm, const EvilKeyAppInput *input) {

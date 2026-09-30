@@ -12,6 +12,8 @@
 #include <mbedtls/sha256.h>
 #include <string.h>
 #include <stdio.h>
+#include <sys/stat.h>
+#include <errno.h>
 
 extern "C" bool pf_apps_storage_role_allowed(void);
 static SPIClass s_spi(HSPI);
@@ -28,6 +30,15 @@ static bool path(char *out,size_t cap,const char *id,const char *extension) {
     int n=snprintf(out,cap,"%s/%s.%s",kApps,id,extension);
     return n>0 && static_cast<size_t>(n)<cap;
 }
+#ifndef EK_STORAGE_HOST_TEST
+/* Avoid FS::open's directory fallback when a new app has no .save yet. */
+static int save_stat(const char *filename,struct stat *metadata) {
+    char absolute[sizeof("/evilkey-apps")+80];
+    int n=snprintf(absolute,sizeof(absolute),"/evilkey-apps%s",filename);
+    if (n<=0 || (size_t)n>=sizeof(absolute)) {errno=ENAMETOOLONG;return -1;}
+    return stat(absolute,metadata);
+}
+#endif
 static bool read_exact(File &f,uint8_t *data,size_t count) {
     return f.read(data,count)==count;
 }
@@ -182,6 +193,11 @@ extern "C" int ek_storage_save_load(const char *id,uint8_t *out,size_t capacity,
     if (!s_mounted || !out || !out_size || capacity<kSaveMax) return 0;
     char filename[80];
     if (!path(filename,sizeof(filename),id,"save")) return 0;
+#ifndef EK_STORAGE_HOST_TEST
+    struct stat metadata;
+    if (save_stat(filename,&metadata)!=0 || !S_ISREG(metadata.st_mode) ||
+        metadata.st_size!=(off_t)kSaveFile) return 0;
+#endif
     File f=SD.open(filename,FILE_READ);
     if (!f || f.isDirectory() || f.size()!=kSaveFile) {f.close();return 0;}
     uint32_t sequence;size_t size;
@@ -192,7 +208,8 @@ extern "C" int ek_storage_save_load(const char *id,uint8_t *out,size_t capacity,
     if (ok) *out_size=size;
     return ok?1:0;
 }
-extern "C" int ek_storage_save_write(const char *id,const uint8_t *data,size_t size) {
+extern "C" int ek_storage_save_write(const char *id,const uint8_t *data,size_t size,
+                                      EkStorageSaveTrace trace,void *trace_user) {
     if (!s_mounted || !pf_apps_storage_role_allowed() ||
         (!data && size) || size>kSaveMax) return fail("Save denied");
     uint32_t now=millis();
@@ -200,32 +217,53 @@ extern "C" int ek_storage_save_write(const char *id,const uint8_t *data,size_t s
         return fail("Save rate limited");
     char filename[80];
     if (!path(filename,sizeof(filename),id,"save")) return fail("Invalid save path");
-    File f=SD.open(filename,FILE_READ);
-    if (!f) {
+    File f;
+    if (trace) trace(trace_user,EK_SAVE_PROBE);
+#ifndef EK_STORAGE_HOST_TEST
+    struct stat metadata;
+    int probe=save_stat(filename,&metadata);
+    if (probe!=0 && errno!=ENOENT) return fail("Save probe failed");
+    if (probe==0 && (!S_ISREG(metadata.st_mode) ||
+                     metadata.st_size!=(off_t)kSaveFile))
+        return fail("Save file invalid");
+    bool missing=probe!=0;
+#else
+    f=SD.open(filename,FILE_READ);
+    bool missing=!f;
+    if (!missing) {
+        bool valid_size=!f.isDirectory() && f.size()==kSaveFile;
+        f.close();
+        if (!valid_size) return fail("Save file invalid");
+    }
+#endif
+    if (missing) {
+        if (trace) trace(trace_user,EK_SAVE_CREATE);
         f=SD.open(filename,FILE_WRITE);
         if (!f) return fail("Cannot create save");
+        if (trace) trace(trace_user,EK_SAVE_ALLOC);
         memset(s_save_slot,0,sizeof(s_save_slot));
         bool created=f.write(s_save_slot,kSaveSlot)==kSaveSlot &&
                      f.write(s_save_slot,kSaveSlot)==kSaveSlot;
         f.flush();f.close();
         if (!created) return fail("Save allocation failed");
-    } else {
-        bool valid_size=!f.isDirectory() && f.size()==kSaveFile;
-        f.close();
-        if (!valid_size) return fail("Save file invalid");
     }
+    if (trace) trace(trace_user,EK_SAVE_OPEN);
     f=SD.open(filename,"r+");
     if (!f || f.size()!=kSaveFile) {f.close();return fail("Save open failed");}
+    if (trace) trace(trace_user,EK_SAVE_SCAN);
     uint32_t sequence=0;size_t old_size=0;
     int previous=newest_slot(f,&sequence,&old_size);
     unsigned target=previous==0?1U:0U;
+    if (trace) trace(trace_user,EK_SAVE_PREPARE);
     memset(s_save_slot,0,sizeof(s_save_slot));
     memcpy(s_save_slot,"EKS4",4);
     put32(s_save_slot+4,sequence+1);
     put32(s_save_slot+8,(uint32_t)size);
     put32(s_save_slot+12,crc32(data,size));
     if (size) memcpy(s_save_slot+16,data,size);
+    if (trace) trace(trace_user,EK_SAVE_WRITE);
     bool ok=f.seek(target*kSaveSlot) && f.write(s_save_slot,kSaveSlot)==kSaveSlot;
+    if (trace) trace(trace_user,EK_SAVE_FLUSH);
     f.flush();f.close();
     if (!ok) return fail("Save write failed");
     f=SD.open(filename,FILE_READ);

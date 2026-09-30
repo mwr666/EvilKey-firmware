@@ -3,7 +3,7 @@
   "target": "Arduino IDE 2.x / Arduino-ESP32 3.3.12 recommended (3.3.11 supported)",
   "board": "Waveshare ESP32-S3-Touch-AMOLED-1.64 PCB V1",
   "usb": "native USB-OTG: FIDO CTAP HID OR explicit-run USB Tool HID; optional microSD MSC Manager Drive is a separate mutually-exclusive profile",
-  "status": "EvilKey 0.5.0 ABI v4 source candidate; ABI v4 functionality was exercised on device before this version-only rebuild; the exact 0.5.0 image awaits its own device smoke test",
+  "status": "EvilKey 0.5.0 ABI v4 public-source candidate with the PSRAM save fix; exact image flashed to COM5 and owner-confirmed USB/FIDO, existing credentials, two apps and save/continue",
   "dependencies": {
     "pico-fido": "fc7c60e9b45338fe815a43bb228d234322e48d97",
     "pico-keys-sdk": "507ac45956b7f1c763bb5e88a6411438093d10c7",

@@ -9,7 +9,13 @@
 - Kept the partition table and NVS layout unchanged. The upload helper checks
   the existing device partition table and writes only the application image.
 - Updated source templates so regeneration retains the ABI v4 board and GUI
-  changes. This exact 0.5.0 image awaits a device smoke test before publication.
+  changes.
+- Moved the Apps input mailbox, Wasm3 allocations and bytecode copy to PSRAM
+  to preserve internal memory for USB and microSD. Save reads now check the
+  sidecar path before opening it, and writes occur after guest execution.
+  The exact public-source 0.5.0 image passed an app-only COM5 write and device
+  smoke test: USB/FIDO, existing credentials, two ABI v4 apps and saved-game
+  resume. Endurance and interrupted-write recovery remain untested.
 
 ## 0.4.0 — 2026-09-30
 
