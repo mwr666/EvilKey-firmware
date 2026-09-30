@@ -1,5 +1,15 @@
 # Firmware validation
 
+## 0.5.0 ABI v4 source candidate
+
+The standalone public-source application image is 1,909,376 bytes (SHA-256
+`ebcaa0e456e48c8fc43e4ef2520e49c40e24df1f3eb52adc602cf16bd3f05f62`).
+Arduino-ESP32 3.3.12 compiled it with `EraseFlash=none`; the unchanged
+0x1F0000-byte factory partition has 122,240 bytes free. Synthetic ABI v4,
+shared exit-dialog, `.save` rollback and nine app-only flasher tests passed.
+No private application package was used or included. Physical-device
+acceptance and public release remain pending.
+
 ## 0.4.0 Apps and ABI v3
 
 The standalone public-source 0.4.0 build is 1,902,976 bytes (SHA-256

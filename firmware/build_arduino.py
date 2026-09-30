@@ -44,6 +44,9 @@ image=out/'EvilKeyV1.ino.bin'
 if not image.is_file(): raise SystemExit('Expected application .bin was not found; inspect compiler output.')
 if image.stat().st_size>0x1F0000:
     raise SystemExit('Application exceeds the custom 0x1F0000-byte factory partition. DO NOT UPLOAD.')
+partition_image=out/'EvilKeyV1.ino.partitions.bin'
+if not partition_image.is_file() or partition_image.stat().st_size!=0xC00:
+    raise SystemExit('Expected 3072-byte partition image is missing. DO NOT UPLOAD.')
 build_info={
     'schema':'evilkey-arduino-build-v1',
     'fqbn':fqbn,
@@ -52,6 +55,9 @@ build_info={
     'image_path':str(image.resolve()),
     'image_size':image.stat().st_size,
     'image_sha256':hashlib.sha256(image.read_bytes()).hexdigest(),
+    'partition_path':str(partition_image.resolve()),
+    'partition_size':partition_image.stat().st_size,
+    'partition_sha256':hashlib.sha256(partition_image.read_bytes()).hexdigest(),
     'erase_flash':'none',
     'apps_vm_link_probe':args.apps_vm_link_probe,
 }

@@ -31,14 +31,16 @@ int ek_package_parse(const uint8_t *header, size_t header_size,
         total_size < EK_PACKAGE_HEADER_SIZE || total_size > EK_PACKAGE_MAX_BYTES ||
         memcmp(header, magic, sizeof(magic)) != 0 ||
         read16(header + 8) != EK_PACKAGE_HEADER_SIZE ||
-        read16(header + 10) != 2 ||
+        read16(header + 10) != 3 ||
         read16(header + 12) != EK_PACKAGE_API_VERSION ||
         read16(header + 14) != 0) return 0;
-    for (unsigned i = 186; i < EK_PACKAGE_HEADER_SIZE; ++i)
+    for (unsigned i = 190; i < EK_PACKAGE_HEADER_SIZE; ++i)
         if (header[i] != 0) return 0;
     uint32_t wasm_size = read32(header + 54);
-    if (wasm_size < 8 || wasm_size > 65536 ||
-        total_size != EK_PACKAGE_HEADER_SIZE + (size_t)wasm_size) return 0;
+    uint32_t asset_size = read32(header + 186);
+    if (wasm_size < 8 || wasm_size > EK_PACKAGE_MAX_WASM ||
+        asset_size > EK_PACKAGE_MAX_ASSETS ||
+        total_size != EK_PACKAGE_HEADER_SIZE + (size_t)wasm_size + asset_size) return 0;
     EkPackageInfo info;
     memcpy(info.id, header + 22, EK_PACKAGE_ID_SIZE);
     if (!memchr(info.id, 0, EK_PACKAGE_ID_SIZE) ||
@@ -68,6 +70,7 @@ int ek_package_parse(const uint8_t *header, size_t header_size,
     info.minor = read16(header + 18);
     info.patch = read16(header + 20);
     info.wasm_size = wasm_size;
+    info.asset_size = asset_size;
     memcpy(info.sha256, header + 58, 32);
     *out = info;
     return 1;

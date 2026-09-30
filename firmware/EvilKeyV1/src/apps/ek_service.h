@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "evilkey_app_abi.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -23,10 +24,14 @@ int ek_apps_start(void);
 void ek_apps_set_visible(bool visible);
 void ek_apps_set_modal(bool visible);
 void ek_apps_request(EkAppsCommand command);
-/* Raw display coordinates; release uses down=false and clears coordinates. */
-void ek_apps_touch(int32_t x, int32_t y, bool down);
+/* Samples are copied into the worker mailbox. All I2C stays on the board task. */
+void ek_apps_input(const EvilKeyAppTouch *touch, uint32_t count,
+                   bool accel_valid, int32_t ax_mg, int32_t ay_mg,
+                   int32_t az_mg);
 void ek_apps_snapshot(EkAppsState *out);
-int ek_apps_copy_frame(uint16_t *pixels,size_t count,uint32_t *generation);
+typedef struct { uint16_t x,y,width,height; } EkAppsDirty;
+int ek_apps_copy_frame(uint16_t *pixels,size_t count,uint32_t *generation,
+                       EkAppsDirty *dirty);
 
 #ifdef __cplusplus
 }

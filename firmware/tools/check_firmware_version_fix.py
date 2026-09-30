@@ -18,8 +18,8 @@ if vh.is_file():
     for key in ('MAJOR','MINOR','PATCH','BUILD'):
         m=re.search(r'^#define\s+PF_FIRMWARE_VERSION_'+key+r'\s+(\d+)\s*$',text,re.M)
         if m: vals[key]=int(m.group(1))
-    check(vals=={'MAJOR':0,'MINOR':4,'PATCH':0,'BUILD':0},'version header encodes 0.4.0 build 0')
-    check('#define PF_FIRMWARE_VERSION_SUFFIX ""' in text,'0.4.0 version has no suffix')
+    check(vals=={'MAJOR':0,'MINOR':5,'PATCH':0,'BUILD':0},'version header encodes 0.5.0 build 0')
+    check('#define PF_FIRMWARE_VERSION_SUFFIX ""' in text,'0.5.0 version has no suffix')
 build=(root/'firmware/EvilKeyV1/src/pf_build_config.h').read_text(encoding='utf-8')
 check('#include "pf_firmware_version.h"' in build,'pf_build_config includes canonical version header')
 m1=(root/'firmware/templates/port/ws_manager_config.h').read_text(encoding='utf-8')

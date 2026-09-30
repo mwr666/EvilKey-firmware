@@ -1,5 +1,5 @@
 {
-  "port_version": "0.4.0",
+  "port_version": "0.5.0",
   "board": "Waveshare ESP32-S3-Touch-AMOLED-1.64 V1, SKU 31197",
   "pico_fido_url": "https://github.com/polhenarejos/pico-fido.git",
   "pico_fido_commit": "fc7c60e9b45338fe815a43bb228d234322e48d97",

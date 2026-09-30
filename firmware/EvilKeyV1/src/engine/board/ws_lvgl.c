@@ -2378,14 +2378,22 @@ esp_err_t ws_lvgl_render(const ws_ui_snapshot_t *v)
         hidden(ui.main_group,true);
         hidden(ui.settings_group,true);
         hidden(ui.screensaver_group,true);
+        EkAppsDirty dirty={0};
         if(s_apps_pixels && ui.apps_image &&
-           ek_apps_copy_frame(s_apps_pixels,EK_APPS_PIXELS,&s_apps_frame)) {
-            for(size_t i=0;i<EK_APPS_PIXELS;++i) {
-                uint16_t c=s_apps_pixels[i];
-                s_apps_pixels[i]=(uint16_t)((c<<8)|(c>>8));
-            }
+           ek_apps_copy_frame(s_apps_pixels,EK_APPS_PIXELS,&s_apps_frame,&dirty)) {
+            for(uint32_t row=dirty.y;row<dirty.y+dirty.height;++row)
+                for(uint32_t col=dirty.x;col<dirty.x+dirty.width;++col) {
+                    size_t i=(size_t)row*EK_APPS_WIDTH+col;
+                    uint16_t c=s_apps_pixels[i];
+                    s_apps_pixels[i]=(uint16_t)((c<<8)|(c>>8));
+                }
             lv_img_cache_invalidate_src(&s_apps_img);
-            lv_obj_invalidate(ui.apps_image);
+            lv_area_t area;
+            lv_obj_get_coords(ui.apps_image,&area);
+            area.x1+=dirty.x;area.y1+=dirty.y;
+            area.x2=area.x1+dirty.width-1;
+            area.y2=area.y1+dirty.height-1;
+            lv_obj_invalidate_area(ui.apps_image,&area);
         }
     } else if(v->air_mouse_active) {
         hidden(ui.air_mouse_group,v->air_mouse_settings_open);

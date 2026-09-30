@@ -1,9 +1,12 @@
 <!-- SPDX-License-Identifier: MIT -->
 # EvilKey Apps ABI v3 and `.ekapp` format
 
-This is the interface for independent app authors. The minimal declarations
-in [`sdk/include/evilkey_app_abi.h`](sdk/include/evilkey_app_abi.h) are
-licensed under MIT. Each app retains its own owner and license.
+Historical release 0.4.0 documentation. Firmware 0.5.0 rejects v3 packages;
+see [ABI_V4.md](ABI_V4.md) and the current SDK for new application development.
+
+This records the earlier interface for independent app authors. The current
+[`sdk/include/evilkey_app_abi.h`](sdk/include/evilkey_app_abi.h) declares v4
+and is licensed under MIT. Each app retains its own owner and license.
 
 ## Package on microSD
 

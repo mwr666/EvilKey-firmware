@@ -65,6 +65,15 @@ static ws_contact_t s_touch;
 typedef struct { uint16_t x,y; } ws_mouse_point_t;
 static ws_mouse_point_t s_mouse_points[2];
 static uint8_t s_mouse_point_count;
+static EvilKeyAppTouch s_app_points[2];
+static uint8_t s_app_point_count;
+static bool s_apps_touch_mode;
+static bool s_apps_sensor_ok;
+static bool s_apps_sample_valid;
+static uint32_t s_apps_imu_retry_at;
+static uint32_t s_apps_imu_sample_at;
+static unsigned s_apps_imu_errors;
+static int32_t s_apps_ax_mg,s_apps_ay_mg,s_apps_az_mg;
 static uint32_t s_touch_polled;
 static unsigned s_touch_errors;
 static uint32_t s_air_mouse_touch_retry_at;
@@ -639,11 +648,11 @@ static ws_contact_t touch_read(void)
 {
     ws_contact_t result={0};
     uint8_t reg=0x02;
-    /* The ordinary FIDO UI remains single-touch. Only Air Mouse reads the
-     * second FT3168 contact at 0x09..0x0C (11-byte frame starting at 0x02). */
+    /* FIDO and PIN remain single-touch. Apps and Air Mouse read both points. */
     uint8_t bytes[11]={0};
     if(s_air_mouse_role)s_mouse_point_count=0U;
-    size_t length=s_air_mouse_role?sizeof(bytes):5U;
+    if(s_apps_touch_mode)s_app_point_count=0U;
+    size_t length=(s_air_mouse_role || s_apps_touch_mode)?sizeof(bytes):5U;
     esp_err_t err=i2c_master_write_read_device(I2C_NUM_0,WS_TOUCH_ADDR,
                        &reg,1,bytes,length,pdMS_TO_TICKS(10));
     if(err!=ESP_OK) return result; /* Invalid, NOT a synthetic release. */
@@ -652,16 +661,23 @@ static ws_contact_t touch_read(void)
         result.valid=true;
         return result;
     }
-    if(points>(s_air_mouse_role?2U:1U)) return result;
+    if(points>((s_air_mouse_role || s_apps_touch_mode)?2U:1U)) return result;
     for(unsigned i=0;i<points;++i) {
         unsigned offset=1U+6U*i;
         uint16_t x=(uint16_t)(((bytes[offset]&0x0F)<<8)|bytes[offset+1U]);
         uint16_t y=(uint16_t)(((bytes[offset+2U]&0x0F)<<8)|bytes[offset+3U]);
         if(x>=WS_LCD_WIDTH || y>=WS_LCD_HEIGHT) return result;
         if(s_air_mouse_role){s_mouse_points[i].x=x;s_mouse_points[i].y=y;}
+        if(s_apps_touch_mode) {
+            s_app_points[i].x=(int16_t)x;
+            s_app_points[i].y=(int16_t)y;
+            s_app_points[i].id=(uint16_t)(bytes[offset+2U]>>4);
+            s_app_points[i].reserved=0;
+        }
         if(i==0U){s_touch_x=x;s_touch_y=y;}
     }
     if(s_air_mouse_role)s_mouse_point_count=(uint8_t)points;
+    if(s_apps_touch_mode)s_app_point_count=(uint8_t)points;
     result.valid=true;
     result.down=true;
     result.action=ws_ui_hit_test(s_touch_x,s_touch_y);
@@ -1357,6 +1373,42 @@ void ws_board_poll(void)
     ek_apps_set_visible(apps_visible);
     EkAppsState apps;
     ek_apps_snapshot(&apps);
+    bool apps_active=apps_visible && apps.running;
+    if(s_apps_touch_mode!=apps_active) {
+        s_app_point_count=0U;
+        s_apps_sample_valid=false;
+        if(apps_active) s_apps_imu_retry_at=now-1000U;
+    }
+    s_apps_touch_mode=apps_active;
+    if(apps_active && !s_apps_sensor_ok &&
+       (uint32_t)(now-s_apps_imu_retry_at)>=1000U) {
+        s_apps_imu_retry_at=now;
+        s_apps_sensor_ok=qmi_start_accel();
+        s_apps_sample_valid=false;
+    }
+    if(!apps_active && s_apps_sensor_ok) {
+        (void)qmi_write(0x08U,0x00U);
+        s_apps_sensor_ok=false;s_apps_imu_errors=0;
+        s_apps_sample_valid=false;
+    }
+    if(apps_active && s_apps_sensor_ok &&
+       (uint32_t)(now-s_apps_imu_sample_at)>=20U) {
+        s_apps_imu_sample_at=now;
+        uint8_t sample[6]={0};
+        if(qmi_read(0x35U,sample,sizeof(sample))) {
+            int16_t ax=(int16_t)((uint16_t)sample[0]|((uint16_t)sample[1]<<8));
+            int16_t ay=(int16_t)((uint16_t)sample[2]|((uint16_t)sample[3]<<8));
+            int16_t az=(int16_t)((uint16_t)sample[4]|((uint16_t)sample[5]<<8));
+            s_apps_ax_mg=(int32_t)ax*1000/16384;
+            s_apps_ay_mg=(int32_t)ay*1000/16384;
+            s_apps_az_mg=(int32_t)az*1000/16384;
+            s_apps_imu_errors=0;
+            s_apps_sample_valid=true;
+        } else {
+            s_apps_sample_valid=false;
+            if(++s_apps_imu_errors>=3U) s_apps_sensor_ok=false;
+        }
+    }
 
     if(s_settings_feedback!=WS_SETTINGS_FEEDBACK_NONE &&
        (uint32_t)(now-s_settings_feedback_at)>=WS_SETTINGS_FEEDBACK_MS)
@@ -1370,13 +1422,16 @@ void ws_board_poll(void)
         s_settings_page_offset==0;
     if(apps_visible && apps.running) {
         EkExitEvent exit_event=ek_exit_dialog_touch(&s_app_exit_dialog,
-            settings_fresh_touch,s_touch.down,s_touch_x,s_touch_y);
+            settings_fresh_touch && s_app_point_count<=1U,
+            s_touch.down,s_touch_x,s_touch_y);
         if(exit_event==EK_EXIT_EVENT_CONFIRM) ek_apps_request(EK_APPS_STOP);
         ek_apps_set_modal(s_app_exit_dialog.visible);
         if(!s_app_exit_dialog.visible && exit_event!=EK_EXIT_EVENT_CONFIRM &&
            settings_fresh_touch && s_touch.down)
-            ek_apps_touch(s_touch_x,s_touch_y,true);
-        else ek_apps_touch(-1,-1,false);
+            ek_apps_input(s_app_points,s_app_point_count,s_apps_sample_valid,
+                          s_apps_ax_mg,s_apps_ay_mg,s_apps_az_mg);
+        else ek_apps_input(NULL,0,s_apps_sample_valid,
+                           s_apps_ax_mg,s_apps_ay_mg,s_apps_az_mg);
         if(settings_fresh_touch && s_touch.down) ws_screen_power_wake(&s_screen,now);
         s_settings_touch_was_down=false;
     } else if(settings_fresh_touch && idle_nav_stable) {
@@ -1480,7 +1535,7 @@ void ws_board_poll(void)
         s_settings_touch_action=0U;
     }
     if(!apps_visible || !apps.running) {
-        ek_apps_touch(-1,-1,false);
+        ek_apps_input(NULL,0,false,0,0,0);
         ek_apps_set_modal(false);
         ek_exit_dialog_reset(&s_app_exit_dialog);
     }

@@ -1,5 +1,16 @@
 # Firmware changelog
 
+## 0.5.0 ABI v4 source candidate — 2026-09-30
+
+- Added validated RGB565 image assets and cropped blits for apps with moving
+  graphics.
+- Added two-contact touch input, accelerometer samples and bounded per-app
+  `.save` files beside `.ekapp` packages on microSD.
+- Kept the partition table and NVS layout unchanged. The upload helper checks
+  the existing device partition table and writes only the application image.
+- Updated source templates so regeneration retains the ABI v4 board and GUI
+  changes. This exact 0.5.0 image awaits a device smoke test before publication.
+
 ## 0.4.0 — 2026-09-30
 
 - Added an Apps interpreter for separate `.ekapp` bytecode packages on microSD.

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Interactively build and upload EvilKey to a user-selected Windows COM port."""
+"""Build, verify the device partition table, and flash only the EvilKey app."""
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import json
 from pathlib import Path
@@ -10,12 +11,50 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 
 ROOT = Path(__file__).resolve().parent
 BUILD_PATH = ROOT / "build-arduino"
 BUILD_INFO = BUILD_PATH / "evilkey-build.json"
 BUILD_SCRIPT = ROOT / "build_arduino.py"
 COM_PORT = re.compile(r"^COM([1-9][0-9]*)$", re.IGNORECASE)
+APP_OFFSET = 0x10000
+APP_CAPACITY = 0x1F0000
+PARTITION_OFFSET = 0x8000
+
+
+def verify_partition_layout() -> None:
+    """Require the reviewed factory layout before writing any flash sector."""
+    table = ROOT / "EvilKeyV1" / "partitions.csv"
+    entries: dict[str, tuple[int, int]] = {}
+    with table.open(encoding="utf-8", newline="") as source:
+        for row in csv.reader(line for line in source if not line.lstrip().startswith("#")):
+            if len(row) < 5 or not row[0].strip():
+                continue
+            entries[row[0].strip()] = (int(row[3].strip(), 0), int(row[4].strip(), 0))
+    if entries.get("factory") != (APP_OFFSET, APP_CAPACITY):
+        raise RuntimeError("Factory partition offset or size changed; app-only upload cancelled.")
+    app_end = APP_OFFSET + APP_CAPACITY
+    for name, (offset, size) in entries.items():
+        if name != "factory" and offset < app_end and offset + size > APP_OFFSET:
+            raise RuntimeError(f"Partition {name} overlaps the app image; upload cancelled.")
+
+
+def resolve_esptool(cli: str, fqbn: str) -> Path:
+    """Use the esptool installed for this exact Arduino board profile."""
+    result = subprocess.run(
+        [cli, "compile", "--fqbn", fqbn, "--show-properties", str(ROOT / "EvilKeyV1")],
+        check=True, capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+    properties = dict(line.split("=", 1) for line in result.stdout.splitlines()
+                      if "=" in line)
+    tool_root = properties.get("runtime.tools.esptool_py.path")
+    if not tool_root:
+        raise RuntimeError("Arduino did not identify its esptool installation.")
+    executable = Path(tool_root) / "esptool.exe"
+    if not executable.is_file():
+        raise RuntimeError(f"Arduino esptool is missing: {executable}")
+    return executable
 
 
 def port_sort_key(port: dict[str, str]) -> tuple[int, str]:
@@ -100,28 +139,46 @@ def load_verified_build_info() -> dict[str, object]:
         raise RuntimeError("The manifest points to an unexpected project or build directory.")
     if info.get("erase_flash") != "none" or "EraseFlash=none" not in str(info.get("fqbn", "")):
         raise RuntimeError("NVS preservation is not guaranteed: EraseFlash=none is required.")
+    verify_partition_layout()
     if not image_path.is_file() or image_path.parent != BUILD_PATH.resolve():
         raise RuntimeError("The application image listed in the manifest is missing.")
     digest = hashlib.sha256(image_path.read_bytes()).hexdigest()
     if digest != info.get("image_sha256") or image_path.stat().st_size != info.get("image_size"):
         raise RuntimeError("The firmware image does not match the build manifest.")
+    if image_path.stat().st_size > APP_CAPACITY:
+        raise RuntimeError("The image exceeds the factory partition; upload cancelled.")
+    partition_path = Path(str(info.get("partition_path", ""))).resolve()
+    if partition_path.parent != BUILD_PATH.resolve() or not partition_path.is_file():
+        raise RuntimeError("The built partition image is missing.")
+    if partition_path.stat().st_size != info.get("partition_size") or \
+            partition_path.stat().st_size != 0xC00 or \
+            hashlib.sha256(partition_path.read_bytes()).hexdigest() != info.get("partition_sha256"):
+        raise RuntimeError("The built partition image does not match the manifest.")
     return info
 
 
-def upload_command(cli: str, port: dict[str, str], info: dict[str, object]) -> list[str]:
+def upload_command(esptool: Path, port: dict[str, str], info: dict[str, object]) -> list[str]:
     return [
-        cli,
-        "upload",
-        "--fqbn",
-        str(info["fqbn"]),
-        "--port",
-        port["address"],
-        "--protocol",
-        port["protocol"],
-        "--build-path",
-        str(BUILD_PATH.resolve()),
-        str((ROOT / "EvilKeyV1").resolve()),
+        str(esptool), "--chip", "esp32s3", "--port", port["address"],
+        "--baud", "460800", "--before", "default-reset", "--after", "hard-reset",
+        "write-flash", "--flash-mode", "keep", "--flash-freq", "keep",
+        "--flash-size", "keep", hex(APP_OFFSET), str(info["image_path"]),
     ]
+
+
+def verify_device_partition(esptool: Path, port: dict[str, str],
+                            info: dict[str, object]) -> None:
+    """Refuse app-only flashing if device offsets differ from this build."""
+    with tempfile.TemporaryDirectory(prefix="evilkey-partition-check-") as directory:
+        observed = Path(directory) / "partition.bin"
+        subprocess.run([
+            str(esptool), "--chip", "esp32s3", "--port", port["address"],
+            "--baud", "460800", "--before", "default-reset", "--after", "hard-reset",
+            "read-flash", hex(PARTITION_OFFSET), str(info["partition_size"]),
+            str(observed),
+        ], check=True)
+        if observed.read_bytes() != Path(str(info["partition_path"])).read_bytes():
+            raise RuntimeError("Device partition table differs from the build; app-only upload cancelled.")
 
 
 def main() -> int:
@@ -153,7 +210,7 @@ def main() -> int:
         print("Cancelled: the selected port is not in the list above.")
         return 2
     print(f"\nSelected {selected['address']}. Uploading will restart the device.")
-    print("NVS will not be erased (EraseFlash=none profile).")
+    print("Only the factory application image will be written; NVS is outside this range.")
     if not confirm_upload(input(f"Build and flash firmware to {selected['address']}? (Y/N): ")):
         print("Cancelled. No build or upload was performed.")
         return 0
@@ -165,8 +222,10 @@ def main() -> int:
         return build.returncode
     try:
         info = load_verified_build_info()
+        esptool = resolve_esptool(cli, str(info["fqbn"]))
         current_ports = discover_ports(cli)
-    except (OSError, RuntimeError, subprocess.CalledProcessError, json.JSONDecodeError) as exc:
+    except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError,
+            json.JSONDecodeError) as exc:
         print(f"ERROR: pre-upload check failed: {exc}", file=sys.stderr)
         return 2
     current = next((port for port in current_ports if port["address"] == selected["address"]), None)
@@ -174,11 +233,17 @@ def main() -> int:
         print(f"ERROR: port {selected['address']} disappeared after the build. Upload cancelled.", file=sys.stderr)
         return 2
 
-    print(f"\n[2/2] Uploading to {current['address']}...")
+    print("\nChecking the partition table already stored on the device...")
     try:
-        subprocess.run(upload_command(cli, current, info), check=True)
+        verify_device_partition(esptool, current, info)
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
+        print(f"ERROR: device partition check failed: {exc}", file=sys.stderr)
+        return 2
+    print(f"\n[2/2] Uploading application image only to {current['address']}...")
+    try:
+        subprocess.run(upload_command(esptool, current, info), check=True)
     except subprocess.CalledProcessError as exc:
-        print(f"ERROR: Arduino CLI upload exited with code {exc.returncode}.", file=sys.stderr)
+        print(f"ERROR: app-only esptool upload exited with code {exc.returncode}.", file=sys.stderr)
         return exc.returncode
     print(f"\nREADY: firmware was uploaded through {current['address']}.")
     return 0

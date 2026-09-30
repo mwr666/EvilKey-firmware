@@ -1,0 +1,135 @@
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+import tempfile
+import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SPEC = importlib.util.spec_from_file_location(
+    "picofido_flash_arduino", ROOT / "firmware" / "flash_arduino.py"
+)
+assert SPEC and SPEC.loader
+FLASH = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(FLASH)
+
+
+class FlashArduinoTests(unittest.TestCase):
+    def test_only_y_confirms_upload(self):
+        for value in ("Y", "y", " y "):
+            self.assertTrue(FLASH.confirm_upload(value))
+        for value in ("N", "", "WGRYWAJ", "yes", "1"):
+            self.assertFalse(FLASH.confirm_upload(value))
+
+    def test_n_cancels_before_build_or_upload(self):
+        ports = [{"address": "COM7", "label": "EvilKey", "protocol": "serial", "boards": ""}]
+        with patch.object(FLASH.shutil, "which", return_value="arduino-cli"), \
+             patch.object(FLASH, "discover_ports", return_value=ports), \
+             patch("builtins.input", side_effect=["1", "N"]), \
+             patch.object(FLASH.subprocess, "run") as run, \
+             patch.object(FLASH.sys, "argv", ["flash_arduino.py"]):
+            self.assertEqual(FLASH.main(), 0)
+            run.assert_not_called()
+
+    def test_y_builds_then_rechecks_port_before_upload(self):
+        ports = [{"address": "COM7", "label": "EvilKey", "protocol": "serial", "boards": ""}]
+        info = {"fqbn": "vendor:arch:board:EraseFlash=none",
+                "image_path": "C:/private/firmware.bin"}
+        with patch.object(FLASH.shutil, "which", return_value="arduino-cli"), \
+             patch.object(FLASH, "discover_ports", side_effect=[ports, ports]) as discover, \
+             patch.object(FLASH, "load_verified_build_info", return_value=info), \
+             patch.object(FLASH, "resolve_esptool", return_value=Path("esptool.exe")), \
+             patch.object(FLASH, "verify_device_partition"), \
+             patch("builtins.input", side_effect=["1", "Y"]), \
+             patch.object(FLASH.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as run, \
+             patch.object(FLASH.sys, "argv", ["flash_arduino.py"]):
+            self.assertEqual(FLASH.main(), 0)
+            self.assertEqual(discover.call_count, 2)
+            self.assertEqual(run.call_count, 2)
+            self.assertEqual(run.call_args_list[0].args[0][1], str(FLASH.BUILD_SCRIPT))
+            self.assertEqual(run.call_args_list[1].args[0][0], "esptool.exe")
+            self.assertEqual(run.call_args_list[1].args[0].count("0x10000"), 1)
+
+    def test_port_parser_lists_only_unique_windows_com_ports_numerically(self):
+        payload = {
+            "detected_ports": [
+                {"port": {"address": "COM12", "label": "USB Serial", "protocol": "serial"}},
+                {"port": {"address": "/dev/ttyACM0", "protocol": "serial"}},
+                {"port": {"address": "com3", "label": "PicoFido", "protocol": "serial"},
+                 "matching_boards": [{"name": "Waveshare ESP32-S3"}]},
+                {"port": {"address": "COM3", "label": "duplicate", "protocol": "serial"}},
+            ]
+        }
+        ports = FLASH.parse_windows_com_ports(payload)
+        self.assertEqual([port["address"] for port in ports], ["COM3", "COM12"])
+
+    def test_port_must_be_selected_from_displayed_list(self):
+        ports = [
+            {"address": "COM3", "label": "COM3", "protocol": "serial", "boards": ""},
+            {"address": "COM12", "label": "COM12", "protocol": "serial", "boards": ""},
+        ]
+        self.assertEqual(FLASH.choose_port(ports, "2")["address"], "COM12")
+        self.assertEqual(FLASH.choose_port(ports, "com3")["address"], "COM3")
+        self.assertIsNone(FLASH.choose_port(ports, "COM99"))
+        self.assertIsNone(FLASH.choose_port(ports, "3"))
+
+    def test_upload_command_writes_only_factory_image_and_no_erase_flag(self):
+        port = {"address": "COM7", "protocol": "serial"}
+        info = {"image_path": "C:/private/firmware.bin"}
+        command = FLASH.upload_command(Path("esptool.exe"), port, info)
+        self.assertEqual(command[:3], ["esptool.exe", "--chip", "esp32s3"])
+        self.assertIn("COM7", command)
+        self.assertEqual(command[-2:], ["0x10000", "C:/private/firmware.bin"])
+        self.assertEqual(command.count("write-flash"), 1)
+        self.assertNotIn("erase-all", " ".join(command).lower())
+        self.assertNotIn("0x8000", command)
+        self.assertNotIn("0xe000", command)
+
+    def test_app_partition_is_disjoint_from_nvs_and_other_data(self):
+        FLASH.verify_partition_layout()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            table = root / "EvilKeyV1" / "partitions.csv"
+            table.parent.mkdir()
+            table.write_text("nvs,data,nvs,0x9000,0x10000\n"
+                             "factory,app,factory,0x10000,0x1F0000\n",
+                             encoding="utf-8")
+            with patch.object(FLASH, "ROOT", root):
+                with self.assertRaises(RuntimeError):
+                    FLASH.verify_partition_layout()
+
+    def test_device_partition_mismatch_stops_before_app_write(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            expected = root / "expected.bin"
+            expected.write_bytes(b"original table")
+            info = {"partition_path": str(expected), "partition_size": len(expected.read_bytes())}
+            port = {"address": "COM7"}
+
+            def wrong_table(command: list[str], **_: object) -> SimpleNamespace:
+                self.assertIn("read-flash", command)
+                self.assertNotIn("write-flash", command)
+                Path(command[-1]).write_bytes(b"changed table!")
+                return SimpleNamespace(returncode=0)
+
+            with patch.object(FLASH.subprocess, "run", side_effect=wrong_table) as run:
+                with self.assertRaises(RuntimeError):
+                    FLASH.verify_device_partition(Path("esptool.exe"), port, info)
+                run.assert_called_once()
+
+    def test_menu_and_build_manifest_contract_are_wired(self):
+        build = (ROOT / "firmware" / "build_arduino.py").read_text(encoding="utf-8")
+        if (ROOT / "EvilKey.cmd").is_file():
+            menu = (ROOT / "EvilKey.cmd").read_text(encoding="utf-8")
+            wrapper = (ROOT / "scripts" / "commands" / "Flash_firmware.cmd").read_text(encoding="utf-8")
+            self.assertIn('"11" call scripts\\commands\\Flash_firmware.cmd', menu)
+            self.assertIn("firmware\\flash_arduino.py", wrapper)
+        self.assertIn("evilkey-arduino-build-v1", build)
+        self.assertIn("EraseFlash=none", build)
+
+
+if __name__ == "__main__":
+    unittest.main()
