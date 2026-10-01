@@ -46,6 +46,18 @@ On the PCB V1 prototype, I select the separate Air Mouse USB role and press **ST
 
 USB Tool is a separate USB role. Select a script on EvilKey's touchscreen and press **RUN**; connecting the key does not start a payload. It can send scripted keyboard and mouse input, store results on microSD and use Keystroke Reflection as a return channel when a mass-storage drive is unavailable. Scripts can move files or collect data within the connected host session's permissions and defenses. The Short shows only a harmless HID test on the owner's Windows computer: minimizing windows, opening Notepad and typing a joke. It does **not** demonstrate file transfer, data collection or bypassing a security control. The edit joins two real camera takes with captions and a logo outro.
 
+## Watch Apps on the real device
+
+<p align="center"><a href="https://youtube.com/shorts/e-bcwSlzdcg"><img src="docs/github/evilkey-apps-short-poster.png" alt="Watch EvilBlocks and EvilPinball running on the real EvilKey prototype" width="420"></a></p>
+
+[▶ Watch the Apps Short](https://youtube.com/shorts/e-bcwSlzdcg)
+
+I needed a FIDO2 key. It now runs falling blocks and pinball. Apparently I was left unsupervised. This silent Short shows **EvilBlocks and EvilPinball on the real PCB V1 prototype**: select an app from microSD, press **RUN**, then play using the touchscreen. The captions and 3D logo/glitch outro are edited; the gameplay is filmed during development, rather than a benchmark of the latest app builds.
+
+Apps are independent `.ekapp` packages in `/evilkey/apps/`, launched through **Settings → Apps** in the normal FIDO USB role. [Firmware 0.5.0 and its MIT SDK](https://github.com/mwr666/EvilKey-firmware/releases/tag/v0.5.0) provide ABI v4 with two touch contacts, accelerometer data, image assets and per-app microSD saves. Game packages have separate licenses and are not bundled in the public firmware, Manager or USB Tool examples repositories.
+
+What app would you put on a device like this? Useful tools and gloriously unnecessary experiments are welcome.
+
 ## Hardware for the PCB V1 USB Tool demo
 
 | Quantity | Component |
