@@ -48,29 +48,29 @@ int main(int argc,char **argv) {
     size_t package_size, bad_size;
     uint8_t *package=file(argv[1],&package_size);
     uint8_t *bad=file(argv[2],&bad_size);
-    if(!package || !bad || package_size<192) return 1;
+    if(!package || !bad || package_size<EK_PACKAGE_HEADER_SIZE) return 1;
     EkPackageInfo info;
-    if(!ek_package_parse(package,192,package_size,&info) ||
-       info.wasm_size+info.asset_size+192!=package_size ||
+    if(!ek_package_parse(package,EK_PACKAGE_HEADER_SIZE,package_size,&info) ||
+       info.wasm_size+info.asset_size+EK_PACKAGE_PAYLOAD_OFFSET!=package_size ||
        info.asset_size<12) return 1;
     EkAssets assets;
-    if(!ek_assets_parse(package+192+info.wasm_size,info.asset_size,&assets) ||
+    if(!ek_assets_parse(package+EK_PACKAGE_PAYLOAD_OFFSET+info.wasm_size,info.asset_size,&assets) ||
        assets.count!=1 || assets.items[0].id!=1) return 1;
     uint8_t *corrupt=(uint8_t *)malloc(info.asset_size);
-    memcpy(corrupt,package+192+info.wasm_size,info.asset_size);
+    memcpy(corrupt,package+EK_PACKAGE_PAYLOAD_OFFSET+info.wasm_size,info.asset_size);
     corrupt[12+12]=0; /* corrupt exact asset pixel byte length */
     if(ek_assets_parse(corrupt,info.asset_size,&assets)) return 1;
     free(corrupt);
-    if(ek_package_parse(package,192,package_size-1,&info)) return 1;
-    uint8_t header[192];memcpy(header,package,192);header[12]=3;
-    if(ek_package_parse(header,192,package_size,&info)) return 1;
+    if(ek_package_parse(package,EK_PACKAGE_HEADER_SIZE,package_size-1,&info)) return 1;
+    uint8_t header[EK_PACKAGE_HEADER_SIZE];memcpy(header,package,EK_PACKAGE_HEADER_SIZE);header[12]=3;
+    if(ek_package_parse(header,EK_PACKAGE_HEADER_SIZE,package_size,&info)) return 1;
     Counters counts={0};
     EkVmHost host={&counts,rect,present,blit,text,save,&assets};
     host.blit_region=blit_region;
     /* Reparse because malformed parser calls clear the table. */
-    if(!ek_assets_parse(package+192+info.wasm_size,info.asset_size,&assets)) return 1;
+    if(!ek_assets_parse(package+EK_PACKAGE_PAYLOAD_OFFSET+info.wasm_size,info.asset_size,&assets)) return 1;
     EkVm vm;
-    if(!ek_vm_open(&vm,package+192,info.wasm_size,host)) {
+    if(!ek_vm_open(&vm,package+EK_PACKAGE_PAYLOAD_OFFSET,info.wasm_size,host)) {
         fprintf(stderr,"open: %s\n",ek_vm_error(&vm));return 1;
     }
     EvilKeyAppInput input={0};

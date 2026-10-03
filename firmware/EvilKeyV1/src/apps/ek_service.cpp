@@ -19,6 +19,11 @@
 static SemaphoreHandle_t s_guard;
 static EkAppsState s_state;
 static bool s_visible;
+extern "C" bool pf_apps_storage_role_allowed(void);
+static EkPackageInfo *s_catalog;
+static uint8_t *s_icons,*s_icon_scratch;
+static uint32_t s_last_scan_at;
+static bool s_icons_pending;
 static bool s_modal;
 static EkAppsCommand s_command;
 static EvilKeyAppTouch s_touches[2];
@@ -218,16 +223,97 @@ static void input_snapshot(EvilKeyAppInput *input,uint32_t now_ms) {
     input->accel_z_mg=s_accel_z;
     xSemaphoreGive(s_guard);
 }
-static void refresh_list(unsigned requested) {
-    EkPackageInfo info;
-    unsigned total=0;
-    while (total<16 && ek_storage_entry(total,&info)) ++total;
-    unsigned selected=total?requested%total:0;
-    bool found=total && ek_storage_entry(selected,&info);
+/* Caller owns the state guard. Catalog strings are published together. */
+static void page_metadata(void) {
+    memset(s_state.names,0,sizeof(s_state.names));
+    for (unsigned slot=0;slot<EK_APPS_PAGE_SIZE;++slot) {
+        unsigned i=s_state.page*EK_APPS_PAGE_SIZE+slot;
+        if (i<s_state.count)
+            memcpy(s_state.names[slot],s_catalog[i].name,sizeof(s_state.names[slot]));
+    }
+    s_state.icon_valid=0;
+    memset(s_icons,0,EK_APPS_PAGE_SIZE*EK_APPS_ICON_BYTES);
+    ++s_state.catalog_generation;
+    s_icons_pending=true;
+}
+static void scan_catalog(void) {
+    uint32_t started=millis();
     xSemaphoreTake(s_guard,portMAX_DELAY);
-    s_state.count=(uint8_t)total;s_state.selected=(uint8_t)selected;
-    snprintf(s_state.id,sizeof(s_state.id),"%s",found?info.id:"");
+    unsigned previous_page=s_state.page;
+    s_state.scanning=true;
     xSemaphoreGive(s_guard);
+    unsigned total=0,headers=0;bool overflow=false,cancelled=false;
+    int step=ek_storage_scan_begin();
+    while (step>0) {
+        if (!pf_apps_storage_role_allowed()) {cancelled=true;break;}
+        EkPackageInfo info;bool header_read=false;
+        step=ek_storage_scan_step(&info,&header_read);
+        headers+=header_read?1:0;
+        if (step==1) {
+            if (total<EK_APPS_CATALOG_MAX) s_catalog[total++]=info;
+            else overflow=true;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    ek_storage_scan_end();
+    /* Stable names make page order independent of FAT directory ordering. */
+    for (unsigned i=1;i<total;++i) {
+        EkPackageInfo value=s_catalog[i];unsigned j=i;
+        while (j && strcmp(s_catalog[j-1].id,value.id)>0) {
+            s_catalog[j]=s_catalog[j-1];--j;
+        }
+        s_catalog[j]=value;
+    }
+    xSemaphoreTake(s_guard,portMAX_DELAY);
+    s_state.count=(cancelled || step<0)?0:(uint8_t)total;
+    unsigned pages=(s_state.count+EK_APPS_PAGE_SIZE-1)/EK_APPS_PAGE_SIZE;
+    s_state.page=(uint8_t)(pages?(previous_page<pages?previous_page:pages-1):0);
+    s_state.selected=(uint8_t)(s_state.page*EK_APPS_PAGE_SIZE);
+    s_state.scanning=false;s_state.catalog_ready=!cancelled && step==0;
+    s_state.overflow=overflow;s_state.headers_read=headers;
+    s_state.scan_ms=millis()-started;
+    snprintf(s_state.id,sizeof(s_state.id),"%s",s_state.count?s_catalog[s_state.selected].id:"");
+    page_metadata();
+    if (!s_previous_app_reset)
+        snprintf(s_state.status,sizeof(s_state.status),"%s",
+            cancelled?"USB role owns microSD":step<0?"microSD scan failed":
+            overflow?"First 64 apps shown":total?"Tap an app to run":"No apps on microSD");
+    xSemaphoreGive(s_guard);
+    if(cancelled || step<0) {
+        ek_storage_end();
+        xSemaphoreTake(s_guard,portMAX_DELAY);s_state.mounted=false;xSemaphoreGive(s_guard);
+    }
+    s_previous_app_reset=false;s_last_scan_at=millis();
+    ESP_LOGI("ek_apps","catalog: mount=%u ms scan=%u ms headers=%u apps=%u overflow=%u",
+        (unsigned)s_state.mount_ms,(unsigned)s_state.scan_ms,headers,total,(unsigned)overflow);
+}
+static void load_page_icons(void) {
+    xSemaphoreTake(s_guard,portMAX_DELAY);
+    unsigned page=s_state.page,count=s_state.count;
+    xSemaphoreGive(s_guard);
+    uint32_t started=millis();
+    for (unsigned slot=0;slot<EK_APPS_PAGE_SIZE;++slot) {
+        unsigned i=page*EK_APPS_PAGE_SIZE+slot;
+        if (i>=count || !pf_apps_storage_role_allowed()) break;
+        xSemaphoreTake(s_guard,portMAX_DELAY);
+        bool current=s_state.page==page && s_visible && s_command==EK_APPS_NONE;
+        xSemaphoreGive(s_guard);
+        if (!current) return;
+        bool valid=ek_storage_icon(&s_catalog[i],s_icon_scratch,EK_APPS_ICON_BYTES)!=0;
+        xSemaphoreTake(s_guard,portMAX_DELAY);
+        if (s_state.page==page && valid) {
+            memcpy(s_icons+slot*EK_APPS_ICON_BYTES,s_icon_scratch,EK_APPS_ICON_BYTES);
+            s_state.icon_valid|=(uint16_t)(1u<<slot);
+        }
+        if (!valid) snprintf(s_state.status,sizeof(s_state.status),"App icon missing or corrupt");
+        ++s_state.catalog_generation;
+        xSemaphoreGive(s_guard);
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    xSemaphoreTake(s_guard,portMAX_DELAY);
+    s_state.icon_ms=millis()-started;s_icons_pending=false;
+    xSemaphoreGive(s_guard);
+    ESP_LOGI("ek_apps","page %u icons=%u ms",page,(unsigned)s_state.icon_ms);
 }
 static void stop_vm(void) {
     if (s_vm_open) {ek_vm_close(&s_vm);s_vm_open=false;}
@@ -248,7 +334,13 @@ static void run_selected(const char *id) {
     mark_stage(APP_LOAD);
     log_memory("before load");
     if (!ek_storage_load(id,&bytes,&wasm_size,&asset_size)) {
-        state_text(ek_storage_error());mark_stage(APP_IDLE);return;
+        state_text(ek_storage_error());
+        ek_storage_end();
+        xSemaphoreTake(s_guard,portMAX_DELAY);
+        s_state.mounted=false;s_state.catalog_ready=false;s_state.count=0;s_state.id[0]=0;
+        page_metadata();
+        xSemaphoreGive(s_guard);
+        mark_stage(APP_IDLE);return;
     }
     mark_stage(APP_FRAMES);
     const size_t frame_bytes=EK_APPS_PIXELS*sizeof(uint16_t);
@@ -317,23 +409,37 @@ static void task(void *) {
         xSemaphoreGive(s_guard);
         if (!visible) {
             if (running || s_vm_open) stop_vm();
+            running=false;command=EK_APPS_NONE;
+        }
+        if (!pf_apps_storage_role_allowed()) {
+            if (running || s_vm_open) stop_vm();
             if (mounted) {
                 ek_storage_end();
                 xSemaphoreTake(s_guard,portMAX_DELAY);
                 s_state.mounted=false;s_state.count=0;s_state.id[0]=0;
+                s_state.catalog_ready=false;s_state.scanning=false;
+                page_metadata();
                 xSemaphoreGive(s_guard);
             }
             vTaskDelay(pdMS_TO_TICKS(50));continue;
         }
         if (!mounted) {
-            if (!ek_storage_begin()) {state_text(ek_storage_error());vTaskDelay(pdMS_TO_TICKS(500));continue;}
-            xSemaphoreTake(s_guard,portMAX_DELAY);s_state.mounted=true;xSemaphoreGive(s_guard);
-            refresh_list(0);
-            if (!s_previous_app_reset) state_text("microSD ready");
-            s_previous_app_reset=false;
+            uint32_t started=millis();
+            if (!ek_storage_begin()) {state_text(ek_storage_error());vTaskDelay(pdMS_TO_TICKS(1000));continue;}
+            xSemaphoreTake(s_guard,portMAX_DELAY);
+            s_state.mounted=true;s_state.mount_ms=millis()-started;
+            xSemaphoreGive(s_guard);
+            scan_catalog();
+            /* Do not run a command selected against a previous catalog. */
+            command=EK_APPS_NONE;id[0]=0;
         }
+        if (!running && (command==EK_APPS_REFRESH ||
+            (!visible && (uint32_t)(millis()-s_last_scan_at)>=15000U))) {
+            scan_catalog();command=EK_APPS_NONE;
+        }
+        if (visible && !running && s_icons_pending) load_page_icons();
         if (command==EK_APPS_STOP) {
-            stop_vm();state_text("Stopped");
+            stop_vm();state_text("Tap an app to run");
         } else if (running) {
             uint32_t wall=millis();
             if (modal) {
@@ -350,8 +456,13 @@ static void task(void *) {
                 } else flush_save();
             }
         } else if (command==EK_APPS_PREV || command==EK_APPS_NEXT) {
-            unsigned count=s_state.count;
-            if (count) refresh_list((selected+count+(command==EK_APPS_NEXT?1:count-1))%count);
+            xSemaphoreTake(s_guard,portMAX_DELAY);
+            unsigned pages=(s_state.count+EK_APPS_PAGE_SIZE-1)/EK_APPS_PAGE_SIZE;
+            unsigned page=s_state.page;
+            if (command==EK_APPS_NEXT && page+1<pages) ++page;
+            if (command==EK_APPS_PREV && page) --page;
+            if (page!=s_state.page) {s_state.page=(uint8_t)page;page_metadata();}
+            xSemaphoreGive(s_guard);
         } else if (command==EK_APPS_RUN && id[0]) {
             run_selected(id);
         } else if (command==EK_APPS_RUN) {
@@ -366,7 +477,13 @@ extern "C" int ek_apps_start(void) {
     if (!s_guard) return 0;
     s_input=(EvilKeyAppInput *)heap_caps_malloc(sizeof(*s_input),
                                                 MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
-    if (!s_input) {vSemaphoreDelete(s_guard);s_guard=nullptr;return 0;}
+    s_catalog=(EkPackageInfo *)heap_caps_calloc(EK_APPS_CATALOG_MAX,sizeof(*s_catalog),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    s_icons=(uint8_t *)heap_caps_calloc(EK_APPS_PAGE_SIZE,EK_APPS_ICON_BYTES,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    s_icon_scratch=(uint8_t *)heap_caps_malloc(EK_APPS_ICON_BYTES,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    if (!s_input || !s_catalog || !s_icons || !s_icon_scratch) {
+        free(s_input);free(s_catalog);free(s_icons);free(s_icon_scratch);
+        vSemaphoreDelete(s_guard);s_guard=nullptr;return 0;
+    }
     esp_reset_reason_t reason=esp_reset_reason();
     bool unexpected=reason==ESP_RST_PANIC || reason==ESP_RST_INT_WDT ||
                     reason==ESP_RST_TASK_WDT || reason==ESP_RST_WDT ||
@@ -380,11 +497,11 @@ extern "C" int ek_apps_start(void) {
                  (unsigned)s_crash_mark.stack_free,
                  (unsigned)s_crash_mark.heap_free);
     } else {
-        snprintf(s_state.status,sizeof(s_state.status),"Open Apps to mount microSD");
+        snprintf(s_state.status,sizeof(s_state.status),"Scanning microSD...");
     }
     mark_stage(APP_IDLE);
     if (xTaskCreate(task,"ek_apps",16384,nullptr,1,nullptr)!=pdPASS) {
-        free(s_input);s_input=nullptr;
+        free(s_input);s_input=nullptr;free(s_catalog);free(s_icons);free(s_icon_scratch);
         vSemaphoreDelete(s_guard);s_guard=nullptr;return 0;
     }
     xSemaphoreTake(s_guard,portMAX_DELAY);
@@ -403,6 +520,40 @@ extern "C" void ek_apps_set_modal(bool visible) {
 extern "C" void ek_apps_request(EkAppsCommand command) {
     if (!s_guard) return;
     xSemaphoreTake(s_guard,portMAX_DELAY);s_command=command;xSemaphoreGive(s_guard);
+}
+extern "C" void ek_apps_select_page(unsigned page) {
+    if (!s_guard) return;
+    xSemaphoreTake(s_guard,portMAX_DELAY);
+    unsigned pages=(s_state.count+EK_APPS_PAGE_SIZE-1)/EK_APPS_PAGE_SIZE;
+    if (!s_state.running && s_state.catalog_ready && !s_state.scanning &&
+        page<pages && page!=s_state.page) {
+        s_state.page=(uint8_t)page;
+        page_metadata();
+    }
+    xSemaphoreGive(s_guard);
+}
+extern "C" void ek_apps_launch(unsigned index) {
+    if (!s_guard) return;
+    xSemaphoreTake(s_guard,portMAX_DELAY);
+    unsigned slot=index%EK_APPS_PAGE_SIZE;
+    if (s_visible && !s_state.running && !s_state.scanning && s_state.catalog_ready &&
+        index<s_state.count && index/EK_APPS_PAGE_SIZE==s_state.page &&
+        (s_state.icon_valid&(1u<<slot))) {
+        s_state.selected=(uint8_t)index;
+        snprintf(s_state.id,sizeof(s_state.id),"%s",s_catalog[index].id);
+        s_command=EK_APPS_RUN;
+    }
+    xSemaphoreGive(s_guard);
+}
+extern "C" int ek_apps_copy_icons(uint8_t *pixels,size_t capacity,uint32_t *generation) {
+    if (!s_guard || !pixels || !generation || capacity<EK_APPS_PAGE_SIZE*EK_APPS_ICON_BYTES) return 0;
+    xSemaphoreTake(s_guard,portMAX_DELAY);
+    bool changed=s_state.catalog_generation!=*generation;
+    if (changed) {
+        memcpy(pixels,s_icons,EK_APPS_PAGE_SIZE*EK_APPS_ICON_BYTES);
+        *generation=s_state.catalog_generation;
+    }
+    xSemaphoreGive(s_guard);return changed?1:0;
 }
 extern "C" void ek_apps_input(const EvilKeyAppTouch *touch,uint32_t count,
                                 bool accel_valid,int32_t ax_mg,int32_t ay_mg,

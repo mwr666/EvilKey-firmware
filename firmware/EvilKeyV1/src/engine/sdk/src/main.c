@@ -152,6 +152,8 @@ static void core0_loop(void *arg) {
 }
 
 /* Arduino startup replaces app_main and the ESP-IDF TinyUSB driver install. */
+#include "../../board/ws_controls.h"
+#include "nvs_flash.h"
 TaskHandle_t hcore0 = NULL, hcore1 = NULL;
 static portMUX_TYPE pf_event_lock = portMUX_INITIALIZER_UNLOCKED;
 static int pf_usb_event = 0;
@@ -182,7 +184,26 @@ static void pf_service_usb_state(void) {
                               state == 2 ? MODE_SUSPENDED : MODE_NOT_MOUNTED);
 }
 
+static void pf_controls_loop(void *arg) {
+    (void)arg;
+    for(;;){ws_board_poll();vTaskDelay(pdMS_TO_TICKS(5));}
+}
+
 int pf_engine_start(void) {
+    if(pf_control_mode()==PF_CONTROL_BLE_MOUSE || pf_control_mode()==PF_CONTROL_BLE_PAD) {
+        // No CTAP/USB/keystore engine is started in a BLE controller role.
+        if(nvs_flash_init_partition("wsdev")!=ESP_OK)return -5;
+        const gpio_config_t boot={.pin_bit_mask=1ULL<<GPIO_NUM_0,.mode=GPIO_MODE_INPUT,
+            .pull_up_en=GPIO_PULLUP_ENABLE,.pull_down_en=GPIO_PULLDOWN_DISABLE,.intr_type=GPIO_INTR_DISABLE};
+        if(gpio_config(&boot)!=ESP_OK)return -2;
+        led_init();ws_board_init();
+        // Establish touch/BOOT servicing before any radio worker can start.
+        if(xTaskCreatePinnedToCore(pf_controls_loop,"ek_controls",8192,NULL,1,&hcore0,ESP32_CORE0)!=pdPASS) {
+            pf_control_restart(PF_CONTROL_NORMAL);return -3;
+        }
+        if(!pf_ble_start()){pf_control_restart(PF_CONTROL_NORMAL);return -6;}
+        return 0;
+    }
     serial_init();
     random_init();
     otp_init();

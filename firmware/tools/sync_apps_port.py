@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sync the four Apps-edited port templates into the committed Arduino engine.
+"""Sync Apps UI templates and assets into the committed Arduino engine.
 
 Refuses unrecognized generated edits. The full engine generator remains the
 canonical regeneration path; this narrow sync avoids replacing its upstream
@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 TEMPLATES = ROOT / "templates" / "port"
 ENGINE = ROOT / "EvilKeyV1" / "src" / "engine" / "board"
 MANIFEST = ROOT / "EvilKeyV1" / "GENERATED_MANIFEST.json"
-FILES = ("ws_board.c", "ws_lvgl.c", "ws_ui.c", "ws_ui.h")
+FILES = ("ws_board.c", "ws_lvgl.c", "ws_ui.c", "ws_ui.h", "ws_settings_icon_asset.h")
 
 
 def digest(data: bytes) -> str:
@@ -24,6 +24,7 @@ def digest(data: bytes) -> str:
 
 def generated(name: str) -> bytes:
     source = (TEMPLATES / name).read_text(encoding="utf-8")
+    source = source.replace('../../EvilKeyV1/src/apps/', '../../apps/')
     if name.endswith(".c"):
         source = '#include "../../pf_build_config.h"\n' + source
     if name == "ws_board.c":
@@ -50,10 +51,17 @@ def main() -> None:
              f"firmware/EvilKeyV1/src/engine/{key}"],
             cwd=ROOT.parent, check=False,
         ).returncode == 0
-        if digest(current) not in (manifest["generated_sha256"][key],
+        if digest(current) not in (manifest["generated_sha256"].get(key),
                                    digest(wanted)) and not clean:
             raise SystemExit(f"Refusing modified generated source: {path}")
         updates.append((path, key, wanted))
+    config = ROOT / "EvilKeyV1" / "src" / "engine" / "lv_conf.h"
+    wanted = (ROOT / "templates" / "lvgl_conf.h").read_bytes()
+    clean_config = subprocess.run(["git", "diff", "--quiet", "HEAD", "--",
+        "firmware/EvilKeyV1/src/engine/lv_conf.h"], cwd=ROOT.parent).returncode == 0
+    if digest(config.read_bytes()) not in (manifest["generated_sha256"]["lv_conf.h"], digest(wanted)) and not clean_config:
+        raise SystemExit(f"Refusing modified generated source: {config}")
+    updates.append((config, "lv_conf.h", wanted))
     for path, key, wanted in updates:
         path.write_bytes(wanted)
         manifest["generated_sha256"][key] = digest(wanted)

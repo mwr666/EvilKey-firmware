@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later
  * EvilKey Apps store. The user copies .ekapp files to microSD;
- * the ordinary FIDO role mounts the card only while the Apps screen is open.
+ * the ordinary FIDO role scans the card in its background Apps worker.
+ * Other USB roles take ownership only after the Apps store is unmounted.
  */
 #include "ek_storage.h"
 #include "ek_assets.h"
@@ -18,6 +19,7 @@
 extern "C" bool pf_apps_storage_role_allowed(void);
 static SPIClass s_spi(HSPI);
 static bool s_mounted;
+static File s_directory;
 static char s_error[80];
 static constexpr char kApps[]="/evilkey/apps";
 
@@ -86,32 +88,67 @@ extern "C" int ek_storage_begin(void) {
 }
 extern "C" void ek_storage_end(void) {
     if (!s_mounted) return;
+    ek_storage_scan_end();
     SD.end();s_spi.end();s_mounted=false;
 }
 extern "C" const char *ek_storage_error(void) {return s_error;}
-extern "C" int ek_storage_entry(unsigned index,EkPackageInfo *info) {
-    if (!s_mounted || !info) return 0;
-    File directory=SD.open(kApps,FILE_READ);
-    if (!directory || !directory.isDirectory()) return 0;
-    unsigned seen=0;
-    bool found=false;
-    File file;
-    while ((file=directory.openNextFile())) {
-        if (!file.isDirectory()) {
-            EkPackageInfo parsed;
-            const char *name=strrchr(file.name(),'/');
-            name=name?name+1:file.name();
-            char expected[48];
-            if (package_info(file,&parsed) &&
-                snprintf(expected,sizeof(expected),"%s.ekapp",parsed.id)>0 &&
-                strcmp(name,expected)==0 && seen++==index) {
-                *info=parsed;found=true;file.close();break;
-            }
-        }
-        file.close();
+extern "C" int ek_storage_scan_begin(void) {
+    ek_storage_scan_end();
+    if (!s_mounted) return -1;
+#ifndef EK_STORAGE_HOST_TEST
+    struct stat metadata;
+    if (stat("/evilkey-apps/evilkey/apps",&metadata)!=0) {
+        if (errno==ENOENT) return 0;
+        fail("microSD directory I/O error");return -1;
     }
-    directory.close();
-    return found?1:0;
+    if (!S_ISDIR(metadata.st_mode)) {fail("Apps path is not a directory");return -1;}
+#endif
+    s_directory=SD.open(kApps,FILE_READ);
+    if (!s_directory) {
+#ifdef EK_STORAGE_HOST_TEST
+        return 0;
+#else
+        fail("microSD directory unavailable");return -1;
+#endif
+    }
+    if (!s_directory.isDirectory()) {s_directory.close();return -1;}
+    return 1;
+}
+extern "C" void ek_storage_scan_end(void) {s_directory.close();}
+extern "C" int ek_storage_scan_step(EkPackageInfo *info,bool *header_read) {
+    if (header_read) *header_read=false;
+    if (!s_mounted || !info || !header_read) return -1;
+    if (!s_directory) return 0;
+    File file=s_directory.openNextFile();
+    if (!file) {ek_storage_scan_end();return 0;}
+    const char *name=strrchr(file.name(),'/');
+    name=name?name+1:file.name();
+    size_t len=strlen(name);
+    int result=2;
+    /* Filter before reading a header, including large saves and backups. */
+    if (!file.isDirectory() && len>6 && strcmp(name+len-6,".ekapp")==0) {
+        *header_read=true;
+        char expected[48];
+        if (package_info(file,info) &&
+            snprintf(expected,sizeof(expected),"%s.ekapp",info->id)>0 &&
+            strcmp(name,expected)==0) result=1;
+    }
+    file.close();return result;
+}
+extern "C" int ek_storage_icon(const EkPackageInfo *info,uint8_t *rgb565,size_t capacity) {
+    if (!s_mounted || !info || !rgb565 || capacity<EK_PACKAGE_ICON_BYTES) return 0;
+    char filename[80];
+    if (!path(filename,sizeof(filename),info->id,"ekapp")) return 0;
+    File file=SD.open(filename,FILE_READ);
+    EkPackageInfo current;
+    bool ok=file && package_info(file,&current) &&
+        memcmp(current.icon_sha256,info->icon_sha256,32)==0 &&
+        strcmp(current.id,info->id)==0 && read_exact(file,rgb565,EK_PACKAGE_ICON_BYTES);
+    file.close();
+    uint8_t digest[32];
+    if (ok) ok=mbedtls_sha256(rgb565,EK_PACKAGE_ICON_BYTES,digest,0)==0 &&
+        memcmp(digest,info->icon_sha256,32)==0;
+    return ok?1:fail("App icon missing or corrupt");
 }
 extern "C" int ek_storage_load(const char *id,uint8_t **payload,
                                  size_t *wasm_size,size_t *asset_size) {
@@ -129,7 +166,7 @@ extern "C" int ek_storage_load(const char *id,uint8_t **payload,
     uint8_t *buffer=(uint8_t *)heap_caps_malloc(info.wasm_size+info.asset_size,
                                                   MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     if (!buffer) {file.close();return fail("No memory for app");}
-    bool ok=hash_payload(file,info,buffer);
+    bool ok=file.seek(EK_PACKAGE_PAYLOAD_OFFSET) && hash_payload(file,info,buffer);
     file.close();
     if (!ok) {free(buffer);return fail("App SHA-256 mismatch");}
     EkAssets assets;

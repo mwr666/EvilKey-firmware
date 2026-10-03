@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #pragma once
 #include <stddef.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include "ek_package.h"
 #include "evilkey_app_abi.h"
@@ -12,7 +13,12 @@ extern "C" {
  * internal flash operations exist in this module. */
 int ek_storage_begin(void);
 void ek_storage_end(void);
-int ek_storage_entry(unsigned index, EkPackageInfo *info);
+/* One directory pass; step inspects at most one entry. 1=package, 2=skip,
+ * 0=end, -1=I/O error. No payloads or saves are read during enumeration. */
+int ek_storage_scan_begin(void);
+int ek_storage_scan_step(EkPackageInfo *info, bool *header_read);
+void ek_storage_scan_end(void);
+int ek_storage_icon(const EkPackageInfo *info, uint8_t *rgb565, size_t capacity);
 int ek_storage_load(const char *id, uint8_t **payload, size_t *wasm_size,
                     size_t *asset_size);
 /* Returns 1 for a valid record (including an empty payload), 0 otherwise. */

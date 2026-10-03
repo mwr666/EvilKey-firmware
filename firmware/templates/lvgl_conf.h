@@ -17,7 +17,7 @@
 #define LV_COLOR_CHROMA_KEY lv_color_hex(0x00ff00)
 
 #define LV_MEM_CUSTOM 0
-#define LV_MEM_SIZE (64U * 1024U)
+#define LV_MEM_SIZE (128U * 1024U)
 #define LV_MEM_ADR 0
 /* Put LVGL's object/TLSF pool in PSRAM. Keep the active RGB565 draw buffers
  * in internal DMA SRAM; SPI TX must never consume a PSRAM image buffer. */
@@ -50,7 +50,7 @@
 
 #define LV_FONT_MONTSERRAT_8 0
 #define LV_FONT_MONTSERRAT_10 0
-#define LV_FONT_MONTSERRAT_12 0
+#define LV_FONT_MONTSERRAT_12 1
 #define LV_FONT_MONTSERRAT_14 1
 #define LV_FONT_MONTSERRAT_16 0
 #define LV_FONT_MONTSERRAT_18 1

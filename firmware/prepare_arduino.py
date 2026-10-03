@@ -298,7 +298,7 @@ def source_plan(roots: dict[str, Path]) -> tuple[list[Path], dict[Path, str]]:
     sources += list((roots["crypto"] / "library").glob("*.c"))
     sources += [roots["cbor"] / "src" / p for p in CBOR_SOURCES]
     sources += [roots["ducky"] / "components/ducky" / p for p in ("ducky.c", "ducky_keymap.c")]
-    sources += [ROOT / "templates/port" / p for p in ("ws_board.c", "ws_panel.c", "ws_ui.c", "ws_lvgl.c", "ws_presence.c", "ws_crypto_port.c", "ws_pinpad.c", "ws_uv_retries.c", "ws_settings_codec.c", "ws_settings_store.c", "ws_manager_drive_state.c", "ws_usb_tool_state.c")]
+    sources += [ROOT / "templates/port" / p for p in ("ws_board.c", "ws_panel.c", "ws_ui.c", "ws_lvgl.c", "ws_gamepad_view.c", "ws_presence.c", "ws_crypto_port.c", "ws_pinpad.c", "ws_uv_retries.c", "ws_settings_codec.c", "ws_settings_store.c", "ws_manager_drive_state.c", "ws_usb_tool_state.c", "ws_controls.c")]
     for p in sources:
         if not p.is_file(): raise RuntimeError(f"Missing locked source: {p}")
     files = set(sources)
@@ -333,6 +333,9 @@ def rewrite_includes(text: str, origin: Path, output: Path, mapping: dict[Path, 
             target = external_api
         elif name == "pf_firmware_version.h" and external_version is not None:
             target = external_version
+        elif name in ("../../EvilKeyV1/src/apps/ek_service.h",
+                      "../../EvilKeyV1/src/apps/ek_exit_dialog.h"):
+            target = external_api.parent / "apps" / Path(name).name
         else:
             candidates = [origin.parent / name] + [p / name for p in include_dirs]
             target = next((mapping[p.resolve()] for p in candidates if p.resolve() in mapping), None)
@@ -506,11 +509,11 @@ def prepare(cache: Path, offline: bool) -> None:
             for p in root.glob("*"):
                 if p.is_file() and p.name.upper().startswith(("LICENSE", "LICENCE", "COPYING", "NOTICE")):
                     shutil.copy2(p, license_dir / (name + "_" + p.name))
-        manifest = {"profile": "arduino-v1-development", "port_version": "0.5.0", "arduino_core": "3.3.12-recommended;3.3.11-supported",
+        manifest = {"profile": "arduino-v1-development", "port_version": "0.6.0", "arduino_core": "3.3.12-recommended;3.3.11-supported",
                     "revisions": {name: sha for name, (_, sha) in REPOS.items()},
                     "translation_units": len(list(dest.rglob("*.c"))), "generated_sha256": generated,
                     "integrated_changes": ["C1", "S2", "LVGL_R5", "LVGL_R8_PREMIUM", "M1", "ARDUINO_HEADER_R1", "USB_TOOL_R26", "USB_TOOL_R27_HAK5", "USB_TOOL_R28_RAM_OPT", "PSRAM_DUCKY3_R29", "HAK5_AUTO_SYNC_R30", "HAK5_WINDOWS_IO_R31", "DUCKY3_ARCH_R32", "DUCKY3_OS_FIX_R33", "DUCKY3_HOST_OS_R34", "DUCKY3_COMPAT_ARCH_R35", "STAGE8A_8B_R35", "LOOT_INDEX_R35", "HAK5_LIBRARY_AUDIT_R35", "USB_TOOL_SAFE_AUTO_DETACH_R36", "CRYSTAL_SCREENSAVER_R37", "CRYSTAL_CONTRAST_R38"],
-                    "package_revision": "EVILKEY_0_4_0_APPS_ABI_V2",
+                    "package_revision": "EVILKEY_0_6_0_BLE_CONTROLS_ABI_V4",
                     "external_usbd_stack_bytes_required": 16384,
                     "validation": "source-generation checks only; not a hardware certification"}
         (ROOT / "EvilKeyV1/GENERATED_MANIFEST.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")

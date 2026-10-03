@@ -1,35 +1,54 @@
-# Installing a modified firmware build
+# Installing modified firmware
 
-These instructions apply to the current Waveshare ESP32-S3-Touch-AMOLED-1.64
-**PCB V1** EvilKey configuration. A later retail hardware or secure-boot
-configuration must be checked again before it is sold.
+These instructions cover the Waveshare ESP32-S3 Touch AMOLED 1.64 **PCB V1**.
 
-1. Install Arduino-ESP32 3.3.12, the Waveshare PCB V1 board definition,
-   Arduino CLI, Python, and Git. Extract the complete firmware source ZIP.
-   Exact upstream revisions are in `UPSTREAM_LOCK.json`; license files are
-   in `EvilKeyV1/data/upstream-licenses/`.
-2. Edit `EvilKeyV1/FidoConfig.h` or the relevant source. Changes to generated
-   `EvilKeyV1/src/engine/` must also be made in `templates/port/` because
-   regeneration replaces generated files.
-3. From the `firmware/` directory, run `python prepare_arduino.py`, then
-   `python build_arduino.py`. The latter runs the USB stack check and builds
-   `build-arduino/EvilKeyV1.ino.bin` using `EraseFlash=none`. If the pinned
-   Arduino USB core needs the documented local hook, follow the output of
-   `tools/check_usb_stack.py` before building.
-4. Connect the device to the computer by its native USB port. Enter download
-   mode by holding BOOT, pressing and releasing RESET, then releasing BOOT.
-   Run `python flash_arduino.py`, choose the displayed COM port, and confirm
-   with `Y`. The script rebuilds and verifies the image before upload.
-5. Release BOOT and press RESET once after upload. Check display navigation,
-   FIDO login, and any changed function on the device.
+1. Extract the complete firmware source package. Install Python, Git,
+   Arduino CLI, Arduino-ESP32 **3.3.12** and the configured PCB V1 board.
+2. Change `firmware/EvilKeyV1/FidoConfig.h` or the relevant sources.
+   Changes to generated board code must also be made in `firmware/templates/port/`.
+3. If the engine is missing or templates changed, run `firmware/prepare.cmd`.
+   Open **EvilKey.cmd → 7** to build. Follow any required USB-hook instructions.
+4. Connect USB. Hold BOOT, press/release RESET, then release BOOT.
+   Choose **11**, select the COM port and confirm **Y**.
+5. Wait for application readback and protected-storage verification.
+   Press RESET without BOOT and test FIDO and the changed functionality.
 
-The upload path preserves NVS by using `EraseFlash=none`; it does not make a
-backup of credentials or settings. A mistake in board choice or flash
-partitioning can still make the device unusable. Never publish private FIDO
-state or keys as part of source or build artifacts.
+The builder prepares pinned BLE dependencies and verifies linked erase guards.
+Source pins are in `UPSTREAM_LOCK.json` and `BLE_LOCK.json`; upstream licenses
+are in `EvilKeyV1/data/upstream-licenses/`. The uploader prepares esptool locally
+and uses `EraseFlash=none`. Direct IDE upload omits the preservation checks.
 
-If production devices enable flash encryption, secure boot, signed updates,
-or any other restriction on installing a modified build, this information
-must be updated and the materials needed to install and run modified firmware
-must be supplied as required by GNU AGPLv3 section 6. Test that process on an
-actual retail device before publication.
+## Partition handling
+
+| Partition | Offset | Size | Operation |
+| --- | --- | --- | --- |
+| nvs | `0x9000` | `0x5000` | Preserve and compare digests |
+| otadata | `0xE000` | `0x2000` | Preserve and compare digests |
+| part0 | `0x200000` | `0x100000` | Preserve and compare digests |
+| wsdev | `0x400000` | `0x10000` | Preserve and compare digests |
+| factory | `0x500000` | `0x400000` | Write and verify application |
+
+Only reviewed old/new layouts are accepted. When migrating the older layout,
+the new app is verified first, then the table at `0x8000` is updated. Existing
+data offsets and the old app at `0x10000` stay intact. Subsequent uploads on
+the new layout need no table change. Full-flash and protected NVS erases are
+forbidden by this process.
+
+Receipts in `.flash-backups/` retain tables and digests. Protected data is
+compared using device-side MD5; raw credential bytes are not transferred.
+Local SHA-256 binds the build artifacts; it is an integrity check, not a signature.
+
+## Rollback after migration
+
+Enter BOOT/RESET download mode and restore only that device receipt's
+`partition-before.bin` to `0x8000`; verify its 3072-byte readback before RESET.
+The preserved old application then boots at `0x10000`. Do not move an old app
+to `0x500000`, change data offsets or erase NVS. This rollback applies to the
+reviewed migration, not an arbitrary partition layout.
+
+## AGPL installation information
+
+If retail devices enable secure boot, flash encryption, signed updates or other
+installation restrictions, supply the materials necessary to install and run
+modified firmware as required by AGPLv3 section 6, and verify them on that
+hardware. These instructions make no claim about such a retail configuration.

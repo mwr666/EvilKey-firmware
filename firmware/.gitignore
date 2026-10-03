@@ -7,6 +7,5 @@ __pycache__/
 *.pyc
 test-output/
 build-arduino/
-build-arduino-apps-probe/
 
 .venv*/

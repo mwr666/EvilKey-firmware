@@ -108,6 +108,13 @@ static uint16_t s_touch_x,s_touch_y;
  * READ/WRITE transition may temporarily borrow the existing PIN pad, but never
  * the FIDO presence state or a FIDO UV/token session. */
 static bool s_settings_open;
+static ws_root_page_t s_root_page=WS_ROOT_HOME;
+static bool s_launcher_open;
+static uint8_t s_launcher_transition,s_launcher_from,s_launcher_to,s_launcher_page;
+static bool s_launcher_intro=true;
+static int8_t s_launcher_page_direction;
+static uint32_t s_launcher_at,s_launcher_page_at;
+static int16_t s_launcher_page_offset,s_launcher_page_from;
 static bool s_settings_touch_was_down;
 static EkExitDialog s_app_exit_dialog;
 static uint8_t s_settings_page;
@@ -117,7 +124,21 @@ static uint8_t s_settings_transition_to;
 static uint8_t s_settings_touch_action;
 static uint8_t s_settings_feedback;
 static bool s_diagnostics_enabled;
+static uint32_t s_poll_at,s_poll_gap_max,s_render_ms_max;
 static bool s_air_mouse_role;
+static bool s_gamepad_role;
+static WsControlPrefs s_controls;
+static WsGamepad s_gamepad;
+static WsControlPoint s_pad_points[2];
+static uint8_t s_pad_count;
+static uint8_t s_controls_touch_raw,s_controls_touch_max;
+static WsFT3168Probe s_controls_touch_probe;
+static WsFT3168FrameEvidence s_controls_touch_frame;
+static WsPadReport s_pad_sent;
+static bool s_pad_connected;
+static uint32_t s_pad_imu_at;
+static WsMouseLatch s_mouse_latch;
+static PfControlMode s_control_requested;
 static bool s_air_mouse_sensor_ok;
 static bool s_air_mouse_restart_pending;
 static uint32_t s_air_mouse_restart_at;
@@ -139,6 +160,9 @@ static float s_air_mouse_down_x,s_air_mouse_down_y,s_air_mouse_down_z;
 static bool s_air_mouse_gravity_valid,s_air_mouse_neutral_valid;
 static float s_air_mouse_fraction_x,s_air_mouse_fraction_y;
 static bool s_air_mouse_settings_open,s_air_mouse_ui_touch_armed;
+static uint8_t s_mouse_ble_modal;
+static bool s_mouse_ble_connected;
+static uint32_t s_control_boot_hold;
 static uint8_t s_air_mouse_sensitivity=3U;
 static bool s_air_mouse_invert_y;
 static int16_t s_settings_page_offset;
@@ -193,6 +217,7 @@ static void settings_transition_begin(bool open,uint32_t now,bool animate)
 {
     uint8_t target=open?255U:0U;
     s_settings_open=open;
+    if(open) s_root_page=WS_ROOT_SETTINGS;
     if(open) s_settings_opened_at=now;
     s_settings_touch_was_down=false;
     s_settings_touch_action=0;
@@ -228,6 +253,7 @@ static void screensaver_transition_begin(bool open,uint32_t now,bool animate)
 {
     uint8_t target=open?255U:0U;
     s_screensaver_open=open;
+    if(open) s_root_page=WS_ROOT_SAVER;
     if(open) s_screensaver_opened_at=now;
     s_settings_touch_was_down=false;
     s_settings_touch_action=0U;
@@ -256,6 +282,43 @@ static void screensaver_transition_tick(uint32_t now)
     int value=from+((to-from)*(int)e)/255;
     if(value<0)value=0;if(value>255)value=255;
     s_screensaver_transition=(uint8_t)value;
+}
+
+static void launcher_transition_begin(bool open,uint32_t now,bool animate)
+{
+    s_launcher_open=open;s_launcher_from=s_launcher_transition;
+    s_launcher_to=open?255U:0U;s_launcher_at=now;
+    if(!animate) s_launcher_transition=s_launcher_to;
+    s_settings_touch_was_down=false;s_settings_touch_action=0;
+}
+static void launcher_transition_tick(uint32_t now)
+{
+    uint32_t elapsed=(uint32_t)(now-s_launcher_at);
+    if(elapsed>=WS_SETTINGS_TRANSITION_MS) s_launcher_transition=s_launcher_to;
+    else {
+        unsigned p=elapsed*255U/WS_SETTINGS_TRANSITION_MS;
+        int e=ease_out_u8((uint8_t)p);
+        s_launcher_transition=(uint8_t)(s_launcher_from+
+            ((int)s_launcher_to-(int)s_launcher_from)*e/255);
+    }
+    elapsed=(uint32_t)(now-s_launcher_page_at);
+    if(elapsed>=WS_SETTINGS_PAGE_TRANSITION_MS) s_launcher_page_offset=0;
+    else s_launcher_page_offset=(int16_t)(s_launcher_page_from*
+        (255-(int)ease_out_u8((uint8_t)(elapsed*255U/WS_SETTINGS_PAGE_TRANSITION_MS)))/255);
+}
+static void root_navigate(int direction,bool has_apps,uint32_t now,bool animate)
+{
+    ws_root_page_t next=ws_ui_root_next(s_root_page,direction,has_apps);
+    if(next==s_root_page) return;
+    if(next==WS_ROOT_APPS) {
+        s_launcher_intro=true;
+        s_launcher_page_direction=0;
+        ek_apps_select_page(0);
+    }
+    launcher_transition_begin(next==WS_ROOT_APPS,now,animate);
+    settings_transition_begin(next==WS_ROOT_SETTINGS,now,animate);
+    screensaver_transition_begin(next==WS_ROOT_SAVER,now,true);
+    s_root_page=next;
 }
 
 static void settings_page_change(uint8_t next,int direction,uint32_t now,bool animate)
@@ -468,7 +531,7 @@ static bool settings_apply_action(ws_settings_action_t action,ws_settings_t *set
     bool changed=false;
     switch(action) {
     case WS_SETTINGS_ACTION_BACK:
-        settings_transition_begin(false,now,settings->animation);return false;
+        settings_transition_begin(false,now,settings->animation);s_root_page=WS_ROOT_HOME;return false;
     case WS_SETTINGS_ACTION_TAB_DISPLAY:
     case WS_SETTINGS_ACTION_TAB_TIMING:
         return false;
@@ -476,23 +539,34 @@ static bool settings_apply_action(ws_settings_action_t action,ws_settings_t *set
         /* Presentation telemetry only. No NVS write, USB role change or
          * security-state transition is attached to this control. */
         s_diagnostics_enabled=!s_diagnostics_enabled;
+        s_poll_gap_max=0;
+        portENTER_CRITICAL(&s_lock);s_render_ms_max=0;portEXIT_CRITICAL(&s_lock);
         v->diagnostics_enabled=s_diagnostics_enabled;
         ws_screen_power_wake(&s_screen,now);
         return false;
+    case WS_SETTINGS_ACTION_AIR_MOUSE_TRANSPORT:
+    case WS_SETTINGS_ACTION_GAMEPAD_PROFILE: {
+        WsControlPrefs next=s_controls;
+        if(action==WS_SETTINGS_ACTION_AIR_MOUSE_TRANSPORT)next.transport^=1;
+        else next.profile^=1;
+        if(pf_controls_save(&next)){s_controls=next;settings_feedback(WS_SETTINGS_FEEDBACK_SAVED,now);}
+        else settings_feedback(WS_SETTINGS_FEEDBACK_ERROR,now);
+        return false;
+    }
+    case WS_SETTINGS_ACTION_GAMEPAD_START:
     case WS_SETTINGS_ACTION_AIR_MOUSE_START:
-        if(s_air_mouse_sensor_ok && s_touch_available && !s_air_mouse_restart_pending &&
+        if((action==WS_SETTINGS_ACTION_GAMEPAD_START || s_air_mouse_sensor_ok) && s_touch_available && !s_air_mouse_restart_pending &&
            !s_manager_restart_pending && !s_usb_tool_restart_pending &&
            !ws_usb_tool_enabled() && !ws_manager_drive_enabled()) {
             s_air_mouse_restart_pending=true;
+            s_control_requested=action==WS_SETTINGS_ACTION_GAMEPAD_START?PF_CONTROL_BLE_PAD:
+                s_controls.transport?PF_CONTROL_BLE_MOUSE:PF_CONTROL_USB_MOUSE;
             s_air_mouse_restart_at=now;
             settings_feedback(WS_SETTINGS_FEEDBACK_SAVED,now);
             ws_screen_power_wake(&s_screen,now);
-            ESP_LOGI(TAG,"Air Mouse requested; restarting into mouse-only USB role");
+            ESP_LOGI(TAG,"Control role requested: %u",(unsigned)s_control_requested);
         } else settings_feedback(WS_SETTINGS_FEEDBACK_ERROR,now);
         return false;
-    case WS_SETTINGS_ACTION_APPS_PREV:ek_apps_request(EK_APPS_PREV);return false;
-    case WS_SETTINGS_ACTION_APPS_NEXT:ek_apps_request(EK_APPS_NEXT);return false;
-    case WS_SETTINGS_ACTION_APPS_RUN:ek_apps_request(EK_APPS_RUN);return false;
     case WS_SETTINGS_ACTION_BRIGHTNESS_MINUS:
         next.brightness=(uint8_t)(next.brightness<=20U?8U:next.brightness-13U);
         if(next.dim_brightness>next.brightness)next.dim_brightness=next.brightness;
@@ -628,6 +702,20 @@ static bool settings_apply_action(ws_settings_action_t action,ws_settings_t *set
     return false;
 }
 
+static bool touch_probe_register(uint8_t reg,uint8_t *value,void *context)
+{
+    (void)context;
+    return i2c_master_write_read_device(I2C_NUM_0,WS_TOUCH_ADDR,&reg,1,
+                       value,1,pdMS_TO_TICKS(10))==ESP_OK;
+}
+static bool touch_write_register(uint8_t reg,uint8_t value,void *context)
+{
+    (void)context;
+    const uint8_t data[]={reg,value};
+    return i2c_master_write_to_device(I2C_NUM_0,WS_TOUCH_ADDR,data,sizeof(data),
+                                    pdMS_TO_TICKS(20))==ESP_OK;
+}
+
 static esp_err_t touch_init(void)
 {
     const i2c_config_t cfg={
@@ -641,6 +729,19 @@ static esp_err_t touch_init(void)
     const uint8_t normal_mode[]={0x00,0x00};
     if(err==ESP_OK) err=i2c_master_write_to_device(I2C_NUM_0,WS_TOUCH_ADDR,
                             normal_mode,sizeof(normal_mode),pdMS_TO_TICKS(20));
+    /* One owner and startup only. Normal boots restore the observed A:01
+     * default, so a controller left powered through an MCU reset cannot
+     * retain the controls experiment in the FIDO role. No NVS writes. */
+    if(err==ESP_OK) {
+        s_controls_touch_probe=ws_ft3168_probe(touch_probe_register,NULL);
+        /* A:00 did not repair two contacts on the physical panel. Restore
+         * its observed A:01 default in every role; subsequent probes read only. */
+        WsFT3168MonitorResult mode=ws_ft3168_monitor_mode(&s_controls_touch_probe,
+            false,touch_probe_register,touch_write_register,NULL);
+        ESP_LOGI(TAG,"FT3168 monitor restoration result=%u A=%02x valid=%u",
+            (unsigned)mode,s_controls_touch_probe.value[4],
+            (unsigned)((s_controls_touch_probe.valid_mask>>4)&1U));
+    }
     return err;
 }
 
@@ -650,24 +751,47 @@ static ws_contact_t touch_read(void)
     uint8_t reg=0x02;
     /* FIDO and PIN remain single-touch. Apps and Air Mouse read both points. */
     uint8_t bytes[11]={0};
+    if(s_air_mouse_role || s_gamepad_role)s_controls_touch_raw=0;
+    if(s_gamepad_role)s_pad_count=0;
     if(s_air_mouse_role)s_mouse_point_count=0U;
     if(s_apps_touch_mode)s_app_point_count=0U;
-    size_t length=(s_air_mouse_role || s_apps_touch_mode)?sizeof(bytes):5U;
-    esp_err_t err=i2c_master_write_read_device(I2C_NUM_0,WS_TOUCH_ADDR,
+    size_t length=(s_air_mouse_role || s_apps_touch_mode || s_gamepad_role)?sizeof(bytes):5U;
+    esp_err_t err;
+    if(s_air_mouse_role || s_gamepad_role) {
+        /* Read complete slots including event/ID/weight/area. Separately
+         * read the count like the Waveshare example, to detect a difference
+         * in the panel's burst response. Keep FIDO/PIN/Apps reads unchanged. */
+        uint8_t frame[15]={0},start=0,single=0;
+        err=i2c_master_write_read_device(I2C_NUM_0,WS_TOUCH_ADDR,
+                      &start,1,frame,sizeof(frame),pdMS_TO_TICKS(10));
+        if(err==ESP_OK) {
+            bool single_valid=touch_probe_register(0x02,&single,NULL);
+            bool capture=s_gamepad_role?(s_gamepad.modal==0):
+                                         (!s_air_mouse_settings_open && s_mouse_ble_modal==0);
+            ws_ft3168_frame_observe(&s_controls_touch_frame,frame,sizeof(frame),
+                                   single_valid,single,capture);
+            memcpy(bytes,frame+2,sizeof(bytes));
+        }
+    } else err=i2c_master_write_read_device(I2C_NUM_0,WS_TOUCH_ADDR,
                        &reg,1,bytes,length,pdMS_TO_TICKS(10));
     if(err!=ESP_OK) return result; /* Invalid, NOT a synthetic release. */
     unsigned points=bytes[0]&0x0F;
+    if(s_air_mouse_role || s_gamepad_role) {
+        s_controls_touch_raw=(uint8_t)points;
+        if(points>s_controls_touch_max)s_controls_touch_max=(uint8_t)points;
+    }
     if(points==0) {
         result.valid=true;
         return result;
     }
-    if(points>((s_air_mouse_role || s_apps_touch_mode)?2U:1U)) return result;
+    if(points>((s_air_mouse_role || s_apps_touch_mode || s_gamepad_role)?2U:1U)) return result;
     for(unsigned i=0;i<points;++i) {
         unsigned offset=1U+6U*i;
         uint16_t x=(uint16_t)(((bytes[offset]&0x0F)<<8)|bytes[offset+1U]);
         uint16_t y=(uint16_t)(((bytes[offset+2U]&0x0F)<<8)|bytes[offset+3U]);
         if(x>=WS_LCD_WIDTH || y>=WS_LCD_HEIGHT) return result;
         if(s_air_mouse_role){s_mouse_points[i].x=x;s_mouse_points[i].y=y;}
+        if(s_gamepad_role)s_pad_points[i]=(WsControlPoint){(int16_t)x,(int16_t)y,(uint16_t)(bytes[offset+2U]>>4)};
         if(s_apps_touch_mode) {
             s_app_points[i].x=(int16_t)x;
             s_app_points[i].y=(int16_t)y;
@@ -677,6 +801,7 @@ static ws_contact_t touch_read(void)
         if(i==0U){s_touch_x=x;s_touch_y=y;}
     }
     if(s_air_mouse_role)s_mouse_point_count=(uint8_t)points;
+    if(s_gamepad_role)s_pad_count=(uint8_t)points;
     if(s_apps_touch_mode)s_app_point_count=(uint8_t)points;
     result.valid=true;
     result.down=true;
@@ -828,6 +953,14 @@ static void air_mouse_vector_delta(float tilt_x,float tilt_y,uint32_t elapsed_ms
 
 static void air_mouse_poll(uint32_t now,ws_ui_snapshot_t *view)
 {
+    bool ble=pf_control_mode()==PF_CONTROL_BLE_MOUSE;
+    if(ble && view->ble_connected!=s_mouse_ble_connected) {
+        s_mouse_ble_connected=view->ble_connected;
+        s_air_mouse_ui_touch_armed=false;s_air_mouse_sent_buttons=0;
+        ws_mouse_latch_reset(&s_mouse_latch);
+        s_air_mouse_fraction_x=s_air_mouse_fraction_y=0.0f;
+        pf_ble_release();
+    }
     bool fresh=s_touch_available && s_touch.valid &&
         (uint32_t)(now-s_touch_polled)<=60U;
     uint8_t zone=0U;
@@ -837,8 +970,14 @@ static void air_mouse_poll(uint32_t now,ws_ui_snapshot_t *view)
         for(unsigned i=0;i<s_mouse_point_count;++i) {
             uint8_t hit=ws_ui_air_mouse_hit_test(s_air_mouse_settings_open,
                                                  s_mouse_points[i].x,s_mouse_points[i].y);
-            if(hit==6U)motion_held=true;
-            else if(hit!=0U && zone==0U) {
+            if(ble && s_air_mouse_settings_open) {
+                int x=s_mouse_points[i].x,y=s_mouse_points[i].y;
+                if(s_mouse_ble_modal)hit=y>=250 && y<308?(x>=20 && x<136?14:x>=144 && x<260?15:0):0;
+                else if(y>=286 && y<330 && x>=20 && x<260)hit=8;
+                else if(y>=336 && y<380)hit=x>=20 && x<136?12:x>=144 && x<260?13:0;
+                else if(y>=310 && y<392)hit=0;
+            }
+            if(hit!=0U && zone==0U) {
                 zone=hit;
                 zone_y=s_mouse_points[i].y;
             }
@@ -847,6 +986,17 @@ static void air_mouse_poll(uint32_t now,ws_ui_snapshot_t *view)
     }
     if(fresh && (!s_touch.down || s_mouse_point_count==0U))
         s_air_mouse_ui_touch_armed=true;
+    if(!fresh)s_air_mouse_ui_touch_armed=false;
+    if(!s_air_mouse_ui_touch_armed){zone=0;motion_held=false;}
+    if(ble && s_air_mouse_settings_open && s_air_mouse_ui_touch_armed && s_mouse_point_count==1U && zone>=12U) {
+        pf_ble_release();s_air_mouse_sent_buttons=0;
+        s_air_mouse_ui_touch_armed=false;
+        if(zone==12U)pf_ble_pair();
+        else if(zone==13U)s_mouse_ble_modal=1;
+        else if(zone==14U){pf_ble_forget();s_mouse_ble_modal=0;}
+        else if(zone==15U)s_mouse_ble_modal=0;
+        zone=0;
+    }
     /* A brief tap must never restart USB or reset the neutral tilt. Leaving the
      * target, lifting the finger, or a missing touch sample resets the hold. */
     uint8_t action_zone=s_air_mouse_ui_touch_armed && !motion_held &&
@@ -904,7 +1054,15 @@ static void air_mouse_poll(uint32_t now,ws_ui_snapshot_t *view)
         s_air_mouse_scroll_last_y=(int16_t)zone_y;
     } else s_air_mouse_scroll_accum=0;
     s_air_mouse_touch_zone=zone;
-    uint8_t buttons=zone==3U?1U:zone==4U?2U:0U;
+    bool transport_ready=ble?view->ble_connected:
+        led_get_mode()!=MODE_NOT_MOUNTED && led_get_mode()!=MODE_SUSPENDED;
+    bool latch_enabled=transport_ready && !s_air_mouse_settings_open && !s_mouse_ble_modal &&
+        zone!=1U && zone!=2U && s_air_mouse_sensor_ok && s_air_mouse_neutral_valid;
+    ws_mouse_latch_touch(&s_mouse_latch,fresh && s_mouse_point_count<=1U,
+        s_touch.down && s_mouse_point_count!=0U,zone,latch_enabled);
+    uint8_t buttons=s_mouse_latch.buttons;
+    motion_held=s_mouse_latch.move;
+    if(!latch_enabled){buttons=0;motion_held=false;wheel=0;}
 
     int8_t dx=0,dy=0;
     if(s_air_mouse_sensor_ok && (uint32_t)(now-s_air_mouse_sampled_at)>=10U) {
@@ -917,7 +1075,9 @@ static void air_mouse_poll(uint32_t now,ws_ui_snapshot_t *view)
             int16_t ay=(int16_t)((uint16_t)data[2]|((uint16_t)data[3]<<8));
             int16_t az=(int16_t)((uint16_t)data[4]|((uint16_t)data[5]<<8));
             float length=sqrtf((float)ax*ax+(float)ay*ay+(float)az*az);
-            if(length>1000.0f) {
+            bool accel_valid=isfinite(length) && length>1000.0f && length<32000.0f;
+            if(!accel_valid){ws_mouse_latch_reset(&s_mouse_latch);buttons=0;motion_held=false;}
+            if(accel_valid) {
                 float gx=(float)ax/length,gy=(float)ay/length,gz=(float)az/length;
                 if(!s_air_mouse_gravity_valid) {
                     s_air_mouse_gravity_x=gx;s_air_mouse_gravity_y=gy;
@@ -929,14 +1089,14 @@ static void air_mouse_poll(uint32_t now,ws_ui_snapshot_t *view)
                 }
             }
             if(s_air_mouse_cal_samples<60U) {
-                if(s_air_mouse_gravity_valid && length>1000.0f) {
+                if(s_air_mouse_gravity_valid && accel_valid) {
                     s_air_mouse_neutral_sum_x+=s_air_mouse_gravity_x;
                     s_air_mouse_neutral_sum_y+=s_air_mouse_gravity_y;
                     s_air_mouse_neutral_sum_z+=s_air_mouse_gravity_z;
                     ++s_air_mouse_cal_samples;
                     if(s_air_mouse_cal_samples==60U)air_mouse_neutral_finish();
                 }
-            } else if(motion_held && s_air_mouse_neutral_valid && length>1000.0f) {
+            } else if(motion_held && s_air_mouse_neutral_valid && accel_valid) {
                 float tx=s_air_mouse_gravity_x-s_air_mouse_neutral_x;
                 float ty=s_air_mouse_gravity_y-s_air_mouse_neutral_y;
                 float tz=s_air_mouse_gravity_z-s_air_mouse_neutral_z;
@@ -951,10 +1111,12 @@ static void air_mouse_poll(uint32_t now,ws_ui_snapshot_t *view)
                 air_mouse_vector_delta(tilt_y,s_air_mouse_invert_y?tilt_x:-tilt_x,
                                        elapsed,&dx,&dy);
             }
-        } else if(++s_air_mouse_errors>=10U) {
-            s_air_mouse_sensor_ok=false;
-            dx=dy=0;
-            ESP_LOGW(TAG,"Air Mouse accelerometer unavailable; pointer movement stopped");
+        } else {
+            ws_mouse_latch_reset(&s_mouse_latch);buttons=0;motion_held=false;dx=dy=0;
+            if(++s_air_mouse_errors>=10U) {
+                s_air_mouse_sensor_ok=false;
+                ESP_LOGW(TAG,"Air Mouse accelerometer unavailable; pointer movement stopped");
+            }
         }
     }
     if(!motion_held) {
@@ -969,12 +1131,14 @@ static void air_mouse_poll(uint32_t now,ws_ui_snapshot_t *view)
     view->air_mouse_buttons=buttons;
     view->air_mouse_touch_zone=zone;
     view->air_mouse_move_held=motion_held;
+    view->air_mouse_drag_latched=s_mouse_latch.drag;
     view->air_mouse_hold_step=hold_step;
     view->air_mouse_touch_fault=!s_touch_available || s_touch_errors>=10U;
     view->air_mouse_touch_outside=touch_outside;
     view->air_mouse_settings_open=s_air_mouse_settings_open;
     view->air_mouse_sensitivity=s_air_mouse_sensitivity;
     view->air_mouse_invert_y=s_air_mouse_invert_y;
+    view->air_mouse_ble_modal=s_mouse_ble_modal;
 }
 
 #ifdef CONFIG_WS_V1_DISPLAY
@@ -987,6 +1151,20 @@ typedef struct {
 static bool view_content_changed(const ws_ui_snapshot_t *a,const ws_ui_snapshot_t *b)
 {
     return a->state!=b->state || a->epoch!=b->epoch ||
+        memcmp(&a->controls,&b->controls,sizeof(a->controls))!=0 ||
+        memcmp(&a->gamepad.report,&b->gamepad.report,sizeof(a->gamepad.report))!=0 ||
+        a->gamepad.modal!=b->gamepad.modal || a->gamepad.hold_step!=b->gamepad.hold_step ||
+        a->gamepad.ui_pressed!=b->gamepad.ui_pressed || a->gamepad.ui_modal!=b->gamepad.ui_modal ||
+        a->gamepad.imu.ready!=b->gamepad.imu.ready || a->gamepad.imu.valid!=b->gamepad.imu.valid ||
+        a->gamepad_active!=b->gamepad_active || a->ble_connected!=b->ble_connected ||
+        a->ble_ready!=b->ble_ready || a->ble_failed!=b->ble_failed ||
+        a->controls_touch_count!=b->controls_touch_count ||
+        a->controls_touch_raw!=b->controls_touch_raw ||
+        a->controls_touch_max!=b->controls_touch_max ||
+        a->controls_touch_valid!=b->controls_touch_valid ||
+        (b->gamepad_active && b->gamepad.modal==2 &&
+         memcmp(&a->controls_touch_frame,&b->controls_touch_frame,sizeof(a->controls_touch_frame))!=0) ||
+        a->air_mouse_ble_modal!=b->air_mouse_ble_modal ||
         a->seconds_left!=b->seconds_left || a->touch_available!=b->touch_available ||
         a->touch_enabled!=b->touch_enabled || a->boot_allowed!=b->boot_allowed ||
         a->pin_length!=b->pin_length || a->uv_retries!=b->uv_retries ||
@@ -1010,6 +1188,7 @@ static bool view_content_changed(const ws_ui_snapshot_t *a,const ws_ui_snapshot_
         a->air_mouse_sensor_ok!=b->air_mouse_sensor_ok ||
         a->air_mouse_calibrating!=b->air_mouse_calibrating ||
         a->air_mouse_restarting!=b->air_mouse_restarting ||
+        a->air_mouse_drag_latched!=b->air_mouse_drag_latched ||
         a->air_mouse_buttons!=b->air_mouse_buttons ||
         a->air_mouse_touch_zone!=b->air_mouse_touch_zone ||
         a->air_mouse_move_held!=b->air_mouse_move_held ||
@@ -1034,8 +1213,15 @@ static bool view_content_changed(const ws_ui_snapshot_t *a,const ws_ui_snapshot_
         a->manager_drive_restarting!=b->manager_drive_restarting ||
         a->apps_ready!=b->apps_ready || a->apps_mounted!=b->apps_mounted ||
         a->apps_running!=b->apps_running ||
+        a->launcher_transition!=b->launcher_transition ||
+        a->launcher_page_offset!=b->launcher_page_offset ||
+        a->launcher_page!=b->launcher_page || a->launcher_pressed!=b->launcher_pressed ||
+        a->apps_catalog_generation!=b->apps_catalog_generation ||
+        a->apps_scanning!=b->apps_scanning || a->apps_catalog_ready!=b->apps_catalog_ready ||
         a->apps_exit_confirm!=b->apps_exit_confirm ||
         a->apps_exit_pressed!=b->apps_exit_pressed ||
+        a->apps_exit_dragging!=b->apps_exit_dragging ||
+        a->apps_exit_progress!=b->apps_exit_progress ||
         a->apps_count!=b->apps_count ||
         a->apps_selected!=b->apps_selected || a->apps_frame!=b->apps_frame ||
         strcmp(a->apps_id,b->apps_id)!=0 || strcmp(a->apps_status,b->apps_status)!=0;
@@ -1062,7 +1248,14 @@ static bool ws_display_step(ws_display_cache_t *cache)
         bool redraw=!cache->valid || cache->off || view_content_changed(&cache->last,&view);
         /* DISPOFF preserves display RAM access. Render the new frame while dark
          * before enabling the display, so an old approval/PIN screen never flashes. */
-        if(redraw) err=ws_lvgl_render(&view);
+        if(redraw) {
+            uint32_t started=now_ms();
+            err=ws_lvgl_render(&view);
+            uint32_t duration=now_ms()-started;
+            portENTER_CRITICAL(&s_lock);
+            if(duration>s_render_ms_max)s_render_ms_max=duration;
+            portEXIT_CRITICAL(&s_lock);
+        }
         if(err==ESP_OK && cache->off) err=ws_panel_set_enabled(true);
         uint8_t bright=view.brightness?view.brightness:CONFIG_WS_V1_BRIGHTNESS;
         uint8_t dim_brightness=view.dim_brightness?view.dim_brightness:8;
@@ -1101,7 +1294,8 @@ static void display_task(void *arg)
             const ws_ui_snapshot_t *v=&cache.last;
             if((v->settings_transition!=0U && v->settings_transition!=255U) ||
                (v->screensaver_transition!=0U && v->screensaver_transition!=255U) ||
-               v->settings_page_offset!=0)
+               (v->launcher_transition!=0U && v->launcher_transition!=255U) ||
+               v->settings_page_offset!=0 || v->launcher_page_offset!=0)
                 frame_ms=8U;
             else if(v->screensaver_open)
                 frame_ms=8U;
@@ -1119,6 +1313,10 @@ void ws_board_init(void)
     if(s_initialized) return;
     s_initialized=true;
     s_air_mouse_role=pf_air_mouse_role();
+    s_gamepad_role=pf_control_mode()==PF_CONTROL_BLE_PAD;
+    pf_controls_preferences(&s_controls);
+    ws_gamepad_init(&s_gamepad);
+    s_view.gamepad_active=s_gamepad_role;s_view.gamepad=s_gamepad;s_view.controls=s_controls;
     ws_settings_init();
     air_mouse_preferences_load();
 #if FIDO_V1_MANAGER_DRIVE
@@ -1126,12 +1324,12 @@ void ws_board_init(void)
 #endif
     /* R16: file_scan_flash() already ran in pf_engine_start. Bind EF_PIN now,
      * before USB/CTAPHID traffic can race the first Settings use. */
-    (void)pf_local_uv_ready();
+    if(pf_control_mode()<PF_CONTROL_BLE_MOUSE)(void)pf_local_uv_ready();
     ws_screen_power_init(&s_screen,now_ms());
     s_display_bright=false;
     memset(&s_view,0,sizeof(s_view));
     s_view.state=WS_UI_DISCONNECTED;
-    if(!ek_apps_start()) ESP_LOGW(TAG,"Apps worker unavailable; FIDO remains available");
+    if(pf_control_mode()<PF_CONTROL_BLE_MOUSE && !ek_apps_start()) ESP_LOGW(TAG,"Apps worker unavailable; FIDO remains available");
     ESP_LOGW(TAG,"DEVELOPMENT ONLY: keys in unencrypted NVS, no eFuse programming");
 #ifdef CONFIG_WS_V1_DISPLAY
     esp_err_t err=ws_panel_init();
@@ -1142,10 +1340,10 @@ void ws_board_init(void)
     s_touch_available=err==ESP_OK;
     if(err!=ESP_OK) ESP_LOGW(TAG,"FT3168 unavailable: %s",esp_err_to_name(err));
     s_air_mouse_sensor_ok=s_touch_available && qmi_probe();
-    if(s_air_mouse_role && s_air_mouse_sensor_ok) {
+    if((s_air_mouse_role || s_gamepad_role) && s_air_mouse_sensor_ok) {
         s_air_mouse_sensor_ok=qmi_start_accel();
         air_mouse_calibrate();
-        ESP_LOGI(TAG,"Air Mouse IMU %s",s_air_mouse_sensor_ok?"ready":"configuration failed");
+        ESP_LOGI(TAG,"Controls IMU %s",s_air_mouse_sensor_ok?"ready":"configuration failed");
     }
     s_view.touch_available=s_touch_available;
 #ifdef CONFIG_WS_V1_TOUCH_CONFIRM
@@ -1165,6 +1363,9 @@ void ws_board_poll(void)
 {
     if(!s_initialized) return;
     uint32_t now=now_ms();
+    if(s_poll_at && s_diagnostics_enabled && now-s_poll_at>s_poll_gap_max)
+        s_poll_gap_max=now-s_poll_at;
+    s_poll_at=now;
     ws_settings_t settings;bool settings_storage_ok=false;ws_settings_get(&settings,&settings_storage_ok);
     /* Only core0 owns result-screen state. The FIDO worker uses a mailbox. */
     portENTER_CRITICAL(&s_lock);
@@ -1179,7 +1380,7 @@ void ws_board_poll(void)
             error==0x2f?WS_UI_TIMEOUT:WS_UI_INPUT_ERROR;
         s_result_at=now;s_show_result=true;
     }
-    if(s_air_mouse_role && !s_touch_available &&
+    if((s_air_mouse_role || s_gamepad_role) && !s_touch_available &&
        (uint32_t)(now-s_air_mouse_touch_retry_at)>=1000U) {
         s_air_mouse_touch_retry_at=now;
         const uint8_t normal_mode[]={0x00,0x00};
@@ -1198,17 +1399,17 @@ void ws_board_poll(void)
             portENTER_CRITICAL(&s_lock);
             bool display_bright=s_display_bright;
             portEXIT_CRITICAL(&s_lock);
-            if(s_air_mouse_role) {
+            if(s_air_mouse_role || s_gamepad_role) {
                 /* This screen stays awake. Do not let a stale wake-tap gate
                  * swallow mouse buttons, scroll or the guarded exit action. */
                 ws_screen_power_wake(&s_screen,now);
             } else if(!ws_screen_power_touch(&s_screen,now,s_touch,display_bright))
                 memset(&s_touch,0,sizeof(s_touch));
         } else {
-            if(!s_air_mouse_role)
+            if(!s_air_mouse_role && !s_gamepad_role)
                 (void)ws_screen_power_touch(&s_screen,now,s_touch,false);
             if(s_touch_errors<10U && ++s_touch_errors==10U) {
-                if(s_air_mouse_role) {
+                if(s_air_mouse_role || s_gamepad_role) {
                     ESP_LOGW(TAG,"Air Mouse touch I2C read errors; retrying without disabling touch");
                 } else {
                     portENTER_CRITICAL(&s_lock);
@@ -1220,6 +1421,14 @@ void ws_board_poll(void)
         }
     }
     if(gpio_get_level(WS_BOOT)==0) ws_screen_power_wake(&s_screen,now);
+    if(s_air_mouse_role || s_gamepad_role) {
+        if(gpio_get_level(WS_BOOT)==0) {
+            if(!s_control_boot_hold)s_control_boot_hold=now;
+            if(now-s_control_boot_hold>=1200U) {
+                pf_ble_release();vTaskDelay(pdMS_TO_TICKS(30));pf_control_restart(PF_CONTROL_NORMAL);
+            }
+        } else s_control_boot_hold=0;
+    }
     ws_ui_snapshot_t v={0};
     v.brightness=settings.brightness;v.dim_brightness=settings.dim_brightness;
     v.accent_rgb=settings.accent_rgb;v.settings_revision=settings.revision;
@@ -1231,9 +1440,58 @@ void ws_board_poll(void)
     v.air_mouse_available=s_air_mouse_sensor_ok && s_touch_available &&
         !ws_usb_tool_enabled() && !ws_manager_drive_enabled();
     v.air_mouse_sensor_ok=s_air_mouse_sensor_ok;
+    v.controls=s_controls;
+    v.ble_connected=pf_ble_connected();v.ble_ready=pf_ble_ready();v.ble_failed=pf_ble_failed();
+    if(s_gamepad_role || s_air_mouse_role) {
+        v.controls_touch_valid=s_touch_available && s_touch.valid && now-s_touch_polled<=60U;
+        v.controls_touch_raw=s_controls_touch_raw;
+        v.controls_touch_max=s_controls_touch_max;
+        v.controls_touch_probe=s_controls_touch_probe;
+        v.controls_touch_frame=s_controls_touch_frame;
+        v.controls_touch_count=v.controls_touch_valid?(s_gamepad_role?s_pad_count:s_mouse_point_count):0;
+    }
+    if(s_gamepad_role) {
+        if(v.ble_connected!=s_pad_connected){
+            s_gamepad.armed=false;s_gamepad.ui_capture=0;s_gamepad.ui_pressed=0;s_pad_connected=v.ble_connected;
+            s_pad_sent=(WsPadReport){.hat=8};pf_ble_release();
+        }
+        WsPadAction action=ws_gamepad_touch(&s_gamepad,&s_controls,
+            s_touch_available && s_touch.valid && now-s_touch_polled<=60U,s_pad_points,s_touch.down?s_pad_count:0,now);
+        if(action==WS_PAD_CALIBRATE) {
+            ws_gamepad_calibrate(&s_gamepad);
+            if(!s_air_mouse_sensor_ok)s_air_mouse_sensor_ok=qmi_start_accel();
+        }
+        if((uint32_t)(now-s_pad_imu_at)>=20U) {
+            s_pad_imu_at=now;
+            uint8_t raw[6];
+            if(s_air_mouse_sensor_ok && qmi_read(0x35U,raw,sizeof(raw))) {
+                int16_t ax=(int16_t)((uint16_t)raw[0]|((uint16_t)raw[1]<<8));
+                int16_t ay=(int16_t)((uint16_t)raw[2]|((uint16_t)raw[3]<<8));
+                int16_t az=(int16_t)((uint16_t)raw[4]|((uint16_t)raw[5]<<8));
+                ws_gamepad_imu_sample(&s_gamepad,ax,ay,az,now);
+            } else s_gamepad.imu.valid=false;
+        }
+        ws_gamepad_apply_imu(&s_gamepad,&s_controls,v.ble_connected,now);
+        v.controls=s_controls;
+        if(action==WS_PAD_EXIT){
+            pf_ble_release();(void)pf_controls_save(&s_controls);
+            vTaskDelay(pdMS_TO_TICKS(30));pf_control_restart(PF_CONTROL_NORMAL);
+        }
+        if(action==WS_PAD_PAIR)pf_ble_pair();
+        if(action==WS_PAD_FORGET)pf_ble_forget();
+        if(action==WS_PAD_SAVE && !pf_controls_save(&s_controls))ESP_LOGW(TAG,"Controller preferences save failed");
+        if(memcmp(&s_pad_sent,&s_gamepad.report,sizeof(s_pad_sent))!=0 && pf_ble_pad_report(&s_gamepad.report))s_pad_sent=s_gamepad.report;
+        v.gamepad=s_gamepad;v.gamepad_active=true;
+        v.state=v.ble_connected?WS_UI_READY:WS_UI_DISCONNECTED;
+        v.dim=false;v.screen_off=false;
+        ws_screen_power_wake(&s_screen,now);
+        portENTER_CRITICAL(&s_lock);s_view=v;portEXIT_CRITICAL(&s_lock);
+        return;
+    }
     if(s_air_mouse_role) {
         air_mouse_poll(now,&v);
-        v.state=led_get_mode()==MODE_NOT_MOUNTED?WS_UI_DISCONNECTED:WS_UI_READY;
+        v.state=pf_control_mode()==PF_CONTROL_BLE_MOUSE?(v.ble_connected?WS_UI_READY:WS_UI_DISCONNECTED):
+            led_get_mode()==MODE_NOT_MOUNTED?WS_UI_DISCONNECTED:WS_UI_READY;
         ws_screen_power_tick_config(&s_screen,now,true,s_touch_available,
             (uint32_t)settings.dim_seconds*1000U,(uint32_t)settings.off_seconds*1000U);
         v.dim=false;v.screen_off=false;
@@ -1363,16 +1621,28 @@ void ws_board_poll(void)
     if(!settings_idle_state) {
         settings_force_closed();
         screensaver_force_closed();
+        s_launcher_open=false;s_launcher_transition=s_launcher_from=s_launcher_to=0;
+        s_launcher_page_offset=s_launcher_page_from=0;s_root_page=WS_ROOT_HOME;
     } else {
         settings_transition_tick(now);
         screensaver_transition_tick(now);
         settings_page_tick(now);
+        launcher_transition_tick(now);
     }
-    const bool apps_visible=settings_idle_state && s_settings_transition==255U &&
-        s_settings_page==WS_SETTINGS_PAGE_APPS && s_screensaver_transition==0U;
+    const bool apps_visible=settings_idle_state && s_launcher_transition==255U && s_launcher_open;
     ek_apps_set_visible(apps_visible);
     EkAppsState apps;
     ek_apps_snapshot(&apps);
+    if(!apps.count) s_launcher_intro=true;
+    unsigned launcher_page=s_launcher_intro?0U:(unsigned)apps.page+1U;
+    if(s_launcher_page!=launcher_page) {
+        int direction=s_launcher_page_direction?s_launcher_page_direction:
+            (launcher_page>s_launcher_page?1:-1);
+        s_launcher_page_direction=0;
+        s_launcher_page=(uint8_t)launcher_page;
+        s_launcher_page_from=settings.animation?(int16_t)(direction*WS_SETTINGS_PAGE_SLIDE_PX):0;
+        s_launcher_page_offset=s_launcher_page_from;s_launcher_page_at=now;
+    }
     bool apps_active=apps_visible && apps.running;
     if(s_apps_touch_mode!=apps_active) {
         s_app_point_count=0U;
@@ -1419,14 +1689,15 @@ void ws_board_poll(void)
     const bool idle_nav_stable=
         (s_settings_transition==0U || s_settings_transition==255U) &&
         (s_screensaver_transition==0U || s_screensaver_transition==255U) &&
-        s_settings_page_offset==0;
+        (s_launcher_transition==0U || s_launcher_transition==255U) &&
+        s_settings_page_offset==0 && s_launcher_page_offset==0;
     if(apps_visible && apps.running) {
         EkExitEvent exit_event=ek_exit_dialog_touch(&s_app_exit_dialog,
-            settings_fresh_touch && s_app_point_count<=1U,
-            s_touch.down,s_touch_x,s_touch_y);
+            settings_fresh_touch,s_touch.down?s_app_point_count:0U,
+            s_touch_x,s_touch_y,s_app_point_count?s_app_points[0].id:0U);
         if(exit_event==EK_EXIT_EVENT_CONFIRM) ek_apps_request(EK_APPS_STOP);
-        ek_apps_set_modal(s_app_exit_dialog.visible);
-        if(!s_app_exit_dialog.visible && exit_event!=EK_EXIT_EVENT_CONFIRM &&
+        ek_apps_set_modal(ek_exit_dialog_paused(&s_app_exit_dialog));
+        if(!ek_exit_dialog_blocks_input(&s_app_exit_dialog) && exit_event!=EK_EXIT_EVENT_CONFIRM &&
            settings_fresh_touch && s_touch.down)
             ek_apps_input(s_app_points,s_app_point_count,s_apps_sample_valid,
                           s_apps_ax_mg,s_apps_ay_mg,s_apps_az_mg);
@@ -1439,7 +1710,9 @@ void ws_board_poll(void)
             if(!s_settings_touch_was_down) {
                 s_settings_start_x=s_settings_last_x=s_touch_x;
                 s_settings_start_y=s_settings_last_y=s_touch_y;
-                if(s_settings_transition==255U)
+                if(s_launcher_transition==255U && !s_launcher_intro)
+                    s_settings_touch_action=ws_ui_launcher_hit_test(s_touch_x,s_touch_y);
+                else if(s_settings_transition==255U)
                     s_settings_touch_action=(uint8_t)ws_ui_settings_hit_test(s_settings_page,s_touch_x,s_touch_y);
 #if FIDO_V1_USB_TOOL
                 else if(ws_usb_tool_enabled() && s_screensaver_transition==0U)
@@ -1454,6 +1727,10 @@ void ws_board_poll(void)
             unsigned mx=coord_delta(s_settings_last_x,s_settings_start_x);
             unsigned my=coord_delta(s_settings_last_y,s_settings_start_y);
             if(mx<=WS_SETTINGS_TAP_SLOP && my<=WS_SETTINGS_TAP_SLOP &&
+               s_launcher_transition==255U) {
+                uint8_t here=ws_ui_launcher_hit_test(s_touch_x,s_touch_y);
+                if(here==s_settings_touch_action) v.launcher_pressed=here;
+            } else if(mx<=WS_SETTINGS_TAP_SLOP && my<=WS_SETTINGS_TAP_SLOP &&
                s_settings_transition==255U && s_screensaver_transition==0U) {
                 ws_settings_action_t here=ws_ui_settings_hit_test(s_settings_page,s_touch_x,s_touch_y);
                 if((uint8_t)here==s_settings_touch_action)
@@ -1496,23 +1773,26 @@ void ws_board_poll(void)
                 }
             } else
 #endif
-            if(s_settings_transition==0U && s_screensaver_transition==0U && ax>ay) {
-                if(dx<=-(int)WS_SETTINGS_SWIPE_X) {
-                    settings_transition_begin(true,now,settings.animation);
-                    ws_screen_power_wake(&s_screen,now);
-                } else if(dx>=(int)WS_SETTINGS_SWIPE_X) {
-                    /* R21: opposite idle swipe reveals the dedicated animated
-                     * Pico FIDO screensaver. Its transition is always animated
-                     * because motion is the purpose of this surface. */
-                    screensaver_transition_begin(true,now,true);
-                    ws_screen_power_wake(&s_screen,now);
+            if(ax>=WS_SETTINGS_SWIPE_X && ax>ay) {
+                root_navigate(dx>0?1:-1,apps.catalog_ready && apps.count>0,now,settings.animation);
+                ws_screen_power_wake(&s_screen,now);
+            } else if(s_launcher_transition==255U && ay>=WS_SETTINGS_SWIPE_Y && ay>ax) {
+                if(apps.catalog_ready && !apps.scanning && apps.count) {
+                    unsigned pages=(apps.count+EK_APPS_PAGE_SIZE-1)/EK_APPS_PAGE_SIZE;
+                    unsigned current=s_launcher_intro?0U:(unsigned)apps.page+1U;
+                    unsigned next=(current+(dy<0?1U:pages))%(pages+1U);
+                    /* Like Settings, the introduction and grids form a cycle.
+                     * Direction follows the finger even across index wrap. */
+                    s_launcher_page_direction=dy<0?1:-1;
+                    s_launcher_intro=next==0;
+                    if(next) ek_apps_select_page(next-1);
                 }
-            } else if(s_settings_transition==255U && s_screensaver_transition==0U &&
-                      dx>=(int)WS_SETTINGS_SWIPE_X && ax>ay) {
-                settings_transition_begin(false,now,settings.animation);
-            } else if(s_screensaver_transition==255U && s_settings_transition==0U &&
-                      dx<=-(int)WS_SETTINGS_SWIPE_X && ax>ay) {
-                screensaver_transition_begin(false,now,true);
+            } else if(s_launcher_transition==255U &&
+                      !s_launcher_intro &&
+                      ax<=WS_SETTINGS_TAP_SLOP && ay<=WS_SETTINGS_TAP_SLOP) {
+                uint8_t here=ws_ui_launcher_hit_test(s_settings_last_x,s_settings_last_y);
+                if(here && here==s_settings_touch_action)
+                    ek_apps_launch((unsigned)apps.page*EK_APPS_PAGE_SIZE+here-1);
             } else if(s_settings_transition==255U && s_screensaver_transition==0U &&
                       ay>=WS_SETTINGS_SWIPE_Y && ay>ax) {
                 uint8_t next=s_settings_page;
@@ -1555,8 +1835,20 @@ void ws_board_poll(void)
     v.settings_open=s_settings_open;v.settings_feedback=s_settings_feedback;
     ek_apps_snapshot(&apps);
     v.apps_ready=apps.ready;v.apps_mounted=apps.mounted;v.apps_running=apps.running;
+    v.launcher_transition=s_launcher_transition;v.launcher_page=s_launcher_page;
+    v.launcher_page_offset=s_launcher_page_offset;
+    v.apps_scanning=apps.scanning;v.apps_catalog_ready=apps.catalog_ready;
+    v.apps_overflow=apps.overflow;v.apps_icon_valid=apps.icon_valid;
+    v.apps_catalog_generation=apps.catalog_generation;
+    v.apps_mount_ms=apps.mount_ms;v.apps_scan_ms=apps.scan_ms;
+    v.apps_icon_ms=apps.icon_ms;v.apps_headers_read=apps.headers_read;
+    v.ui_poll_gap_ms=s_poll_gap_max;
+    portENTER_CRITICAL(&s_lock);v.ui_render_ms=s_render_ms_max;portEXIT_CRITICAL(&s_lock);
+    memcpy(v.apps_names,apps.names,sizeof(v.apps_names));
     v.apps_exit_confirm=s_app_exit_dialog.visible;
     v.apps_exit_pressed=(uint8_t)s_app_exit_dialog.pressed;
+    v.apps_exit_dragging=s_app_exit_dialog.dragging;
+    v.apps_exit_progress=s_app_exit_dialog.progress;
     v.apps_count=apps.count;v.apps_selected=apps.selected;v.apps_frame=apps.frame;
     memcpy(v.apps_id,apps.id,sizeof(v.apps_id));
     memcpy(v.apps_status,apps.status,sizeof(v.apps_status));
@@ -1603,10 +1895,11 @@ void ws_board_poll(void)
      * R24 stops advancing that fast phase once Settings or the saver fully owns
      * the screen; their dedicated slower phases then drive only visible motion. */
     if(settings.animation && v.state!=WS_UI_PIN &&
-       s_settings_transition!=255U && s_screensaver_transition!=255U)
+       s_settings_transition!=255U && s_screensaver_transition!=255U && s_launcher_transition!=255U)
         v.animation_phase=(uint8_t)((now/16U)%64U);
 
-    if(settings.animation && (s_settings_open || s_settings_transition!=0U)) {
+    if(settings.animation && (s_settings_open || s_settings_transition!=0U ||
+        (s_launcher_transition!=0U && s_launcher_intro))) {
         /* Match the screensaver's 24 ms phase step: 256 steps = 6.144 s per
          * outer Settings orbit. The gear stays anchored and fully opaque. */
         uint32_t settings_elapsed=(uint32_t)(now-s_settings_opened_at);
@@ -1629,6 +1922,7 @@ void ws_board_poll(void)
     bool hold_awake=s_pending || pin_active || v.state==WS_UI_PROCESSING ||
         s_manager_restart_pending || s_usb_tool_restart_pending || s_air_mouse_restart_pending ||
         v.usb_tool_running || s_settings_open || s_settings_transition!=0U ||
+        s_launcher_open || s_launcher_transition!=0U ||
         s_screensaver_open || s_screensaver_transition!=0U ||
         (s_show_result && (uint32_t)(now-s_result_at)<1800U);
     ws_screen_power_tick_config(&s_screen,now,hold_awake,s_touch_available,
@@ -1647,7 +1941,7 @@ void ws_board_poll(void)
         esp_restart();
 #endif
     if(s_air_mouse_restart_pending && (uint32_t)(now-s_air_mouse_restart_at)>=700U)
-        pf_air_mouse_restart_into();
+        pf_control_restart(s_control_requested);
 }
 
 void ws_board_presence_begin(uint32_t timeout_ms)

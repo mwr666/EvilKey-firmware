@@ -49,14 +49,16 @@ def main() -> None:
     assets.write_text(json.dumps({"assets": [{"id": 1, "file": sprite.name,
                                                "width": 2, "height": 2}]}),
                       encoding="utf-8")
+    icon = BUILD / "icon.rgb565"
+    icon.write_bytes(bytes(8192))
     bundle = BUILD / "abi4.probe.ekapp"
     bundle.unlink(missing_ok=True)
     run(sys.executable, str(ROOT / "apps/sdk/pack_ekapp.py"),
         "--wasm", str(wasm), "--output", str(bundle), "--id", "abi4.probe",
         "--owner", "Michał Wojciechowski", "--license", "MIT",
-        "--version", "0.0.1", "--assets", str(assets))
+        "--version", "0.0.1", "--assets", str(assets), "--name", "ABI Probe", "--icon", str(icon), "--ui-profile", "corner-exit-v1")
     data = bundle.read_bytes()
-    if hashlib.sha256(data[192:]).digest() != data[58:90]:
+    if hashlib.sha256(data[8512:]).digest() != data[58:90]:
         raise AssertionError("payload SHA-256 mismatch")
     host = BUILD / "apps_abi4_probe.exe"
     sources = sorted((VM / "wasm3").glob("*.c")) + [

@@ -11,6 +11,7 @@
 #error "Apply the 0.2.3 profile patch to generated engine sources (see README)"
 #endif
 #include "PicoFidoArduino.h"
+#include "engine/board/ws_controls.h"
 #include "pf_engine_api.h"
 #include <Arduino.h>
 #include <USB.h>
@@ -53,14 +54,29 @@ static const uint8_t fido_report_descriptor[] = {
 static const uint8_t air_mouse_report_descriptor[] = {
     TUD_HID_REPORT_DESC_MOUSE()
 };
-static constexpr uint32_t PF_AIR_MOUSE_BOOT_MAGIC=0xE71A0320UL;
+static constexpr uint32_t PF_AIR_MOUSE_BOOT_MAGIC=WS_CONTROLS_BOOT_MAGIC;
 RTC_NOINIT_ATTR static uint32_t s_air_mouse_boot_token;
 RTC_NOINIT_ATTR static uint32_t s_air_mouse_boot_token_check;
 static bool s_air_mouse_role;
+static PfControlMode s_control_mode=PF_CONTROL_NORMAL;
+// Arduino calls this before setup()/begin(). Keep controller RAM only when the
+// validated one-shot boot request needs BLE; normal FIDO keeps its SRAM margin.
+extern "C" bool bleInUse(void) {
+    return ws_controls_is_ble(ws_controls_boot_mode(s_air_mouse_boot_token,s_air_mouse_boot_token_check,
+        esp_reset_reason()==ESP_RST_SW));
+}
+extern "C" PfControlMode pf_control_mode(void) { return s_control_mode; }
+extern "C" void pf_control_restart(PfControlMode mode) {
+    if(mode<PF_CONTROL_NORMAL || mode>PF_CONTROL_BLE_PAD)return;
+    s_air_mouse_boot_token=mode==PF_CONTROL_NORMAL?0:PF_AIR_MOUSE_BOOT_MAGIC+(uint32_t)mode-1U;
+    s_air_mouse_boot_token_check=~s_air_mouse_boot_token;
+    esp_restart();
+}
 
 extern "C" bool pf_air_mouse_role(void) { return s_air_mouse_role; }
 
 extern "C" bool pf_air_mouse_report(uint8_t buttons,int8_t x,int8_t y,int8_t wheel) {
+    if(s_control_mode==PF_CONTROL_BLE_MOUSE)return pf_ble_mouse_report(buttons,x,y,wheel);
     if(!s_air_mouse_role || !tud_hid_ready())return false;
     return tud_hid_mouse_report(0,buttons,x,y,wheel,0);
 }
@@ -74,7 +90,7 @@ extern "C" void pf_air_mouse_restart_into(void) {
 extern "C" void pf_air_mouse_exit(void) {
     (void)pf_air_mouse_report(0,0,0,0);
     delay(50U);
-    esp_restart(); /* One-shot boot token was consumed at startup. */
+    pf_control_restart(PF_CONTROL_NORMAL); /* One-shot request was consumed at startup. */
 }
 #if FIDO_V1_USB_TOOL
 enum {
@@ -814,9 +830,9 @@ bool PicoFidoArduinoClass::begin() {
     if (started_) return true;
     if (attempted_) return false; // Fail closed: partial initialization needs reboot.
     attempted_ = true;
-    s_air_mouse_role=esp_reset_reason()==ESP_RST_SW &&
-        s_air_mouse_boot_token==PF_AIR_MOUSE_BOOT_MAGIC &&
-        s_air_mouse_boot_token_check==~PF_AIR_MOUSE_BOOT_MAGIC;
+    s_control_mode=ws_controls_boot_mode(s_air_mouse_boot_token,s_air_mouse_boot_token_check,
+        esp_reset_reason()==ESP_RST_SW);
+    s_air_mouse_role=s_control_mode==PF_CONTROL_USB_MOUSE || s_control_mode==PF_CONTROL_BLE_MOUSE;
     s_air_mouse_boot_token=0;
     s_air_mouse_boot_token_check=0;
     if (esp_secure_boot_enabled() || esp_flash_encryption_enabled()) {
@@ -838,8 +854,8 @@ bool PicoFidoArduinoClass::begin() {
     const esp_partition_t *app = esp_ota_get_running_partition();
     if (!data || !keys || !app || data->address != 0x200000 ||
         data->size != 0x100000 || keys->address != 0x400000 ||
-        keys->size != 0x10000 || app->address != 0x10000 ||
-        app->size != 0x1F0000 || data->encrypted || keys->encrypted) {
+        keys->size != 0x10000 || app->address != 0x500000 ||
+        app->size != 0x400000 || data->encrypted || keys->encrypted) {
         ESP_LOGE(TAG, "Wrong partitions.csv. Refusing to start; nothing was erased");
         return false;
     }

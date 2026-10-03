@@ -18,6 +18,6 @@ A separate Settings action also uses the same keypad to authorize a **READ ONLY 
 
 A wrong local PIN attempt consumes the retry budget. The firmware clears temporary plaintext and verifier buffers after checking. On-device entry narrows exposure to a connected computer's keyboard/PIN prompt for compatible built-in UV requests; it is not a guarantee against compromised device firmware, physical access or every host-side attack. EvilKey makes no FIDO certification claim.
 
-The source paths are `firmware/templates/port/ws_lvgl.c`, `ws_pinpad.c`, `ws_board.c` and `firmware/templates/local_uv_engine.inc`. The final 0.3.0 image passed a FIDO return smoke test, and an earlier device image passed a FIDO login smoke test, but the publication package does **not** yet record an isolated physical test of the on-device PIN flow on the final image. A real demonstration should use a disposable test credential and show the keypad without exposing the PIN sequence.
+The source paths are `firmware/templates/port/ws_lvgl.c`, `ws_pinpad.c`, `ws_board.c` and `firmware/templates/local_uv_engine.inc`. FIDO return and existing credentials are included in release acceptance. A dedicated built-in UV keypad test is separate from that check; use a disposable credential without exposing the PIN.
 
 The [FIDO CTAP specification](https://fidoalliance.org/specs/fido-v2.2-ps-20250714/fido-client-to-authenticator-protocol-v2.2-ps-20250714.html) distinguishes built-in UV from ClientPIN.

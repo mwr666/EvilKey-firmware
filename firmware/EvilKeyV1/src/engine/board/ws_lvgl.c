@@ -23,6 +23,8 @@
  */
 #include "ws_lvgl.h"
 #include "ws_panel.h"
+#include "ws_gamepad_view.h"
+#include "ws_control_style.h"
 #include "ws_pins.h"
 #include "ws_ui_layout.h"
 #include "ws_gui_theme.h"
@@ -44,21 +46,21 @@
 #if LV_COLOR_DEPTH != 16 || LV_COLOR_16_SWAP != 1
 #error "R22 requires RGB565 with LV_COLOR_16_SWAP=1 for zero-copy panel DMA"
 #endif
-#define RGB24_DEFAULT 0x4DE3C1UL
+#define RGB24_DEFAULT WS_CONTROL_ACCENT_DEFAULT
 static const char *TAG="ws_lvgl";
 
 /* Match the production Pico FIDO palette used by the previous renderer. */
-#define COL_BG      0x000000UL
-#define COL_TEXT    0xF7F9FAUL
-#define COL_MUTED   0xC4CDD2UL
+#define COL_BG      WS_CONTROL_BG
+#define COL_TEXT    WS_CONTROL_TEXT
+#define COL_MUTED   WS_CONTROL_MUTED
 #define COL_FAINT   0x7F8B93UL
-#define COL_PANEL   0x101C20UL
-#define COL_PANEL2  0x18282CUL
-#define COL_BORDER  0x2A3C42UL
-#define COL_INK     0x041511UL
+#define COL_PANEL   WS_CONTROL_PANEL
+#define COL_PANEL2  WS_CONTROL_PANEL2
+#define COL_BORDER  WS_CONTROL_BORDER
+#define COL_INK     WS_CONTROL_INK
 #define COL_GLASS   0x0B1114UL
-#define COL_WARN    0xF6C46BUL
-#define COL_BAD     0xFF7685UL
+#define COL_WARN    WS_CONTROL_WARN
+#define COL_BAD     WS_CONTROL_BAD
 #define COL_BAD_DIM 0x40212BUL
 #define COL_LED_RED 0xFF435AUL
 #define COL_LED_GREEN 0x36F5B8UL
@@ -116,11 +118,16 @@ static lv_disp_draw_buf_t s_draw_buf;
 static lv_disp_drv_t s_disp_drv;
 static lv_color_t *s_pixels_a;
 static lv_color_t *s_pixels_b;
+static lv_color_t *s_rotation_dma;
+static size_t s_rotation_bytes;
 static uint32_t s_draw_pixels;
 static esp_err_t s_flush_error=ESP_OK;
 static bool s_ready;
 static uint16_t *s_apps_pixels;
 static uint32_t s_apps_frame;
+static uint8_t *s_launcher_pixels;
+static uint32_t s_launcher_generation;
+static lv_img_dsc_t s_launcher_img[EK_APPS_PAGE_SIZE];
 static lv_img_dsc_t s_apps_img={
     .header={.cf=LV_IMG_CF_TRUE_COLOR,.always_zero=0,.reserved=0,
              .w=EK_APPS_WIDTH,.h=EK_APPS_HEIGHT},
@@ -329,15 +336,23 @@ typedef struct {
     lv_obj_t *settings_return;
     lv_obj_t *settings_dot[SETTINGS_DOTS];
     lv_obj_t *apps_group;
+    lv_obj_t *launcher_group,*launcher_content,*launcher_status,*launcher_counter;
+    lv_obj_t *launcher_header,*launcher_intro,*launcher_glow,*launcher_orbit,*launcher_orbit_inner;
+    lv_obj_t *launcher_tiles[9],*launcher_count;
+    lv_obj_t *launcher_cell[EK_APPS_PAGE_SIZE],*launcher_icon[EK_APPS_PAGE_SIZE];
+    lv_obj_t *launcher_name[EK_APPS_PAGE_SIZE],*launcher_dot[9];
     lv_obj_t *apps_image;
     lv_obj_t *apps_exit_overlay;
     lv_obj_t *apps_exit_no;
     lv_obj_t *apps_exit_yes;
+    lv_obj_t *apps_exit_grip,*apps_exit_arrow,*apps_exit_pull,*apps_exit_dim;
+    lv_obj_t *apps_exit_caption,*apps_exit_fill,*apps_exit_percent;
 
     lv_obj_t *air_mouse_group;
     lv_obj_t *air_mouse_move;
     lv_obj_t *air_mouse_title;
     lv_obj_t *air_mouse_status;
+    lv_obj_t *air_mouse_pair,*air_mouse_forget,*air_mouse_ble_dialog;
     lv_obj_t *air_mouse_hint;
     lv_obj_t *air_mouse_exit;
     lv_obj_t *air_mouse_exit_progress;
@@ -345,6 +360,7 @@ typedef struct {
     lv_obj_t *air_mouse_calibrate_progress;
     lv_obj_t *air_mouse_left;
     lv_obj_t *air_mouse_left_label;
+    lv_obj_t *air_mouse_drag,*air_mouse_drag_label;
     lv_obj_t *air_mouse_right;
     lv_obj_t *air_mouse_right_label;
     lv_obj_t *air_mouse_scroll;
@@ -542,6 +558,22 @@ static void flush_done(void *ctx)
     lv_disp_flush_ready((lv_disp_drv_t *)ctx);
 }
 
+static void controls_rounder_cb(lv_disp_drv_t *drv,lv_area_t *area)
+{
+    /* CO5300's address windows start even and end odd (Waveshare V1 demo).
+     * Full logical rows also prevent LVGL's rotation scratch from splitting
+     * narrow dirty rectangles into odd-height chunks. The BLE draw buffer
+     * holds 9 landscape rows; LVGL rounds that down to 8, producing aligned
+     * physical columns in either orientation without another RAM allocation. */
+    /* AirMouse needs the same window alignment without rotation: narrow
+     * label/card invalidations can otherwise produce odd stripe boundaries. */
+    const bool landscape=drv->rotated==LV_DISP_ROT_90 || drv->rotated==LV_DISP_ROT_270;
+    area->x1=0;
+    area->x2=(landscape?WS_LCD_HEIGHT:WS_LCD_WIDTH)-1;
+    area->y1&=~1;
+    area->y2|=1;
+}
+
 static void flush_cb(lv_disp_drv_t *drv,const lv_area_t *area,lv_color_t *px)
 {
     if(!area || !px) {
@@ -556,6 +588,23 @@ static void flush_cb(lv_disp_drv_t *drv,const lv_area_t *area,lv_color_t *px)
         s_flush_error=ESP_ERR_INVALID_ARG;
         lv_disp_flush_ready(drv);
         return;
+    }
+    /* LVGL's 90-degree scratch buffer belongs to its PSRAM pool. Only
+     * internal DMA SRAM may reach the panel transport. Keep the copy alive
+     * until the asynchronous transfer completes, including square rotations. */
+    if(drv->sw_rotate && drv->rotated!=LV_DISP_ROT_NONE) {
+        const size_t bytes=(size_t)w*(size_t)h*sizeof(*px);
+        if((area->x1&1) || (area->y1&1) || !(area->x2&1) || !(area->y2&1)) {
+            s_flush_error=ESP_ERR_INVALID_ARG;
+            lv_disp_flush_ready(drv);return;
+        }
+        esp_err_t idle=ws_panel_wait_idle(500U);
+        if(idle!=ESP_OK || !s_rotation_dma || bytes>s_rotation_bytes) {
+            s_flush_error=idle!=ESP_OK?idle:ESP_ERR_INVALID_SIZE;
+            lv_disp_flush_ready(drv);return;
+        }
+        memcpy(s_rotation_dma,px,bytes);
+        px=s_rotation_dma;
     }
     esp_err_t err=ws_panel_flush_async((uint16_t)area->x1,(uint16_t)area->y1,
                                        (uint16_t)area->x2,(uint16_t)area->y2,
@@ -739,7 +788,7 @@ static void build_settings_hint(void)
 {
     /* R15: no top-right gear on READY/STANDBY.  The existing bottom hint is
      * enough and accurately describes the only entry gesture. */
-    ui.settings_swipe=label(ui.main_group,"SETTINGS  <  SWIPE  >  SAVER",&lv_font_montserrat_14,
+    ui.settings_swipe=label(ui.main_group,"SWIPE LEFT / SETTINGS",&lv_font_montserrat_14,
                             8,418,264,20);
     lv_obj_set_style_text_color(ui.settings_swipe,color(COL_FAINT),0);
 }
@@ -861,7 +910,7 @@ static void build_screensaver(void)
                                  "FIRMWARE  " PF_FIRMWARE_VERSION_STRING,
                                  &lv_font_montserrat_14,6,48,260,20);
     lv_obj_set_style_text_color(ui.screensaver_caption,color(COL_MUTED),0);
-    ui.screensaver_hint=label(ui.screensaver_text_group,"SWIPE LEFT  /  BACK",
+    ui.screensaver_hint=label(ui.screensaver_text_group,"SWIPE LEFT / HOME",
                               &lv_font_montserrat_14,6,104,260,20);
     lv_obj_set_style_text_color(ui.screensaver_hint,color(COL_FAINT),0);
     /* R24: start dark so entering the saver never flashes static text before
@@ -921,7 +970,7 @@ static void build_settings(void)
     build_gear_icon(&ui.settings_gear,120);
 
     ui.settings_title=label(ui.settings_content,"SETTINGS",&lv_font_montserrat_28,10,222,260,38);
-    ui.settings_subtitle=label(ui.settings_content,"SWIPE UP / DOWN",&lv_font_montserrat_20,10,276,260,30);
+    ui.settings_subtitle=label(ui.settings_content,"",&lv_font_montserrat_20,10,276,260,30);
 
     for(unsigned i=0;i<SETTINGS_ROWS;++i) build_setting_row(&ui.settings_row[i],ui.settings_content);
     ui.settings_swatch=card(ui.settings_row[0].value,8,17,18,18,6);
@@ -947,7 +996,7 @@ static void build_settings(void)
                                  WS_SETTINGS_ROW_Y+WS_SETTINGS_ROW_DY,
                                  WS_SETTINGS_ROW_W,WS_SETTINGS_ROW_H,18);
     ui.air_mouse_info_label=label(ui.air_mouse_info_card,
-        "Hold MOVE to steer.\nTap to click or scroll\nwith a second finger.",
+        "Hold MOVE to steer.\nTap DRAG to hold left.\nTap again to release.",
         &lv_font_montserrat_14,12,13,236,86);
     lv_obj_set_style_text_align(ui.air_mouse_info_label,LV_TEXT_ALIGN_LEFT,0);
     hidden(ui.air_mouse_info_card,true);
@@ -957,12 +1006,55 @@ static void build_settings(void)
     ui.settings_footer=label(ui.settings_content,"SWIPE UP / DOWN",&lv_font_montserrat_14,
                              10,408,260,20);
     for(unsigned i=0;i<SETTINGS_DOTS;++i)
-        ui.settings_dot[i]=circle(ui.settings_content,75+(int)i*17,436,6,COL_FAINT,
+        ui.settings_dot[i]=circle(ui.settings_content,61+(int)i*17,436,6,COL_FAINT,
                                   LV_OPA_COVER,COL_FAINT,0,LV_OPA_TRANSP);
 }
 
 static void build_apps(void)
 {
+    ui.launcher_group=group_at(ui.screen,0,0,WS_LCD_WIDTH,WS_LCD_HEIGHT);
+    ui.launcher_header=label(ui.launcher_group,"APPS",&lv_font_montserrat_28,12,15,170,38);
+    ui.launcher_counter=label(ui.launcher_group,"",&lv_font_montserrat_14,180,25,88,24);
+    ui.launcher_intro=group_at(ui.launcher_group,0,0,WS_LCD_WIDTH,386);
+    ui.launcher_glow=circle(ui.launcher_intro,62,58,156,RGB24_DEFAULT,LV_OPA_TRANSP,
+        RGB24_DEFAULT,1,LV_OPA_30);
+    ui.launcher_orbit=arc_obj(ui.launcher_intro,54,50,172,RGB24_DEFAULT,1,3,
+        LV_OPA_TRANSP,LV_OPA_50,0,76);
+    ui.launcher_orbit_inner=arc_obj(ui.launcher_intro,70,66,140,RGB24_DEFAULT,1,2,
+        LV_OPA_TRANSP,LV_OPA_40,0,132);
+    for(unsigned i=0;i<9;++i)
+        ui.launcher_tiles[i]=card(ui.launcher_intro,98+(int)(i%3)*29,
+            94+(int)(i/3)*29,26,26,5);
+    label(ui.launcher_intro,"APPS",&lv_font_montserrat_28,10,222,260,38);
+    ui.launcher_count=label(ui.launcher_intro,"0 apps on microSD",
+        &lv_font_montserrat_20,10,276,260,30);
+    lv_obj_set_style_text_color(ui.launcher_count,color(COL_MUTED),0);
+    ui.launcher_content=group_at(ui.launcher_group,0,0,WS_LCD_WIDTH,396);
+    for(unsigned i=0;i<EK_APPS_PAGE_SIZE;++i) {
+        int x=8+(int)(i%3)*90,y=64+(int)(i/3)*110;
+        ui.launcher_cell[i]=card(ui.launcher_content,x,y,84,102,12);
+        set_card_flat(ui.launcher_cell[i],COL_GLASS,COL_BORDER,1);
+        if(s_launcher_pixels) {
+            s_launcher_img[i].header.cf=LV_IMG_CF_TRUE_COLOR;
+            s_launcher_img[i].header.w=64;s_launcher_img[i].header.h=64;
+            s_launcher_img[i].data_size=EK_APPS_ICON_BYTES;
+            s_launcher_img[i].data=s_launcher_pixels+i*EK_APPS_ICON_BYTES;
+            ui.launcher_icon[i]=lv_img_create(ui.launcher_cell[i]);
+            lv_img_set_src(ui.launcher_icon[i],&s_launcher_img[i]);
+            lv_obj_set_pos(ui.launcher_icon[i],10,4);
+        }
+        ui.launcher_name[i]=label(ui.launcher_cell[i],"",&lv_font_montserrat_14,2,68,80,32);
+        lv_label_set_long_mode(ui.launcher_name[i],LV_LABEL_LONG_DOT);
+    }
+    ui.launcher_status=label(ui.launcher_group,"SWIPE RIGHT / HOME",&lv_font_montserrat_14,8,386,264,20);
+    lv_obj_t *left_hint=label(ui.launcher_group,"SWIPE LEFT / SETTINGS",&lv_font_montserrat_14,8,406,264,20);
+    lv_obj_t *vertical_hint=label(ui.launcher_group,"SWIPE UP / DOWN",&lv_font_montserrat_14,8,426,264,20);
+    lv_obj_set_style_text_color(left_hint,color(COL_FAINT),0);
+    lv_obj_set_style_text_color(vertical_hint,color(COL_FAINT),0);
+    for(unsigned i=0;i<9;++i)
+        ui.launcher_dot[i]=circle(ui.launcher_group,75+(int)i*18,448,6,COL_FAINT,
+            LV_OPA_COVER,COL_FAINT,0,LV_OPA_TRANSP);
+    hidden(ui.launcher_group,true);
     ui.apps_group=group_at(ui.screen,0,0,WS_LCD_WIDTH,WS_LCD_HEIGHT);
     if(s_apps_pixels) {
         ui.apps_image=lv_img_create(ui.apps_group);
@@ -972,19 +1064,54 @@ static void build_apps(void)
         label(ui.apps_group,"App display memory unavailable",&lv_font_montserrat_18,
               12,190,256,64);
     }
+    ui.apps_exit_dim=group_at(ui.apps_group,0,0,WS_LCD_WIDTH,WS_LCD_HEIGHT);
+    lv_obj_set_style_bg_color(ui.apps_exit_dim,color(0),0);
+    lv_obj_set_style_bg_opa(ui.apps_exit_dim,(lv_opa_t)72,0);
+    hidden(ui.apps_exit_dim,true);
+    ui.apps_exit_pull=card(ui.apps_group,4,4,272,72,12);
+    set_card_flat(ui.apps_exit_pull,0x122328UL,0x365a60UL,1);
+    lv_obj_t *pull_title=label(ui.apps_exit_pull,"BACK TO APPS",&lv_font_montserrat_14,48,9,214,20);
+    lv_obj_set_style_text_align(pull_title,LV_TEXT_ALIGN_LEFT,0);
+    ui.apps_exit_caption=label(ui.apps_exit_pull,"DRAG RIGHT TO EXIT",&lv_font_montserrat_12,48,30,214,18);
+    lv_obj_set_style_text_align(ui.apps_exit_caption,LV_TEXT_ALIGN_LEFT,0);
+    lv_obj_set_style_text_color(ui.apps_exit_caption,color(COL_MUTED),0);
+    lv_obj_t *track=card(ui.apps_exit_pull,48,54,172,4,2);
+    set_card_flat(track,COL_BORDER,COL_BORDER,0);
+    ui.apps_exit_fill=card(track,0,0,1,4,2);
+    set_card_flat(ui.apps_exit_fill,RGB24_DEFAULT,RGB24_DEFAULT,0);
+    ui.apps_exit_percent=label(ui.apps_exit_pull,"0%",&lv_font_montserrat_12,224,47,42,18);
+    hidden(ui.apps_exit_pull,true);
+    ui.apps_exit_grip=card(ui.apps_group,4,4,40,40,11);
+    set_card_flat(ui.apps_exit_grip,0x142328UL,0x365a60UL,1);
+    static const lv_point_t shaft[]={{0,6},{14,6}};
+    static const lv_point_t head[]={{8,0},{14,6},{8,12}};
+    ui.apps_exit_arrow=group_at(ui.apps_exit_grip,12,13,16,14);
+    line_obj(ui.apps_exit_arrow,shaft,2,0,0,2,RGB24_DEFAULT);
+    line_obj(ui.apps_exit_arrow,head,3,0,0,2,RGB24_DEFAULT);
     ui.apps_exit_overlay=group_at(ui.apps_group,0,0,WS_LCD_WIDTH,WS_LCD_HEIGHT);
     lv_obj_set_style_bg_color(ui.apps_exit_overlay,color(0x000000UL),0);
     lv_obj_set_style_bg_opa(ui.apps_exit_overlay,(lv_opa_t)184,0);
-    lv_obj_t *dialog=card(ui.apps_exit_overlay,18,132,244,188,20);
-    set_card(dialog,COL_PANEL2,RGB24_DEFAULT,2);
-    label(dialog,"LEAVE APP?",&lv_font_montserrat_28,12,17,220,40);
-    label(dialog,"Are you sure?",&lv_font_montserrat_18,12,65,220,30);
-    ui.apps_exit_no=card(dialog,EK_EXIT_NO_X-18,EK_EXIT_Y-132,
-                         EK_EXIT_BUTTON_W,EK_EXIT_BUTTON_H,14);
-    ui.apps_exit_yes=card(dialog,EK_EXIT_YES_X-18,EK_EXIT_Y-132,
-                          EK_EXIT_BUTTON_W,EK_EXIT_BUTTON_H,14);
-    label(ui.apps_exit_no,"NO",&lv_font_montserrat_20,4,16,90,30);
-    label(ui.apps_exit_yes,"YES",&lv_font_montserrat_20,4,16,90,30);
+    lv_obj_t *dialog=card(ui.apps_exit_overlay,18,119,244,218,18);
+    set_card_flat(dialog,0x122025UL,0x365a60UL,1);
+    lv_obj_t *glint=card(dialog,100,0,42,2,0);
+    set_card_flat(glint,RGB24_DEFAULT,RGB24_DEFAULT,0);
+    lv_obj_t *symbol=card(dialog,98,20,46,46,14);
+    set_card_flat(symbol,0x1b3638UL,0x1b3638UL,0);
+    static const lv_point_t door[]={{7,0},{0,0},{0,14},{7,14}};
+    line_obj(symbol,door,4,13,16,2,RGB24_DEFAULT);
+    line_obj(symbol,shaft,2,19,18,2,RGB24_DEFAULT);
+    line_obj(symbol,head,3,19,18,2,RGB24_DEFAULT);
+    label(dialog,"LEAVE APP?",&lv_font_montserrat_20,10,81,222,30);
+    lv_obj_t *subtitle=label(dialog,"Return to your apps?",&lv_font_montserrat_14,10,113,222,24);
+    lv_obj_set_style_text_color(subtitle,color(COL_MUTED),0);
+    /* LVGL child coordinates begin inside the dialog's one-pixel border. */
+    ui.apps_exit_no=card(dialog,EK_EXIT_NO_X-19,EK_EXIT_Y-120,
+                         EK_EXIT_BUTTON_W,EK_EXIT_BUTTON_H,11);
+    ui.apps_exit_yes=card(dialog,EK_EXIT_YES_X-19,EK_EXIT_Y-120,
+                          EK_EXIT_BUTTON_W,EK_EXIT_BUTTON_H,11);
+    label(ui.apps_exit_no,"NO",&lv_font_montserrat_14,4,13,90,22);
+    lv_obj_t *yes=label(ui.apps_exit_yes,"YES",&lv_font_montserrat_14,4,13,90,22);
+    lv_obj_set_style_text_color(yes,color(0xffb3beUL),0);
     hidden(ui.apps_exit_overlay,true);
     hidden(ui.apps_group,true);
 }
@@ -994,7 +1121,9 @@ static void build_air_mouse(void)
     ui.air_mouse_group=group_at(ui.screen,0,0,WS_LCD_WIDTH,WS_LCD_HEIGHT);
     ui.air_mouse_left=card(ui.air_mouse_group,WS_MOUSE_LEFT_X,WS_MOUSE_LEFT_Y,
                            WS_MOUSE_LEFT_W,WS_MOUSE_LEFT_H,16);
-    ui.air_mouse_left_label=label(ui.air_mouse_left,"LEFT",&lv_font_montserrat_20,4,94,88,32);
+    ui.air_mouse_left_label=label(ui.air_mouse_left,"LEFT",&lv_font_montserrat_20,4,60,88,32);
+    ui.air_mouse_drag=card(ui.air_mouse_group,12,180,96,62,12);
+    ui.air_mouse_drag_label=label(ui.air_mouse_drag,"DRAG OFF",&lv_font_montserrat_14,2,20,92,24);
     ui.air_mouse_scroll=card(ui.air_mouse_group,WS_MOUSE_SCROLL_X,WS_MOUSE_SCROLL_Y,
                              WS_MOUSE_SCROLL_W,WS_MOUSE_SCROLL_H,14);
     label(ui.air_mouse_scroll,"^\n\nS\nC\nR\nO\nL\nL\n\nv",&lv_font_montserrat_14,
@@ -1007,9 +1136,9 @@ static void build_air_mouse(void)
     ui.air_mouse_title=label(ui.air_mouse_move,"HOLD TO MOVE",&lv_font_montserrat_20,
                              10,7,236,28);
     ui.air_mouse_status=label(ui.air_mouse_move,"Hold still to calibrate",
-                               &lv_font_montserrat_18,10,39,236,28);
-    ui.air_mouse_hint=label(ui.air_mouse_move,"Release to pause\nSecond finger: click / scroll",
-                            &lv_font_montserrat_14,10,64,236,34);
+                               &lv_font_montserrat_18,10,39,236,24);
+    ui.air_mouse_hint=label(ui.air_mouse_move,"DRAG: tap to hold / release",
+                            &lv_font_montserrat_14,10,73,236,20);
     lv_obj_set_style_text_color(ui.air_mouse_hint,color(COL_MUTED),0);
     ui.air_mouse_calibrate=card(ui.air_mouse_group,WS_MOUSE_CAL_X,WS_MOUSE_CAL_Y,
                                 WS_MOUSE_CAL_W,WS_MOUSE_CAL_H,14);
@@ -1068,6 +1197,25 @@ static void build_air_mouse(void)
     label(ui.air_mouse_settings_back,"BACK TO MOUSE",&lv_font_montserrat_18,0,10,240,28);
     hidden(ui.air_mouse_settings_group,true);
     hidden(ui.air_mouse_group,true);
+    if(pf_control_mode()==PF_CONTROL_BLE_MOUSE) {
+        lv_obj_set_y(ui.air_mouse_settings_calibrate,286);
+        lv_obj_set_height(ui.air_mouse_settings_calibrate,44);
+        lv_obj_set_y(lv_obj_get_child(ui.air_mouse_settings_calibrate,0),10);
+        hidden(lv_obj_get_child(ui.air_mouse_settings_calibrate,1),true);
+        lv_obj_set_y(ui.air_mouse_settings_calibrate_progress,39);
+        ui.air_mouse_pair=card(ui.air_mouse_settings_group,20,336,116,44,12);
+        label(ui.air_mouse_pair,"PAIR",&lv_font_montserrat_18,0,10,116,28);
+        ui.air_mouse_forget=card(ui.air_mouse_settings_group,144,336,116,44,12);
+        label(ui.air_mouse_forget,"FORGET",&lv_font_montserrat_18,0,10,116,28);
+        ui.air_mouse_ble_dialog=card(ui.air_mouse_settings_group,10,100,260,260,18);
+        label(ui.air_mouse_ble_dialog,"FORGET PAIRING?",&lv_font_montserrat_20,10,26,240,32);
+        label(ui.air_mouse_ble_dialog,"Remove mouse BLE bonds?\nFIDO keys are preserved.",&lv_font_montserrat_18,10,80,240,56);
+        lv_obj_t *yes=card(ui.air_mouse_ble_dialog,10,150,116,58,12);
+        label(yes,"YES",&lv_font_montserrat_20,0,17,116,30);
+        lv_obj_t *no=card(ui.air_mouse_ble_dialog,134,150,116,58,12);
+        label(no,"NO",&lv_font_montserrat_20,0,17,116,30);
+        hidden(ui.air_mouse_ble_dialog,true);
+    }
 }
 
 static void build_main(void)
@@ -1173,7 +1321,8 @@ esp_err_t ws_lvgl_init(void)
 {
     if(s_ready) return ESP_OK;
     /* LVGL has no error return from lv_init(). Check the required external
-     * pool before its TLSF initializer asks for the 64 KiB block. */
+     * pool before its TLSF initializer asks for the 128 KiB block. Launcher
+     * widgets and transition drawing masks exceeded the old 64 KiB pool. */
     if(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)<LV_MEM_SIZE)
         return ESP_ERR_NO_MEM;
     lv_init();
@@ -1185,15 +1334,17 @@ esp_err_t ws_lvgl_init(void)
      * path rather than reverting to the 2 x 32-row mode that showed a line. */
     static const uint16_t row_candidates[]={64U,48U,32U,16U};
     uint16_t selected_rows=0U;
-    const uint32_t target_pixels=DRAW_PIXELS(64U);
+    const bool ble_role=ws_controls_is_ble(pf_control_mode());
+    const uint16_t target_rows=ble_role?16U:64U;
+    const uint32_t target_pixels=DRAW_PIXELS(target_rows);
     const size_t target_bytes=(size_t)target_pixels*sizeof(lv_color_t);
     s_pixels_a=(lv_color_t *)heap_caps_malloc(target_bytes,
                                                MALLOC_CAP_DMA|MALLOC_CAP_INTERNAL);
-    s_pixels_b=(lv_color_t *)heap_caps_malloc(target_bytes,
+    if(!ble_role) s_pixels_b=(lv_color_t *)heap_caps_malloc(target_bytes,
                                                MALLOC_CAP_DMA|MALLOC_CAP_INTERNAL);
-    if(s_pixels_a && s_pixels_b) {
+    if(s_pixels_a && (ble_role || s_pixels_b)) {
         s_draw_pixels=target_pixels;
-        selected_rows=64U;
+        selected_rows=target_rows;
     } else {
         if(s_pixels_a) heap_caps_free(s_pixels_a);
         if(s_pixels_b) heap_caps_free(s_pixels_b);
@@ -1201,7 +1352,7 @@ esp_err_t ws_lvgl_init(void)
     }
     for(unsigned i=0;!s_pixels_a && i<sizeof(row_candidates)/sizeof(row_candidates[0]);++i) {
         const uint16_t rows=row_candidates[i];
-        if(rows>WS_LCD_STRIP_ROWS) continue;
+        if(rows>WS_LCD_STRIP_ROWS || rows>target_rows) continue;
         const uint32_t pixels=DRAW_PIXELS(rows);
         s_pixels_a=(lv_color_t *)heap_caps_malloc((size_t)pixels*sizeof(lv_color_t),
                                                   MALLOC_CAP_DMA|MALLOC_CAP_INTERNAL);
@@ -1224,8 +1375,26 @@ esp_err_t ws_lvgl_init(void)
     s_disp_drv.ver_res=WS_LCD_HEIGHT;
     s_disp_drv.flush_cb=flush_cb;
     s_disp_drv.draw_buf=&s_draw_buf;
+    s_disp_drv.sw_rotate=pf_control_mode()==PF_CONTROL_BLE_PAD;
+    if(s_disp_drv.sw_rotate || pf_control_mode()==PF_CONTROL_USB_MOUSE ||
+       pf_control_mode()==PF_CONTROL_BLE_MOUSE)
+        s_disp_drv.rounder_cb=controls_rounder_cb;
+    if(s_disp_drv.sw_rotate) {
+        s_rotation_bytes=LV_DISP_ROT_MAX_BUF>target_bytes?LV_DISP_ROT_MAX_BUF:target_bytes;
+        s_rotation_dma=(lv_color_t *)heap_caps_malloc(s_rotation_bytes,
+                                             MALLOC_CAP_DMA|MALLOC_CAP_INTERNAL);
+        if(!s_rotation_dma)return ESP_ERR_NO_MEM;
+    }
     lv_disp_t *disp=lv_disp_drv_register(&s_disp_drv);
     if(!disp) return ESP_FAIL;
+    if(pf_control_mode()==PF_CONTROL_BLE_PAD) {
+        WsControlPrefs prefs;pf_controls_preferences(&prefs);
+        ws_gamepad_view_init(disp,&prefs);
+        s_flush_error=ESP_OK;lv_refr_now(NULL);
+        if(s_flush_error!=ESP_OK)return s_flush_error;
+        esp_err_t idle=ws_panel_wait_idle(500U);if(idle!=ESP_OK)return idle;
+        s_ready=true;return ESP_OK;
+    }
 
     /* USB.begin() runs after ws_lvgl_init(). A static tinfl_decompressor used
      * to consume 11 KB of internal BSS before TinyUSB could allocate its
@@ -1284,6 +1453,8 @@ esp_err_t ws_lvgl_init(void)
         memset(s_apps_pixels,0,EK_APPS_PIXELS*sizeof(uint16_t));
         s_apps_img.data=(const uint8_t *)s_apps_pixels;
     }
+    s_launcher_pixels=(uint8_t *)heap_caps_calloc(EK_APPS_PAGE_SIZE,EK_APPS_ICON_BYTES,
+        MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     build_apps();
     for(unsigned i=0;i<3;++i) hidden(ui.progress_dot[i],true);
     hidden(ui.result_flare,true);
@@ -1623,18 +1794,21 @@ static unsigned brightness_percent(uint8_t raw)
 
 static const char *settings_default_subtitle(uint8_t page)
 {
+    if(page==WS_SETTINGS_PAGE_GAMEPAD || page==WS_SETTINGS_PAGE_AIR_MOUSE) {
+        const char *last=pf_ble_last_status();if(last && *last)return last;
+    }
     switch((ws_settings_page_t)page) {
     case WS_SETTINGS_PAGE_DISPLAY:return "Brightness";
     case WS_SETTINGS_PAGE_APPEARANCE:return "Colour and motion";
     case WS_SETTINGS_PAGE_POWER:return "Idle screen behaviour";
     case WS_SETTINGS_PAGE_AUTH:return "Interaction timeouts";
     case WS_SETTINGS_PAGE_AIR_MOUSE:return "Tilt pointer / touch controls";
+    case WS_SETTINGS_PAGE_GAMEPAD:return "Landscape touchscreen / BLE";
     case WS_SETTINGS_PAGE_USB:return "USB Mass Storage / microSD";
     case WS_SETTINGS_PAGE_USB_TOOL:return "HID automation / DuckyScript";
     case WS_SETTINGS_PAGE_DIAGNOSTICS:return "Display and memory";
-    case WS_SETTINGS_PAGE_APPS:return "microSD bytecode apps";
     case WS_SETTINGS_PAGE_HOME:
-    default:return "SWIPE UP / DOWN";
+    default:return "";
     }
 }
 
@@ -1673,7 +1847,7 @@ static void update_settings(const ws_ui_snapshot_t *v,uint32_t accent)
     }
     hidden(ui.settings_swatch,true);
     hidden(ui.diagnostics_card,page!=WS_SETTINGS_PAGE_DIAGNOSTICS);
-    hidden(ui.air_mouse_info_card,page!=WS_SETTINGS_PAGE_AIR_MOUSE);
+    hidden(ui.air_mouse_info_card,true);
 
     const char *title="SETTINGS";
     switch((ws_settings_page_t)page) {
@@ -1682,17 +1856,17 @@ static void update_settings(const ws_ui_snapshot_t *v,uint32_t accent)
     case WS_SETTINGS_PAGE_POWER:title="SCREEN POWER";break;
     case WS_SETTINGS_PAGE_AUTH:title="FIDO TIMING";break;
     case WS_SETTINGS_PAGE_AIR_MOUSE:title="AIR MOUSE";break;
+    case WS_SETTINGS_PAGE_GAMEPAD:title="BLE GAMEPAD";break;
     case WS_SETTINGS_PAGE_USB:title="USB & STORAGE";break;
     case WS_SETTINGS_PAGE_USB_TOOL:title="USB TOOL";break;
     case WS_SETTINGS_PAGE_DIAGNOSTICS:title="DIAGNOSTICS";break;
-    case WS_SETTINGS_PAGE_APPS:title="APPS";break;
     case WS_SETTINGS_PAGE_HOME:
     default:break;
     }
 
     const char *sub=settings_default_subtitle(page);
     uint32_t sub_col=home?COL_MUTED:COL_FAINT;
-    if(v->manager_drive_restarting || v->usb_tool_restarting || v->air_mouse_restarting) { sub="Restarting USB...";sub_col=COL_WARN; }
+    if(v->manager_drive_restarting || v->usb_tool_restarting || v->air_mouse_restarting) { sub="Restarting device...";sub_col=COL_WARN; }
     else if(!v->settings_storage_ok || !v->manager_drive_storage_ok || !v->usb_tool_storage_ok) { sub="Settings storage error";sub_col=COL_BAD; }
     else if(v->settings_feedback==WS_SETTINGS_FEEDBACK_SAVED) { sub="Saved";sub_col=accent; }
     else if(v->settings_feedback==WS_SETTINGS_FEEDBACK_PIN_REQUIRED) { sub="FIDO PIN unavailable";sub_col=COL_WARN; }
@@ -1701,13 +1875,10 @@ static void update_settings(const ws_ui_snapshot_t *v,uint32_t accent)
     else if(v->settings_feedback==WS_SETTINGS_FEEDBACK_PIN_CANCELLED) { sub="Write access cancelled";sub_col=COL_MUTED; }
     else if(v->settings_feedback==WS_SETTINGS_FEEDBACK_PIN_TIMEOUT) { sub="PIN timeout - still READ ONLY";sub_col=COL_WARN; }
     else if(v->settings_feedback==WS_SETTINGS_FEEDBACK_ERROR) { sub="Could not save";sub_col=COL_BAD; }
-    if(page==WS_SETTINGS_PAGE_APPS) {
-        sub=v->apps_status[0]?v->apps_status:"Apps worker unavailable";
-        sub_col=v->apps_mounted?accent:COL_MUTED;
-    }
 
     set_text(ui.settings_title,title,COL_TEXT);
     set_text(ui.settings_subtitle,sub,sub_col);
+    hidden(ui.settings_subtitle,home && !sub[0]);
     if(home) {
         lv_obj_set_pos(ui.settings_title,10,222);lv_obj_set_size(ui.settings_title,260,38);
         lv_obj_set_style_text_font(ui.settings_title,&lv_font_montserrat_28,0);
@@ -1778,12 +1949,18 @@ static void update_settings(const ws_ui_snapshot_t *v,uint32_t accent)
             settings_pressed(v,WS_SETTINGS_ACTION_UV_SECONDS_PLUS),false,accent);
         break;
     case WS_SETTINGS_PAGE_AIR_MOUSE:
-        settings_row_set(&ui.settings_row[0],"USB Air Mouse",
+        settings_row_set(&ui.settings_row[0],"Transport",v->controls.transport?"BLE":"USB HID",
+            true,false,false,settings_pressed(v,WS_SETTINGS_ACTION_AIR_MOUSE_TRANSPORT),accent);
+        settings_row_set(&ui.settings_row[1],"Air Mouse",
             v->air_mouse_restarting?"STARTING":v->air_mouse_available?"START":"N/A",
             true,false,false,settings_pressed(v,WS_SETTINGS_ACTION_AIR_MOUSE_START),accent);
-        set_text(ui.air_mouse_info_label,
-            v->air_mouse_available?"Hold MOVE to steer.\nTap to click or scroll\nwith a second finger.":
-            "Requires IMU and touch.\nConnect in FIDO mode\nto start Air Mouse.",COL_MUTED);
+        break;
+    case WS_SETTINGS_PAGE_GAMEPAD:
+        settings_row_set(&ui.settings_row[0],"Host profile",v->controls.profile?"PC / XBOX":"ANDROID",
+            true,false,false,settings_pressed(v,WS_SETTINGS_ACTION_GAMEPAD_PROFILE),accent);
+        settings_row_set(&ui.settings_row[1],"Touchscreen Gamepad",
+            v->air_mouse_restarting?"STARTING":v->touch_available?"START":"N/A",
+            true,false,false,settings_pressed(v,WS_SETTINGS_ACTION_GAMEPAD_START),accent);
         break;
     case WS_SETTINGS_PAGE_USB: {
         const bool drive_ok=v->manager_drive_available && v->manager_drive_storage_ok;
@@ -1841,39 +2018,43 @@ static void update_settings(const ws_ui_snapshot_t *v,uint32_t accent)
             const unsigned rows=(unsigned)(s_draw_pixels/WS_LCD_WIDTH);
             snprintf(value,sizeof(value),"%u x %u  RGB565",s_pixels_b?2U:1U,rows);
             set_text(ui.diagnostics_value,value,accent);
-            char memory[96];
+            char memory[128];
             snprintf(memory,sizeof(memory),"DMA free %u KB  /  max %u KB\nPSRAM free %u KB",
                 (unsigned)(heap_caps_get_free_size(MALLOC_CAP_DMA|MALLOC_CAP_INTERNAL)/1024U),
                 (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_DMA|MALLOC_CAP_INTERNAL)/1024U),
                 (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)/1024U));
+            const unsigned section=(v->diagnostics_tick/3U)%3U;
+            if(section==1U) {
+                snprintf(value,sizeof(value),"%u apps / %u headers",v->apps_count,
+                         (unsigned)v->apps_headers_read);
+                snprintf(memory,sizeof(memory),"Mount %u / scan %u ms\nIcons %u ms (page %u)",
+                    (unsigned)v->apps_mount_ms,(unsigned)v->apps_scan_ms,
+                    (unsigned)v->apps_icon_ms,(unsigned)v->launcher_page+1);
+                set_text(ui.diagnostics_title,"APPS CATALOG",COL_MUTED);
+            } else if(section==2U) {
+                lv_mem_monitor_t pool;lv_mem_monitor(&pool);
+                snprintf(value,sizeof(value),"Poll max %u ms",(unsigned)v->ui_poll_gap_ms);
+                snprintf(memory,sizeof(memory),"Render max %u ms\nLVGL free %u KB",
+                    (unsigned)v->ui_render_ms,(unsigned)(pool.free_size/1024U));
+                set_text(ui.diagnostics_title,"UI LATENCY",COL_MUTED);
+            } else set_text(ui.diagnostics_title,"DRAW BUFFER",COL_MUTED);
+            set_text(ui.diagnostics_value,value,accent);
             set_text(ui.diagnostics_memory,memory,COL_MUTED);
         } else {
             set_text(ui.diagnostics_value,"OFF",COL_FAINT);
             set_text(ui.diagnostics_memory,"Enable to show memory status",COL_MUTED);
         }
-        set_text(ui.diagnostics_title,"DRAW BUFFER",COL_MUTED);
+        if(!v->diagnostics_enabled)set_text(ui.diagnostics_title,"DRAW BUFFER",COL_MUTED);
         break;
     }
-    case WS_SETTINGS_PAGE_APPS:
-        snprintf(value,sizeof(value),"microSD %u/%u",
-                 v->apps_count?(unsigned)v->apps_selected+1U:0U,
-                 (unsigned)v->apps_count);
-        settings_row_set(&ui.settings_row[0],value,
-            v->apps_id[0]?v->apps_id:"No packages",false,
-            settings_pressed(v,WS_SETTINGS_ACTION_APPS_PREV),
-            settings_pressed(v,WS_SETTINGS_ACTION_APPS_NEXT),false,accent);
-        lv_obj_set_style_text_font(ui.settings_row[0].value_label,&lv_font_montserrat_14,0);
-        settings_row_set(&ui.settings_row[1],"Run from card",
-            v->apps_count?"RUN":"NO APPS",true,false,false,
-            settings_pressed(v,WS_SETTINGS_ACTION_APPS_RUN),accent);
-        break;
     case WS_SETTINGS_PAGE_HOME:
     default:
         break;
     }
 
     set_text(ui.settings_footer,"SWIPE UP / DOWN",COL_FAINT);
-    set_text(ui.settings_return,"SWIPE RIGHT / BACK",COL_FAINT);
+    set_text(ui.settings_return,v->apps_catalog_ready && v->apps_count?
+        "SWIPE RIGHT / APPS":"SWIPE RIGHT / HOME",COL_FAINT);
     lv_obj_set_style_text_align(ui.settings_footer,LV_TEXT_ALIGN_CENTER,0);
     lv_obj_set_style_text_align(ui.settings_return,LV_TEXT_ALIGN_CENTER,0);
     for(unsigned i=0;i<SETTINGS_DOTS;++i) {
@@ -2065,7 +2246,7 @@ static void main_state(const ws_ui_snapshot_t *v,uint32_t accent)
         lv_obj_set_pos(ui.usb,8,394);lv_obj_set_size(ui.usb,264,22);
         lv_obj_set_style_text_font(ui.usb,&lv_font_montserrat_14,0);
         hidden(ui.usb,false);hidden(ui.settings_swipe,false);
-        set_text(ui.settings_swipe,"SETTINGS  <  SWIPE  >  SAVER",COL_FAINT);
+        set_text(ui.settings_swipe,v->apps_catalog_ready && v->apps_count?"SWIPE LEFT / APPS":"SWIPE LEFT / SETTINGS",COL_FAINT);
         lv_obj_set_style_text_align(ui.settings_swipe,LV_TEXT_ALIGN_CENTER,0);
         return;
     }
@@ -2118,7 +2299,7 @@ static void main_state(const ws_ui_snapshot_t *v,uint32_t accent)
             set_text(ui.usb,v->state==WS_UI_DISCONNECTED?"USB data unavailable":"USB connected",
                 v->state==WS_UI_READY?accent:COL_MUTED);
             lv_obj_set_pos(ui.usb,8,382);
-            set_text(ui.settings_swipe,"SETTINGS  <  SWIPE  >  SAVER",COL_FAINT);
+            set_text(ui.settings_swipe,v->apps_catalog_ready && v->apps_count?"SWIPE LEFT / APPS":"SWIPE LEFT / SETTINGS",COL_FAINT);
             lv_obj_set_style_text_align(ui.settings_swipe,LV_TEXT_ALIGN_CENTER,0);
         }
     }
@@ -2238,6 +2419,7 @@ static bool main_content_changed(const ws_ui_snapshot_t *a,const ws_ui_snapshot_
         a->touch_available!=b->touch_available || a->touch_enabled!=b->touch_enabled ||
         a->boot_allowed!=b->boot_allowed || a->pressed_action!=b->pressed_action ||
         a->accent_rgb!=b->accent_rgb || a->settings_animation!=b->settings_animation ||
+        a->apps_count!=b->apps_count || a->apps_catalog_ready!=b->apps_catalog_ready ||
         a->usb_tool_enabled!=b->usb_tool_enabled || a->usb_tool_media_ready!=b->usb_tool_media_ready ||
         a->usb_tool_running!=b->usb_tool_running || a->usb_tool_status!=b->usb_tool_status ||
         a->usb_tool_storage_active!=b->usb_tool_storage_active ||
@@ -2253,6 +2435,7 @@ static bool main_content_changed(const ws_ui_snapshot_t *a,const ws_ui_snapshot_
 static bool settings_content_changed(const ws_ui_snapshot_t *a,const ws_ui_snapshot_t *b)
 {
     return a->settings_page!=b->settings_page || a->settings_pressed_action!=b->settings_pressed_action ||
+        memcmp(&a->controls,&b->controls,sizeof(a->controls))!=0 ||
         a->settings_feedback!=b->settings_feedback || a->settings_storage_ok!=b->settings_storage_ok ||
         a->settings_animation!=b->settings_animation || a->settings_dim_seconds!=b->settings_dim_seconds ||
         a->diagnostics_enabled!=b->diagnostics_enabled || a->diagnostics_tick!=b->diagnostics_tick ||
@@ -2281,6 +2464,7 @@ static bool settings_content_changed(const ws_ui_snapshot_t *a,const ws_ui_snaps
 
 static void update_air_mouse(const ws_ui_snapshot_t *v,uint32_t accent)
 {
+    if(ui.air_mouse_ble_dialog)hidden(ui.air_mouse_ble_dialog,!v->air_mouse_ble_modal);
     if(v->air_mouse_settings_open) {
         char sensitivity[12];
         snprintf(sensitivity,sizeof(sensitivity),"%u / 5",
@@ -2306,11 +2490,19 @@ static void update_air_mouse(const ws_ui_snapshot_t *v,uint32_t accent)
     }
     set_card(ui.air_mouse_move,v->air_mouse_move_held?COL_PANEL2:COL_PANEL,
              v->air_mouse_move_held?accent:COL_BORDER,1);
-    set_text(ui.air_mouse_title,v->air_mouse_move_held?"MOVING":"HOLD TO MOVE",accent);
+    set_text(ui.air_mouse_title,v->air_mouse_drag_latched?"DRAG ACTIVE":
+        v->air_mouse_move_held?"MOVING":"HOLD TO MOVE",accent);
+    set_text(ui.air_mouse_hint,v->air_mouse_drag_latched?
+        "Tap DRAG to release":"DRAG: tap to hold / release",COL_MUTED);
+    set_card(ui.air_mouse_drag,v->air_mouse_drag_latched?accent:COL_PANEL,
+        v->air_mouse_drag_latched?accent:COL_BORDER,1);
+    set_text(ui.air_mouse_drag_label,v->air_mouse_drag_latched?"DRAG ON":"DRAG OFF",
+        v->air_mouse_drag_latched?COL_INK:COL_TEXT);
     set_text(ui.air_mouse_status,v->air_mouse_touch_fault?"Touch unavailable":
         v->air_mouse_touch_outside?"Touch outside controls":
         !v->air_mouse_sensor_ok?"IMU unavailable":
-        v->state==WS_UI_DISCONNECTED?"Connect USB":
+        v->ble_failed?"BLE unavailable":
+        v->state==WS_UI_DISCONNECTED?(v->controls.transport?"Pair BLE on host":"Connect USB"):
         v->air_mouse_calibrating?"Hold still to calibrate":"Pointer ready",
         v->air_mouse_touch_fault?COL_BAD:v->air_mouse_touch_outside?COL_WARN:
         !v->air_mouse_sensor_ok?COL_BAD:v->state==WS_UI_DISCONNECTED?COL_WARN:COL_TEXT);
@@ -2351,26 +2543,127 @@ static bool pin_content_changed(const ws_ui_snapshot_t *a,const ws_ui_snapshot_t
         a->accent_rgb!=b->accent_rgb;
 }
 
+static void update_launcher(const ws_ui_snapshot_t *v,uint32_t accent)
+{
+    bool copied=s_launcher_pixels && ek_apps_copy_icons(s_launcher_pixels,
+        EK_APPS_PAGE_SIZE*EK_APPS_ICON_BYTES,&s_launcher_generation);
+    if(copied) {
+        for(unsigned i=0;i<EK_APPS_PAGE_SIZE*EK_APPS_ICON_BYTES;i+=2) {
+            uint8_t c=s_launcher_pixels[i];s_launcher_pixels[i]=s_launcher_pixels[i+1];
+            s_launcher_pixels[i+1]=c;
+        }
+    }
+    unsigned pages=(v->apps_count+EK_APPS_PAGE_SIZE-1)/EK_APPS_PAGE_SIZE;
+    bool intro=v->launcher_page==0;
+    hidden(ui.launcher_intro,!intro);
+    hidden(ui.launcher_header,intro);
+    hidden(ui.launcher_counter,intro);
+    hidden(ui.launcher_content,intro);
+    lv_obj_set_y(ui.launcher_intro,v->launcher_page_offset);
+    for(unsigned i=0;i<EK_APPS_PAGE_SIZE;++i) {
+        bool occupied=!intro && ((unsigned)v->launcher_page-1)*EK_APPS_PAGE_SIZE+i<v->apps_count;
+        bool valid=(v->apps_icon_valid&(1u<<i))!=0;
+        hidden(ui.launcher_cell[i],!occupied);
+        bool pressed=v->launcher_pressed==i+1 && valid;
+        set_card_flat(ui.launcher_cell[i],pressed?COL_PANEL2:COL_GLASS,
+            pressed?accent:COL_BORDER,pressed?2:1);
+        if(ui.launcher_icon[i]) {
+            hidden(ui.launcher_icon[i],!valid);
+            if(copied) {
+                lv_img_cache_invalidate_src(&s_launcher_img[i]);
+                lv_obj_invalidate(ui.launcher_icon[i]);
+            }
+        }
+        set_text(ui.launcher_name[i],v->apps_names[i],valid?COL_TEXT:COL_FAINT);
+    }
+    char counter[32];snprintf(counter,sizeof(counter),"%u / %u",
+        intro?0:(unsigned)v->launcher_page,pages);
+    set_text(ui.launcher_counter,counter,COL_MUTED);
+    char count_status[40];snprintf(count_status,sizeof(count_status),"%u apps on microSD",v->apps_count);
+    set_text(ui.launcher_count,count_status,COL_MUTED);
+    const char *status=!v->apps_status[0] || strcmp(v->apps_status,"Tap an app to run")==0?
+        "SWIPE RIGHT / HOME":v->apps_status;
+    set_text(ui.launcher_status,!s_launcher_pixels?"Icon memory unavailable":
+        v->apps_scanning?"Scanning microSD...":status,COL_FAINT);
+    for(unsigned i=0;i<9;++i) {
+        hidden(ui.launcher_dot[i],i>=pages+1);
+        int x=(WS_LCD_WIDTH-(int)(pages*18+6))/2+(int)i*18;
+        lv_obj_set_x(ui.launcher_dot[i],x);
+        bool active=i==v->launcher_page;
+        lv_obj_set_style_bg_color(ui.launcher_dot[i],color(active?accent:COL_FAINT),0);
+        lv_obj_set_style_bg_opa(ui.launcher_dot[i],active?LV_OPA_COVER:LV_OPA_40,0);
+    }
+    lv_obj_set_y(ui.launcher_content,v->launcher_page_offset);
+    /* A grid/intro switch changes visibility of nested transparent groups.
+     * Repaint the launcher once after structural changes; child-only dirty
+     * rectangles can leave static intro labels/tiles missing after paging.
+     * Do not invalidate the full group on ordinary animation ticks. */
+    if(!s_last_view_valid || s_last_view.launcher_page!=v->launcher_page ||
+       s_last_view.apps_count!=v->apps_count)
+        lv_obj_invalidate(ui.launcher_group);
+}
+
+static void update_launcher_motion(const ws_ui_snapshot_t *v,uint32_t accent)
+{
+    if(v->launcher_page!=0) return;
+    unsigned phase=v->settings_animation?v->settings_motion_phase:0;
+    uint8_t wave=premium_wave((uint8_t)(phase>>2));
+    lv_obj_set_style_border_color(ui.launcher_glow,color(accent),0);
+    lv_obj_set_style_border_opa(ui.launcher_glow,(lv_opa_t)(22U+wave/16U),0);
+    lv_obj_set_style_arc_color(ui.launcher_orbit,color(accent),LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(ui.launcher_orbit_inner,color(accent),LV_PART_INDICATOR);
+    lv_arc_set_rotation(ui.launcher_orbit,(int16_t)(phase*360/256));
+    lv_arc_set_rotation(ui.launcher_orbit_inner,(int16_t)((540-phase*360/256)%360));
+    for(unsigned i=0;i<9;++i) {
+        bool bright=i==0 || i==4 || i==8;
+        set_card_flat(ui.launcher_tiles[i],bright?accent:COL_PANEL2,accent,1);
+        lv_obj_set_style_border_opa(ui.launcher_tiles[i],(lv_opa_t)(100U+wave/3U),0);
+    }
+}
+
 esp_err_t ws_lvgl_render(const ws_ui_snapshot_t *v)
 {
     if(!s_ready || !v) return ESP_ERR_INVALID_STATE;
+    if(pf_control_mode()==PF_CONTROL_BLE_PAD) {
+        ws_gamepad_view_render(v);
+        s_flush_error=ESP_OK;lv_refr_now(NULL);return s_flush_error;
+    }
     const uint32_t accent=v->accent_rgb?v->accent_rgb:RGB24_DEFAULT;
     const bool pin=v->state==WS_UI_PIN;
     const bool first=!s_last_view_valid;
     const bool was_pin=s_last_view_valid && s_last_view.state==WS_UI_PIN;
 
     const bool app_visible=v->apps_running && ws_ui_settings_allowed(v->state) &&
-        v->settings_page==WS_SETTINGS_PAGE_APPS && v->settings_transition==255U;
+        v->launcher_transition==255U;
+    hidden(ui.launcher_group,app_visible || pin || v->air_mouse_active ||
+        !ws_ui_settings_allowed(v->state) || !v->launcher_transition);
     hidden(ui.apps_group,!app_visible);
     if(app_visible) {
+        hidden(ui.apps_exit_grip,v->apps_exit_confirm);
+        hidden(ui.apps_exit_pull,!v->apps_exit_dragging);
+        hidden(ui.apps_exit_dim,!v->apps_exit_dragging);
+        set_card_flat(ui.apps_exit_grip,v->apps_exit_dragging?accent:0x142328UL,
+                      v->apps_exit_dragging?accent:0x365a60UL,1);
+        for(unsigned i=0;i<2;++i)
+            lv_obj_set_style_line_color(lv_obj_get_child(ui.apps_exit_arrow,(int32_t)i),
+                color(v->apps_exit_dragging?0x081916UL:accent),0);
+        if(v->apps_exit_dragging) {
+            unsigned progress=v->apps_exit_progress>100?100:v->apps_exit_progress;
+            hidden(ui.apps_exit_fill,!progress);
+            lv_obj_set_width(ui.apps_exit_fill,(lv_coord_t)(progress*172/100+(!progress)));
+            set_card_flat(ui.apps_exit_fill,accent,accent,0);
+            char percent[8];snprintf(percent,sizeof(percent),"%u%%",progress);
+            set_text(ui.apps_exit_percent,percent,accent);
+            set_text(ui.apps_exit_caption,progress==100?"RELEASE TO CONFIRM":"DRAG RIGHT TO EXIT",COL_MUTED);
+        }
         hidden(ui.apps_exit_overlay,!v->apps_exit_confirm);
         if(v->apps_exit_confirm) {
             set_card_flat(ui.apps_exit_no,
-                v->apps_exit_pressed==EK_EXIT_BUTTON_NO?accent:COL_PANEL,
-                v->apps_exit_pressed==EK_EXIT_BUTTON_NO?accent:COL_BORDER,2);
+                v->apps_exit_pressed==EK_EXIT_BUTTON_NO?accent:0x1b2d34UL,
+                v->apps_exit_pressed==EK_EXIT_BUTTON_NO?accent:0x36515bUL,1);
             set_card_flat(ui.apps_exit_yes,
-                v->apps_exit_pressed==EK_EXIT_BUTTON_YES?COL_BAD:COL_BAD_DIM,
-                COL_BAD,2);
+                v->apps_exit_pressed==EK_EXIT_BUTTON_YES?COL_BAD:0x39232cUL,
+                0x925060UL,1);
         }
         hidden(ui.air_mouse_group,true);
         hidden(ui.air_mouse_settings_group,true);
@@ -2404,9 +2697,12 @@ esp_err_t ws_lvgl_render(const ws_ui_snapshot_t *v)
         hidden(ui.screensaver_group,true);
         /* Settings data changes independently of touch/IMU state. */
         if(first || !s_last_view.air_mouse_active ||
+           s_last_view.ble_ready!=v->ble_ready || s_last_view.ble_failed!=v->ble_failed ||
+           s_last_view.air_mouse_ble_modal!=v->air_mouse_ble_modal ||
            s_last_view.state!=v->state ||
            s_last_view.air_mouse_touch_zone!=v->air_mouse_touch_zone ||
            s_last_view.air_mouse_move_held!=v->air_mouse_move_held ||
+           s_last_view.air_mouse_drag_latched!=v->air_mouse_drag_latched ||
            s_last_view.air_mouse_buttons!=v->air_mouse_buttons ||
            s_last_view.air_mouse_hold_step!=v->air_mouse_hold_step ||
            s_last_view.air_mouse_touch_fault!=v->air_mouse_touch_fault ||
@@ -2430,13 +2726,37 @@ esp_err_t ws_lvgl_render(const ws_ui_snapshot_t *v)
         hidden(ui.air_mouse_settings_group,true);
         const uint8_t settings_t=v->settings_transition;
         const uint8_t saver_t=v->screensaver_transition;
-        const bool main_visible=settings_t!=255U && saver_t!=255U;
+        const uint8_t launcher_t=v->launcher_transition;
+        const bool apps_settings_slide=settings_t!=0U && launcher_t!=0U;
+        const bool main_visible=!apps_settings_slide &&
+            settings_t!=255U && saver_t!=255U && launcher_t!=255U;
         const bool settings_visible=settings_t!=0U;
         const bool saver_visible=saver_t!=0U;
         hidden(ui.pin_group,true);
         hidden(ui.main_group,!main_visible);
         hidden(ui.settings_group,!settings_visible);
         hidden(ui.screensaver_group,!saver_visible);
+        if(launcher_t) {
+            if(first || s_launcher_generation!=v->apps_catalog_generation ||
+                !s_last_view.launcher_transition ||
+                s_last_view.launcher_page!=v->launcher_page ||
+                s_last_view.launcher_pressed!=v->launcher_pressed ||
+                s_last_view.launcher_page_offset!=v->launcher_page_offset ||
+                s_last_view.apps_count!=v->apps_count ||
+                s_last_view.apps_icon_valid!=v->apps_icon_valid ||
+                s_last_view.apps_catalog_ready!=v->apps_catalog_ready ||
+                s_last_view.apps_running!=v->apps_running ||
+                s_last_view.apps_scanning!=v->apps_scanning ||
+                strcmp(s_last_view.apps_status,v->apps_status)!=0 ||
+                s_last_view.accent_rgb!=v->accent_rgb)
+                update_launcher(v,accent);
+            if(first || !s_last_view.launcher_transition ||
+                s_last_view.launcher_page!=v->launcher_page ||
+                s_last_view.settings_motion_phase!=v->settings_motion_phase ||
+                s_last_view.settings_animation!=v->settings_animation ||
+                s_last_view.accent_rgb!=v->accent_rgb)
+                update_launcher_motion(v,accent);
+        }
 
         if(first || was_pin || main_content_changed(&s_last_view,v)) {
             main_state(v,accent);
@@ -2449,13 +2769,27 @@ esp_err_t ws_lvgl_render(const ws_ui_snapshot_t *v)
 
         if(first || was_pin || !s_last_view_valid ||
            s_last_view.settings_transition!=settings_t ||
-           s_last_view.screensaver_transition!=saver_t) {
+           s_last_view.settings_open!=v->settings_open ||
+           s_last_view.screensaver_transition!=saver_t ||
+           s_last_view.launcher_transition!=launcher_t) {
             /* SETTINGS arrives from the right. The screensaver mirrors it from
              * the left, while the idle surface moves only 64 px for understated
              * parallax instead of a costly full-width translation. */
-            int main_x=-((int)settings_t*64)/255+((int)saver_t*64)/255;
+            int main_x=-((int)settings_t*64)/255+((int)saver_t*64)/255-((int)launcher_t*64)/255;
             lv_obj_set_x(ui.main_group,main_x);
-            lv_obj_set_x(ui.settings_group,WS_LCD_WIDTH-((int)settings_t*WS_LCD_WIDTH)/255);
+            int settings_x=WS_LCD_WIDTH-((int)settings_t*WS_LCD_WIDTH)/255;
+            int launcher_x=WS_LCD_WIDTH-((int)launcher_t*WS_LCD_WIDTH)/255;
+            if(apps_settings_slide) {
+                /* Adjacent pages move together. Use one shared edge so rounding
+                 * cannot expose Home or leave a gap between the two pages. */
+                if(v->settings_open) launcher_x=settings_x-WS_LCD_WIDTH;
+                else {
+                    launcher_x=-WS_LCD_WIDTH+((int)launcher_t*WS_LCD_WIDTH)/255;
+                    settings_x=launcher_x+WS_LCD_WIDTH;
+                }
+            }
+            lv_obj_set_x(ui.launcher_group,launcher_x);
+            lv_obj_set_x(ui.settings_group,settings_x);
             lv_obj_set_x(ui.screensaver_group,-WS_LCD_WIDTH+((int)saver_t*WS_LCD_WIDTH)/255);
         }
         if(first || was_pin || !s_last_view_valid || s_last_view.settings_page_offset!=v->settings_page_offset)

@@ -10,7 +10,7 @@ import struct
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
-HEADER = struct.Struct("<8sHHHHHHH32sI32s64s32s6s")
+from pack_ekapp import HEADER, ICON_BYTES, PAYLOAD_OFFSET, PACKAGE_REVISION, UI_PROFILE, UI_PROFILE_BYTES
 
 
 def decoded(raw):
@@ -36,13 +36,20 @@ def build(app: Path):
     if len(data) < HEADER.size:
         raise ValueError("short bundle")
     (magic, size, revision, abi, flags, major, minor, patch, raw_id,
-     wasm_size, digest, raw_owner, raw_license, reserved) = HEADER.unpack_from(data)
-    asset_size = struct.unpack_from("<I", reserved)[0]
-    if (magic, size, revision, abi, flags, reserved[4:]) != \
-            (b"EKEYAPP1", 192, 3, 4, 0, bytes(2)):
+     wasm_size, digest, raw_owner, raw_license, asset_size, reserved,
+     raw_name, icon_digest, extension_reserved) = HEADER.unpack_from(data)
+    if (magic, size, revision, abi, flags, reserved, extension_reserved) != \
+            (b"EKEYAPP1", 320, PACKAGE_REVISION, 4, 0, bytes(2), UI_PROFILE_BYTES):
         raise ValueError("unsupported package header")
-    program = data[HEADER.size:HEADER.size + wasm_size]
-    payload = data[HEADER.size:]
+    icon = data[HEADER.size:PAYLOAD_OFFSET]
+    if len(icon) != ICON_BYTES or hashlib.sha256(icon).digest() != icon_digest:
+        raise ValueError("icon length or hash mismatch")
+    if decoded(raw_name) != manifest["name"] or manifest["package_revision"] != PACKAGE_REVISION or \
+        manifest.get("ui_profile") != UI_PROFILE or \
+        manifest["icon"] != {"width":64,"height":64,"format":"rgb565-le", "sha256":icon_digest.hex()}:
+        raise ValueError("launcher manifest metadata mismatch")
+    program = data[PAYLOAD_OFFSET:PAYLOAD_OFFSET + wasm_size]
+    payload = data[PAYLOAD_OFFSET:]
     if (len(payload) != wasm_size + asset_size or not 8 <= wasm_size <= 65536 or
         asset_size > 1024 * 1024 or program[:8] != b"\0asm\x01\0\0\0" or
         hashlib.sha256(payload).digest() != digest):
@@ -65,7 +72,7 @@ def build(app: Path):
         raise ValueError("license text does not name the declared owner")
     customer_manifest = {
         key: manifest[key] for key in (
-            "schema", "id", "owner", "license", "version", "api",
+            "schema", "id", "name", "package_revision", "ui_profile", "icon", "owner", "license", "version", "api",
             "bundle", "bundle_sha256", "capabilities"
         )
     }

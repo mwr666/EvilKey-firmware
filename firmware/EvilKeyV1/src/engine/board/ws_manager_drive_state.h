@@ -17,7 +17,7 @@ extern "C" {
  * mdrive_v1 controls whether MSC is enumerated after boot. mdrive_ro1 controls
  * host write protection. Both live in wsdev/pf_manager, separate from FIDO keys,
  * credentials and PIN state. The default write-protection setting is OFF so a
- * fresh card can receive PicoFidoManager.exe without another card reader. */
+ * fresh card can receive EvilKeyManager.exe without another card reader. */
 void ws_manager_drive_state_init(void);
 bool ws_manager_drive_enabled(void);
 bool ws_manager_drive_read_only(void);

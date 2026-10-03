@@ -10,14 +10,21 @@ from pathlib import Path
 import re
 import struct
 
-HEADER = struct.Struct("<8sHHHHHHH32sI32s64s32sI2s")
+HEADER = struct.Struct("<8sHHHHHHH32sI32s64s32sI2s64s32s32s")
+HEADER_SIZE = HEADER.size
+ICON_BYTES = 64 * 64 * 2
+PAYLOAD_OFFSET = HEADER_SIZE + ICON_BYTES
+PACKAGE_REVISION = 5
+UI_PROFILE = "corner-exit-v1"
+UI_PROFILE_BYTES = struct.pack("<H", 1) + bytes(30)
 ENTRY = struct.Struct("<HHHHIII")
 WASM_MAGIC = b"\0asm\x01\0\0\0"
 
 
 def field(value: str, length: int, encoding: str) -> bytes:
     raw = value.encode(encoding)
-    if not raw or len(raw) >= length or any(b < 0x20 or b == 0x7f for b in raw):
+    if not value.strip() or len(raw) >= length or any(b < 0x20 or b == 0x7f for b in raw) or \
+            any(0x80 <= ord(c) <= 0x9f for c in value):
         raise ValueError("invalid package metadata field")
     return raw + bytes(length - len(raw))
 
@@ -58,44 +65,58 @@ def assets_blob(manifest_path: Path | None) -> bytes:
     return blob
 
 
-def pack(wasm: Path, output: Path, app_id: str, owner: str,
-         license_id: str, version: str, assets: Path | None) -> Path:
+def encode_package(program: bytes, blob: bytes, app_id: str, owner: str,
+                   license_id: str, version: str, name: str, image: bytes,
+                   ui_profile: str) -> bytes:
+    if ui_profile != UI_PROFILE:
+        raise ValueError("explicit ui_profile='corner-exit-v1' is required; reserve 56x56 touch and 48x48 visual zones")
     if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,30}", app_id) or \
             app_id.endswith(".") or ".." in app_id:
         raise ValueError("invalid app ID")
-    if output.name != f"{app_id}.ekapp":
-        raise ValueError("output filename must match app ID")
     parts = version.split(".")
     if len(parts) != 3 or any(not p.isascii() or not p.isdigit() or
                               int(p) > 65535 for p in parts):
         raise ValueError("version must be major.minor.patch in u16 range")
-    program = wasm.read_bytes()
     if not 8 <= len(program) <= 65536 or not program.startswith(WASM_MAGIC):
         raise ValueError("invalid or oversized WebAssembly module")
-    blob = assets_blob(assets)
+    if len(blob) > 1024 * 1024:
+        raise ValueError("asset blob exceeds 1 MiB")
+    if len(image) != ICON_BYTES:
+        raise ValueError("icon must be a 64x64 little-endian RGB565 image (8192 bytes)")
     payload = program + blob
-    header = HEADER.pack(b"EKEYAPP1", 192, 3, 4, 0, *map(int, parts),
+    header = HEADER.pack(b"EKEYAPP1", HEADER_SIZE, PACKAGE_REVISION, 4, 0, *map(int, parts),
                          field(app_id, 32, "ascii"), len(program),
                          hashlib.sha256(payload).digest(),
                          field(owner, 64, "utf-8"),
-                         field(license_id, 32, "ascii"), len(blob), bytes(2))
+                         field(license_id, 32, "ascii"), len(blob), bytes(2),
+                         field(name, 64, "utf-8"), hashlib.sha256(image).digest(), UI_PROFILE_BYTES)
+    return header + image + payload
+
+
+def pack(wasm: Path, output: Path, app_id: str, owner: str,
+         license_id: str, version: str, assets: Path | None,
+         name: str, icon: Path, ui_profile: str) -> Path:
+    if output.name != f"{app_id}.ekapp":
+        raise ValueError("output filename must match app ID")
+    package = encode_package(wasm.read_bytes(), assets_blob(assets), app_id, owner,
+                             license_id, version, name, icon.read_bytes(), ui_profile)
     if output.exists():
         raise FileExistsError(output)
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_bytes(header + payload)
-    if output.read_bytes() != header + payload:
+    output.write_bytes(package)
+    if output.read_bytes() != package:
         raise IOError("package readback mismatch")
     return output
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ("wasm", "output", "id", "owner", "license", "version"):
+    for name in ("wasm", "output", "id", "owner", "license", "version", "name", "icon", "ui-profile"):
         parser.add_argument(f"--{name}", required=True)
     parser.add_argument("--assets", type=Path)
     args = parser.parse_args()
     print(pack(Path(args.wasm), Path(args.output), args.id, args.owner,
-               args.license, args.version, args.assets))
+               args.license, args.version, args.assets, args.name, Path(args.icon), args.ui_profile))
 
 
 if __name__ == "__main__":

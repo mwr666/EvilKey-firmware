@@ -4,7 +4,7 @@ from pathlib import Path
 import argparse, os, shlex, shutil, subprocess, tempfile
 
 def main():
-    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--sanitize',action='store_true');args=parser.parse_args()
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--sanitize',action='store_true');parser.add_argument('--only');args=parser.parse_args()
     root=Path(__file__).resolve().parents[1];p=root/'templates/port';t=root/'tests/release_026'
     groups=[
       ('power',[t/'test_screen_power.c'],'board_stubs'),
@@ -19,11 +19,16 @@ def main():
     for name in ['settings_store','manager_auth','manager_drive_state','usb_tool_state']:
         if(t/f'test_{name}.c').exists():groups.append((name,[t/f'test_{name}.c',p/'ws_settings_codec.c'],'settings_stubs'))
     cc=shlex.split(os.environ.get('CC','cc'));env=os.environ.copy()
+    if args.only:
+        groups=[g for g in groups if g[0]==args.only]
+        if not groups:parser.error('unknown test group')
     if not shutil.which(cc[0]):parser.error('No C compiler. Set CC to GCC/Clang.')
     if args.sanitize:env.update(ASAN_OPTIONS='detect_leaks=1:halt_on_error=1',UBSAN_OPTIONS='halt_on_error=1')
     with tempfile.TemporaryDirectory(prefix='picofido-tests-') as tmp:
         for name,sources,stubs in groups:
-            out=Path(tmp)/name;flags=['-std=c11','-O1','-g','-Wall','-Wextra','-Werror','-Wno-misleading-indentation']
+            # Zig's Windows target defines NDEBUG by default. Never silently
+            # compile away regression assertions in a release-test binary.
+            out=Path(tmp)/(name+('.exe' if os.name=='nt' else ''));flags=['-std=c11','-O1','-g','-UNDEBUG','-Wall','-Wextra','-Werror','-Wno-misleading-indentation']
             if args.sanitize:flags+=['-fsanitize=address,undefined','-fno-omit-frame-pointer','-fno-pie','-no-pie']
             print('BUILD / RUN:',name,'sanitized' if args.sanitize else 'normal',flush=True)
             subprocess.run(cc+flags+['-I',str(t/stubs),'-I',str(p)]+list(map(str,sources))+['-o',str(out)],check=True)

@@ -8,6 +8,18 @@
 #define EVILKEY_APP_ABI_VERSION 4u
 #define EVILKEY_APP_DISPLAY_WIDTH 280u
 #define EVILKEY_APP_DISPLAY_HEIGHT 456u
+/* UI contract corner-exit-v1; these constants do not alter the mailbox.
+ * Firmware owns the larger touch zone: no app controls inside it.
+ * The smaller visual zone is background only; labels/scores may start at x=50.
+ * Contacts begun elsewhere remain app-owned until every finger is up. */
+#define EVILKEY_APP_UI_PROFILE 1u
+#define EVILKEY_APP_SYSTEM_ZONE_X 0u
+#define EVILKEY_APP_SYSTEM_ZONE_Y 0u
+#define EVILKEY_APP_SYSTEM_ZONE_WIDTH 56u
+#define EVILKEY_APP_SYSTEM_ZONE_HEIGHT 56u
+#define EVILKEY_APP_SYSTEM_VISUAL_ZONE_WIDTH 48u
+#define EVILKEY_APP_SYSTEM_VISUAL_ZONE_HEIGHT 48u
+#define EVILKEY_APP_HEADER_CONTENT_X 50u
 #define EVILKEY_APP_MAX_SAVE_BYTES 4096u
 #define EVILKEY_APP_MAX_COMMANDS 515u
 #define EVILKEY_APP_RECT 1u

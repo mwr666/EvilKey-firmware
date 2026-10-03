@@ -16,7 +16,7 @@
 
 # EvilKey firmware
 
-EvilKey 0.5.0 is FIDO2 firmware for the **Waveshare ESP32-S3 Touch AMOLED 1.64, PCB V1**. Its touch GUI includes a local PIN keypad for compatible built-in user verification requests, an IMU-powered Air Mouse, diagnostics, USB storage controls, a deliberately activated USB Tool, and Apps loaded from microSD. Standard host-side ClientPIN remains supported. [On-device PIN details](docs/ON_DEVICE_PIN.md) explain the scope and validation limits.
+EvilKey 0.6.0 is FIDO2 firmware for the **Waveshare ESP32-S3 Touch AMOLED 1.64, PCB V1**. Its touch GUI includes a local PIN keypad for compatible built-in user verification requests, USB/BLE AirMouse, a landscape BLE Gamepad, diagnostics, USB storage controls, a deliberately activated USB Tool, and Apps loaded from microSD. Standard host-side ClientPIN remains supported. [On-device PIN details](docs/ON_DEVICE_PIN.md) explain the scope and validation limits.
 
 This repository contains the device firmware, LVGL interface, generated upstream source, preparation tools, source notices and installation instructions. It does not contain the separately licensed Manager or microSD examples.
 
@@ -54,7 +54,7 @@ USB Tool is a separate USB role. Select a script on EvilKey's touchscreen and pr
 
 I needed a FIDO2 key. It now runs falling blocks and pinball. Apparently I was left unsupervised. This silent Short shows **EvilBlocks and EvilPinball on the real PCB V1 prototype**: select an app from microSD, press **RUN**, then play using the touchscreen. The captions and 3D logo/glitch outro are edited; the gameplay is filmed during development, rather than a benchmark of the latest app builds.
 
-Apps are independent `.ekapp` packages in `/evilkey/apps/`, launched through **Settings → Apps** in the normal FIDO USB role. [Firmware 0.5.0 and its MIT SDK](https://github.com/mwr666/EvilKey-firmware/releases/tag/v0.5.0) provide ABI v4 with two touch contacts, accelerometer data, image assets and per-app microSD saves. Game packages have separate licenses and are not bundled in the public firmware, Manager or USB Tool examples repositories.
+Apps are independent `.ekapp` packages in `/evilkey/apps/`. In **0.6.0**, swipe left from Home to the Apps introduction, swipe up/down for a paged **3×3 icon grid**, then tap an icon. Compatible packages need an embedded name/icon and the `corner-exit-v1` profile. The firmware-owned upper-left grip opens a visible slide-to-exit control and Yes/No confirmation; touches elsewhere remain app-owned. [Firmware 0.6.0](https://github.com/mwr666/EvilKey-firmware/releases/tag/v0.6.0) provides ABI v4, accelerometer data, RGB565 assets and bounded per-app `.save` files. The tested PCB V1 panel reports one contact, despite the ABI's two-contact capacity. Separately licensed games are not included in the public repositories. The older video shows the launch flow used during its filming.
 
 What app would you put on a device like this? Useful tools and gloriously unnecessary experiments are welcome.
 
@@ -121,30 +121,29 @@ The following panels are stills from a code-derived interface preview. They show
 
 Only one USB role is active at a time. Switching roles is an explicit action on the key.
 
+## Firmware 0.6.0
+
+- **Apps launcher:** animated introduction, cached card catalog, 3×3 icon pages and a shared corner exit gesture. Home: swipe right for screensaver, left for Apps, then left for Settings. Without compatible apps, left opens Settings directly. Charger-only power still permits navigation.
+- **BLE Gamepad:** landscape A/B/X/Y cross, shoulder controls, IMU direction, Center, analog/D-pad mode, dead zone and Rotate 180. PC/Xbox and Generic/Android are BLE HID profiles; native XInput and console compatibility are not established.
+- **USB/BLE AirMouse:** hold MOVE to steer; release to stop. Tap DRAG to hold/release the left button and drag with one finger. Clicks and scrolling remain on the touchscreen.
+- **Radio lifecycle:** BLE starts only when a BLE module is launched. Exit returns to FIDO with BLE off; Home, Apps, Settings, screensaver and USB roles keep it off.
+- **Storage-preserving upload:** guarded NVS initialization and verified migration to a 4 MiB app at `0x500000`; credential/storage offsets are retained.
+
+[Download 0.6.0](https://github.com/mwr666/EvilKey-firmware/releases/tag/v0.6.0) · [Changelog](CHANGELOG.md) · [Gamepad and BLE](docs/BLE_CONTROLS.md) · [AirMouse](docs/AIR_MOUSE.md).
+
 ## Apps from microSD
 
-Apps are separate `.ekapp` bytecode files in `/evilkey/apps/` on a FAT microSD
-card. In the normal FIDO USB role, open **Settings → Apps**, choose an app and
-press **RUN**. Swipe right while an app runs to open the firmware's shared
-**Yes/No** exit confirmation. Replacing or removing an app is done by changing
-its file on the card; the firmware does not install it or write to NVS for Apps.
+Copy a compatible `.ekapp` into `/evilkey/apps/` on FAT32 microSD. Replace it to update, delete it to remove; keep its adjacent `<id>.save` to retain progress. No install database or firmware rebuild is required for changes within the supported ABI. Revision-5 packages contain their name and 64×64 icon. Older package revisions are rejected.
 
-The [public ABI v4 specification](apps/ABI_V4.md) and [MIT SDK](apps/sdk/README.md)
-describe the format and device interface. This repository contains the
-interpreter and SDK, without any separately licensed application source or
-app package. The firmware verifies a package's structure and digest before
-launch; that digest detects corruption but does not authenticate its author.
-
-ABI v4 provides two touch contacts, accelerometer samples, validated RGB565
-assets with cropped blits, and a bounded `<id>.save` file beside each app.
-The firmware controls display and card access; apps cannot access NVS or FIDO
-credentials. Older ABI packages are rejected by 0.5.0.
+The [ABI v4 specification](apps/ABI_V4.md), [MIT SDK](apps/sdk/README.md) and [UI profile](apps/sdk/UI_PROFILE.md) are public. Apps have zero imports and exchange bounded touch, motion, draw, image and save data with firmware. They have no direct NVS/FIDO, USB or networking API. This is an interpreter boundary, not demonstrated hardware isolation. Package SHA-256 detects corruption, not publisher identity.
 
 ## Build and install
 
-Read [installation information](firmware/INSTALLATION_INFORMATION.md) first. From `firmware/`, run `python prepare_arduino.py` and `python build_arduino.py` with the pinned Arduino-ESP32 and Waveshare board packages. `python flash_arduino.py` performs a rebuild and asks for a COM port and explicit confirmation. The upload uses `EraseFlash=none` to preserve NVS, but verify the exact board before flashing.
+Open **[EvilKey.cmd](EvilKey.cmd)**: **7** builds, **11** builds/flashes through the storage-preserving uploader, **6** runs software checks and **8** packages source plus the accepted BIN. Read [build/flash](docs/BUILD_AND_FLASH.md) and [installation/rollback](firmware/INSTALLATION_INFORMATION.md). The exact release BIN was accepted on PCB V1; [validation](docs/VALIDATION.md) records scope and SHA-256.
 
-The [firmware guide](firmware/README.md) explains source generation and the two 64-row RGB565 draw buffers. Device test claims and limits are recorded in [validation](firmware/VALIDATION.md). The [Air Mouse](docs/AIR_MOUSE.md), [USB Tool](docs/USB_TOOL.md) and [Manager Drive](docs/MANAGER_DRIVE.md) documents cover individual roles.
+## Development security status
+
+This V1 configuration remains **development-only**: credential material is stored in unencrypted NVS, without Secure Boot or encrypted flash/NVS provisioning. Working sign-ins and storage-preserving updates do not establish resistance to physical extraction or runtime compromise. No FIDO certification or production-key hardening is claimed. See the source guards in `pf_build_config.h` and the validation record.
 
 ## Related projects
 

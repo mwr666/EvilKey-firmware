@@ -42,16 +42,16 @@ class FlashArduinoTests(unittest.TestCase):
              patch.object(FLASH, "discover_ports", side_effect=[ports, ports]) as discover, \
              patch.object(FLASH, "load_verified_build_info", return_value=info), \
              patch.object(FLASH, "resolve_esptool", return_value=Path("esptool.exe")), \
-             patch.object(FLASH, "verify_device_partition"), \
+             patch.object(FLASH, "verify_device_partition",return_value=b'reviewed table'), \
+             patch.object(FLASH, "install_preserving_storage") as install, \
              patch("builtins.input", side_effect=["1", "Y"]), \
              patch.object(FLASH.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as run, \
              patch.object(FLASH.sys, "argv", ["flash_arduino.py"]):
             self.assertEqual(FLASH.main(), 0)
             self.assertEqual(discover.call_count, 2)
-            self.assertEqual(run.call_count, 2)
+            self.assertEqual(run.call_count, 1)
             self.assertEqual(run.call_args_list[0].args[0][1], str(FLASH.BUILD_SCRIPT))
-            self.assertEqual(run.call_args_list[1].args[0][0], "esptool.exe")
-            self.assertEqual(run.call_args_list[1].args[0].count("0x10000"), 1)
+            install.assert_called_once_with(Path('esptool.exe'),ports[0],info,b'reviewed table',FLASH.ROOT/'.flash-backups')
 
     def test_port_parser_lists_only_unique_windows_com_ports_numerically(self):
         payload = {
@@ -76,17 +76,9 @@ class FlashArduinoTests(unittest.TestCase):
         self.assertIsNone(FLASH.choose_port(ports, "COM99"))
         self.assertIsNone(FLASH.choose_port(ports, "3"))
 
-    def test_upload_command_writes_only_factory_image_and_no_erase_flag(self):
-        port = {"address": "COM7", "protocol": "serial"}
-        info = {"image_path": "C:/private/firmware.bin"}
-        command = FLASH.upload_command(Path("esptool.exe"), port, info)
-        self.assertEqual(command[:3], ["esptool.exe", "--chip", "esp32s3"])
-        self.assertIn("COM7", command)
-        self.assertEqual(command[-2:], ["0x10000", "C:/private/firmware.bin"])
-        self.assertEqual(command.count("write-flash"), 1)
-        self.assertNotIn("erase-all", " ".join(command).lower())
-        self.assertNotIn("0x8000", command)
-        self.assertNotIn("0xe000", command)
+    def test_unsafe_erase_commands_rejected(self):
+        for token in ['erase_flash','erase-flash','erase-region','--erase-all']:
+            with self.assertRaises(RuntimeError):FLASH.validate_command(['esptool',token])
 
     def test_app_partition_is_disjoint_from_nvs_and_other_data(self):
         FLASH.verify_partition_layout()
@@ -121,12 +113,11 @@ class FlashArduinoTests(unittest.TestCase):
                 run.assert_called_once()
 
     def test_menu_and_build_manifest_contract_are_wired(self):
+        menu = (ROOT / "EvilKey.cmd").read_text(encoding="utf-8")
+        wrapper = (ROOT / "scripts" / "commands" / "Flash_firmware.cmd").read_text(encoding="utf-8")
         build = (ROOT / "firmware" / "build_arduino.py").read_text(encoding="utf-8")
-        if (ROOT / "EvilKey.cmd").is_file():
-            menu = (ROOT / "EvilKey.cmd").read_text(encoding="utf-8")
-            wrapper = (ROOT / "scripts" / "commands" / "Flash_firmware.cmd").read_text(encoding="utf-8")
-            self.assertIn('"11" call scripts\\commands\\Flash_firmware.cmd', menu)
-            self.assertIn("firmware\\flash_arduino.py", wrapper)
+        self.assertIn('"11" call scripts\\commands\\Flash_firmware.cmd', menu)
+        self.assertIn("firmware\\flash_arduino.py", wrapper)
         self.assertIn("evilkey-arduino-build-v1", build)
         self.assertIn("EraseFlash=none", build)
 

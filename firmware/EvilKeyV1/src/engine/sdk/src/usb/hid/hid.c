@@ -278,7 +278,7 @@ int (*hid_set_report_cb)(uint8_t, uint8_t, hid_report_type_t, uint8_t const *, u
 // received data on OUT endpoint ( Report ID = 0, Type = 0 )
 
 void tud_hid_set_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t report_type, uint8_t const *buffer, uint16_t bufsize) {
-    /* The mouse-only role cannot accept CTAP packets. */
+    /* A mouse-only USB role never accepts CTAP packets, even if a host sends 64 raw bytes. */
     if (pf_air_mouse_role()) return;
     /* USB Tool owns non-CTAP output reports (for example keyboard LEDs). */
     if (hid_set_report_cb && hid_set_report_cb(itf, report_id, report_type, buffer, bufsize) != 0) return;

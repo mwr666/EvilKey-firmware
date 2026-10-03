@@ -1,3 +1,4 @@
+#include "../../pf_build_config.h"
 /* SPDX-License-Identifier: AGPL-3.0-or-later
  * QSPI framing and display initialization follow Waveshare's supplied
  * CO5300-compatible SH8601 example. LVGL owns composition; this module owns

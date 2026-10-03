@@ -40,7 +40,7 @@ void pf_manager_drive_apply_read_only(bool ro){drive_applies++;assert(ro==drive_
 static int cbor_encoder_create_map(CborEncoder*a,CborEncoder*b,unsigned n){assert(n==5||n==6);*b=*a;return 0;}
 static int cbor_encode_uint(CborEncoder*a,uint64_t n){a->n++;(void)n;return 0;}
 static int cbor_encode_byte_string(CborEncoder*a,const uint8_t*d,size_t n){assert(d&&(n==32||n==8));a->n++;return 0;}
-static int cbor_encode_text_stringz(CborEncoder*a,const char*s){assert(!strcmp(s,"0.2.10-dev"));a->n++;return 0;}
+static int cbor_encode_text_stringz(CborEncoder*a,const char*s){assert(!strcmp(s,PF_FIRMWARE_VERSION_STRING));a->n++;return 0;}
 static int cbor_encode_boolean(CborEncoder*a,bool b){(void)b;a->n++;return 0;}
 static int cbor_encoder_close_container(CborEncoder*a,CborEncoder*b){*a=*b;return 0;}
 static size_t cbor_encoder_get_buffer_size(CborEncoder*a,uint8_t*b){(void)b;return a->n;}

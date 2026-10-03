@@ -15,7 +15,35 @@ an application's source to run it.
 `pack_ekapp.py` builds one ABI v4 package from a Wasm module and an optional
 JSON manifest of raw RGB565 image assets. Each asset entry supplies `id`,
 `width`, `height`, `file`, and optional `transparent_zero`. IDs are increasing.
-The result contains the Wasm and assets in one file. The package format is
+Package revision 5 requires a display name (up to 63 UTF-8 bytes) and
+an opaque 64×64 little-endian RGB565 launcher icon (8192 bytes). The 320-byte
+header is followed by the icon; Wasm starts at byte 8512. The icon and
+Wasm/assets have separate SHA-256 digests. Runtime ABI remains v4.
+The header explicitly declares UI profile 1 (`corner-exit-v1`).
+
+```sh
+python pack_ekapp.py --help
+```
+
+Pass `--name "Evil Blocks"`, `--icon launcher-icon.rgb565` and
+`--ui-profile corner-exit-v1` alongside the
+existing required package arguments. PNG conversion belongs to the app's
+build process. Keep the package ID unchanged when changing a name or icon;
+the ID determines the `<id>.save` sidecar. Legacy package revisions are not
+supported by the new launcher.
+
+Before declaring the profile, adapt every app screen to the firmware-owned
+top-left 56x56 touch square: no app controls there. The separate 48x48 visual
+square is background only; header content remains from x=50.
+Use `EVILKEY_APP_SYSTEM_ZONE_*`, `EVILKEY_APP_SYSTEM_VISUAL_ZONE_*` and
+`EVILKEY_APP_HEADER_CONTENT_X` constants.
+The firmware draws the grip, tracks gesture progress, pauses app time and
+shows YES/NO. App-origin touch sequences remain app-owned until all fingers
+lift. Read [UI_PROFILE.md](UI_PROFILE.md) for the normative rules and example.
+Packing requires an explicit declaration; it cannot inspect artwork or prove
+that an app follows the layout rules.
+
+The result contains the metadata, icon, Wasm and assets in one file. The package format is
 validated again by firmware before launch.
 
 `package_app_release.py --app-dir <directory>` validates an app package and

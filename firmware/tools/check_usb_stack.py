@@ -6,7 +6,7 @@ GET CONFIGURATION DESCRIPTOR calls for DuckyScript 3 OS detection.
 
 Only the local core file and its backup are involved. No USB, UART, pip, or
 device programming. The core change affects other projects using this install.
-Keep the 16384 B stack for EvilKey 0.5.0. --restore is only for retiring this
+Keep the 16384 B stack for this EvilKey port. --restore is only for retiring this
 project requirement. R14 prefers Arduino-ESP32 3.3.12 and also supports 3.3.11;
 other versions are rejected until validated.
 Python 3.10+; standard library only.
@@ -296,7 +296,7 @@ def main(argv: list[str] | None = None) -> int:
         required_bytes = target.read_bytes()
         if args.require and (NEW_CALL not in required_bytes or HOOK_MARKER not in required_bytes):
             raise Stop(
-                f"Firmware 0.5.0 requires S2 (usbd=16384 B + OS hook) in Arduino-ESP32 {vstr(version)}. "
+                f"This firmware requires S2 (usbd=16384 B + OS hook) in Arduino-ESP32 {vstr(version)}. "
                 "Close the IDE and run --apply, then --require."
             )
         return 0

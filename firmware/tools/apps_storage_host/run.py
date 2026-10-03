@@ -20,7 +20,7 @@ def main() -> None:
     apps = root / "firmware/EvilKeyV1/src/apps"
     with tempfile.TemporaryDirectory(prefix="evilkey-save-test-") as directory:
         exe = Path(directory) / "save_test.exe"
-        command = [args.zig, "c++", "-std=c++17", "-O2", "-DEK_STORAGE_HOST_TEST", f"-I{here}",
+        command = [args.zig, "c++", "-std=c++17", "-O2", "-UNDEBUG", "-DEK_STORAGE_HOST_TEST", f"-I{here}",
                    "-x", "c++", str(here / "save_test.cpp"),
                    str(apps / "ek_storage.cpp"), str(apps / "ek_package.c"),
                    str(apps / "ek_assets.c"), "-o", str(exe)]
@@ -30,6 +30,13 @@ def main() -> None:
             print(build.stderr, end="")
             raise SystemExit(build.returncode)
         subprocess.run([exe], cwd=root, check=True)
+        command[command.index(str(here / "save_test.cpp"))]=str(here / "catalog_test.cpp")
+        subprocess.run(command,cwd=root,check=True)
+        subprocess.run([exe],cwd=root,check=True)
+        command[command.index(str(here / "catalog_test.cpp"))]=str(here / "service_test.cpp")
+        command.remove(str(apps / "ek_storage.cpp"))
+        subprocess.run(command,cwd=root,check=True)
+        subprocess.run([exe],cwd=root,check=True)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,17 @@
+{
+  "schema": "evilkey-ble-lock-v1",
+  "dependencies": [
+    {
+      "name": "ESP32-BLE-Gamepad",
+      "tag": "v0.8.0",
+      "url": "https://codeload.github.com/lemmingDev/ESP32-BLE-Gamepad/zip/refs/tags/v0.8.0",
+      "sha256": "66b7959de7f3a4ba70f144dff5ce2976fcdd1a717a462505bd0befa8d11f4084"
+    },
+    {
+      "name": "NimBLE-Arduino",
+      "tag": "2.5.1",
+      "url": "https://codeload.github.com/h2zero/NimBLE-Arduino/zip/refs/tags/2.5.1",
+      "sha256": "612e7b814bbf3a69f2e43fd1a91430b23e4e8f3b9e820a5bb82330e517b5dc14"
+    }
+  ]
+}

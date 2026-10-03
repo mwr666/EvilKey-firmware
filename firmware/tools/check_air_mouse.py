@@ -48,8 +48,8 @@ if handler.find("if (pf_air_mouse_role()) return;") < 0 or handler.find("if (pf_
     raise SystemExit("FAIL: CTAP input is not gated in the mouse-only role")
 
 ui = read(port / "ws_ui.h")
-require(ui, "WS_SETTINGS_PAGE_DIAGNOSTICS = 5", "WS_SETTINGS_PAGE_AIR_MOUSE = 6",
-        "WS_SETTINGS_PAGE_USB = 7", "WS_SETTINGS_PAGE_USB_TOOL = 8",
+require(ui, "WS_SETTINGS_PAGE_DIAGNOSTICS = 5", "WS_SETTINGS_PAGE_AIR_MOUSE = 7",
+        "WS_SETTINGS_PAGE_USB = 8", "WS_SETTINGS_PAGE_USB_TOOL = 9",
         "WS_SETTINGS_PAGE_COUNT = 10")
 layout = read(port / "ws_ui_layout.h")
 rects = []
@@ -106,12 +106,13 @@ for i, (name1, x1, y1, endx1, endy1) in enumerate(config_rects):
 board = read(port / "ws_board.c")
 require(board, "qmi_read(0x35U,data,sizeof(data))", "air_mouse_calibrate();",
         "qmi_write(0x03U,0x06U)", "qmi_write(0x08U,0x01U)",
-        "size_t length=s_air_mouse_role?sizeof(bytes):5U;",
+        "size_t length=(s_air_mouse_role || s_apps_touch_mode || s_gamepad_role)?sizeof(bytes):5U;",
         "s_mouse_point_count=(uint8_t)points;",
-        "if(hit==6U)motion_held=true;",
+        "ws_mouse_latch_touch(&s_mouse_latch",
+        "view->air_mouse_drag_latched=s_mouse_latch.drag;",
         "else if(motion_held && s_air_mouse_neutral_valid",
         "view->air_mouse_move_held=motion_held;",
-        "pf_air_mouse_exit();", "pf_air_mouse_restart_into();",
+        "pf_air_mouse_exit();", "pf_control_restart(s_control_requested);",
         "if(s_air_mouse_role) {", "return;",
         "if(held>=3000U && !s_air_mouse_action_hold_fired)",
         "s_air_mouse_action_hold_zone=action_zone;",
@@ -125,11 +126,11 @@ require(board, "qmi_read(0x35U,data,sizeof(data))", "air_mouse_calibrate();",
         "nvs_open_from_partition(\"wsdev\",\"ws_airmouse\",NVS_READWRITE,&h)",
         "view->air_mouse_settings_open=s_air_mouse_settings_open;",
         "if(*fraction>100.0f)",
-        "if(s_air_mouse_role) {\n                /* This screen stays awake.",
+
         "view->air_mouse_touch_fault=!s_touch_available || s_touch_errors>=10U;")
 lvgl = read(port / "ws_lvgl.c")
-require(lvgl, "HOLD 3 SEC", "HOLD TO MOVE", "Second finger: click / scroll",
-        "Hold MOVE to steer.\\nTap to click or scroll\\nwith a second finger.",
+require(lvgl, "HOLD 3 SEC", "HOLD TO MOVE", "DRAG ON", "DRAG OFF",
+        "Hold MOVE to steer.\\nTap DRAG to hold left.\\nTap again to release.",
         "air_mouse_exit_progress", "air_mouse_calibrate_progress",
         "s_last_view.air_mouse_hold_step!=v->air_mouse_hold_step",
         "Touch unavailable", "Touch outside controls", "INVERT VERTICAL",

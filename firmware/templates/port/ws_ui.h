@@ -3,6 +3,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "ws_presence.h"
+#include "ws_controls.h"
+#include "ws_ft3168_probe.h"
 
 typedef enum {
     WS_UI_DISCONNECTED = 0, WS_UI_READY, WS_UI_PROCESSING,
@@ -25,10 +27,10 @@ typedef enum {
     WS_SETTINGS_PAGE_POWER = 3,
     WS_SETTINGS_PAGE_AUTH = 4,
     WS_SETTINGS_PAGE_DIAGNOSTICS = 5,
-    WS_SETTINGS_PAGE_AIR_MOUSE = 6,
-    WS_SETTINGS_PAGE_USB = 7,
-    WS_SETTINGS_PAGE_USB_TOOL = 8,
-    WS_SETTINGS_PAGE_APPS = 9,
+    WS_SETTINGS_PAGE_GAMEPAD = 6,
+    WS_SETTINGS_PAGE_AIR_MOUSE = 7,
+    WS_SETTINGS_PAGE_USB = 8,
+    WS_SETTINGS_PAGE_USB_TOOL = 9,
     WS_SETTINGS_PAGE_COUNT = 10
 } ws_settings_page_t;
 
@@ -61,9 +63,9 @@ typedef enum {
     WS_SETTINGS_ACTION_USB_LAYOUT_NEXT,
     WS_SETTINGS_ACTION_DIAGNOSTICS_TOGGLE,
     WS_SETTINGS_ACTION_AIR_MOUSE_START,
-    WS_SETTINGS_ACTION_APPS_PREV,
-    WS_SETTINGS_ACTION_APPS_NEXT,
-    WS_SETTINGS_ACTION_APPS_RUN
+    WS_SETTINGS_ACTION_AIR_MOUSE_TRANSPORT,
+    WS_SETTINGS_ACTION_GAMEPAD_PROFILE,
+    WS_SETTINGS_ACTION_GAMEPAD_START
 } ws_settings_action_t;
 
 typedef enum {
@@ -134,6 +136,8 @@ typedef struct {
     /* Display-only diagnostics. Enabled in RAM, never saved to NVS. */
     bool diagnostics_enabled;
     uint32_t diagnostics_tick;
+    uint32_t apps_mount_ms,apps_scan_ms,apps_icon_ms,apps_headers_read;
+    uint32_t ui_poll_gap_ms,ui_render_ms;
     bool air_mouse_available;
     bool air_mouse_active;
     bool air_mouse_sensor_ok;
@@ -142,12 +146,22 @@ typedef struct {
     uint8_t air_mouse_buttons;
     uint8_t air_mouse_touch_zone;
     bool air_mouse_move_held;
+    bool air_mouse_drag_latched;
     uint8_t air_mouse_hold_step;
     bool air_mouse_touch_fault;
     bool air_mouse_touch_outside;
     bool air_mouse_settings_open;
     uint8_t air_mouse_sensitivity; /* 1..5; 3 keeps the original cursor speed. */
     bool air_mouse_invert_y;
+    WsControlPrefs controls;
+    WsGamepad gamepad;
+    bool gamepad_active,ble_connected,ble_ready,ble_failed;
+    uint8_t air_mouse_ble_modal;
+    /* Read-only touch diagnostics for physical BLE controls acceptance. */
+    uint8_t controls_touch_count,controls_touch_raw,controls_touch_max;
+    bool controls_touch_valid;
+    WsFT3168Probe controls_touch_probe;
+    WsFT3168FrameEvidence controls_touch_frame;
     bool settings_open;
     bool settings_storage_ok;
     bool settings_animation;
@@ -184,13 +198,25 @@ typedef struct {
     char usb_tool_language_name[28];
     char usb_tool_status_text[64];
     /* Apps are presentation-only. They cannot authorize FIDO operations. */
-    bool apps_ready,apps_mounted,apps_running,apps_exit_confirm;
-    uint8_t apps_exit_pressed;
+    bool apps_ready,apps_mounted,apps_running,apps_exit_confirm,apps_exit_dragging;
+    bool apps_scanning,apps_catalog_ready,apps_overflow;
+    uint8_t launcher_transition,launcher_page,launcher_pressed; /* page 0: introduction; 1..8: grids */
+    int16_t launcher_page_offset;
+    uint16_t apps_icon_valid;
+    uint32_t apps_catalog_generation;
+    char apps_names[9][64];
+    uint8_t apps_exit_pressed,apps_exit_progress;
     uint8_t apps_count,apps_selected;
     uint32_t apps_frame;
     char apps_id[32];
     char apps_status[80];
 } ws_ui_snapshot_t;
+
+typedef enum { WS_ROOT_SETTINGS=0, WS_ROOT_APPS, WS_ROOT_HOME, WS_ROOT_SAVER } ws_root_page_t;
+/* Finger direction: +1 = swipe right, -1 = swipe left. Ends clamp. */
+ws_root_page_t ws_ui_root_next(ws_root_page_t page,int direction,bool has_apps);
+/* Slot 1..9; zero means outside. Shared with the drawing layout. */
+uint8_t ws_ui_launcher_hit_test(uint16_t x,uint16_t y);
 
 ws_action_t ws_ui_hit_test(uint16_t x, uint16_t y);
 ws_idle_action_t ws_ui_idle_hit_test(uint16_t x, uint16_t y);

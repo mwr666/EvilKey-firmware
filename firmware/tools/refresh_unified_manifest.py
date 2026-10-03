@@ -4,6 +4,7 @@ from pathlib import Path
 import hashlib
 import json
 import shutil
+import re
 
 fw = Path(__file__).resolve().parents[1]
 manifest_path = fw / "EvilKeyV1/GENERATED_MANIFEST.json"
@@ -50,6 +51,9 @@ for rel in ("board/ws_lvgl.c", "board/ws_unified_logo_assets.h", "board/ws_board
             "board/ws_panel.c", "board/ws_ui.c", "board/ws_ui.h", "board/ws_ui_layout.h",
             "sdk/src/usb/hid/hid.c"):
     manifest["generated_sha256"][rel] = hashlib.sha256((engine / rel).read_bytes()).hexdigest()
-manifest["port_version"] = "0.5.0"
+version_source=(fw/'EvilKeyV1/src/pf_firmware_version.h').read_text()
+version='.'.join(re.search(r'^#define\s+PF_FIRMWARE_VERSION_'+part+r'\s+(\d+)',version_source,re.M).group(1)
+                 for part in ('MAJOR','MINOR','PATCH'))
+manifest["port_version"] = version
 manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-print("Updated generated manifest for EvilKey 0.5.0")
+print("Updated generated manifest for EvilKey "+version)

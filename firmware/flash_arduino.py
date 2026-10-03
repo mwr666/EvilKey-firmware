@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build, verify the device partition table, and flash only the EvilKey app."""
+"""Build and install EvilKey with verified, storage-preserving layout migration."""
 from __future__ import annotations
 
 import argparse
@@ -12,14 +12,18 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from tools.flash_safety import validate_write, validate_command
+from tools.check_ble_storage import verify as verify_ble_storage, source_digest
+from tools.flash_safety import PROTECTED, parse_table
+from tools.install_preserving_storage import install as install_preserving_storage
 
 ROOT = Path(__file__).resolve().parent
 BUILD_PATH = ROOT / "build-arduino"
 BUILD_INFO = BUILD_PATH / "evilkey-build.json"
 BUILD_SCRIPT = ROOT / "build_arduino.py"
 COM_PORT = re.compile(r"^COM([1-9][0-9]*)$", re.IGNORECASE)
-APP_OFFSET = 0x10000
-APP_CAPACITY = 0x1F0000
+APP_OFFSET = 0x500000
+APP_CAPACITY = 0x400000
 PARTITION_OFFSET = 0x8000
 
 
@@ -34,6 +38,8 @@ def verify_partition_layout() -> None:
             entries[row[0].strip()] = (int(row[3].strip(), 0), int(row[4].strip(), 0))
     if entries.get("factory") != (APP_OFFSET, APP_CAPACITY):
         raise RuntimeError("Factory partition offset or size changed; app-only upload cancelled.")
+    if set(entries)!=set(PROTECTED)|{'factory'} or any(entries.get(name)!=span for name,span in PROTECTED.items()):
+        raise RuntimeError('Protected partition offsets/size changed; upload cancelled.')
     app_end = APP_OFFSET + APP_CAPACITY
     for name, (offset, size) in entries.items():
         if name != "factory" and offset < app_end and offset + size > APP_OFFSET:
@@ -140,6 +146,13 @@ def load_verified_build_info() -> dict[str, object]:
     if info.get("erase_flash") != "none" or "EraseFlash=none" not in str(info.get("fqbn", "")):
         raise RuntimeError("NVS preservation is not guaranteed: EraseFlash=none is required.")
     verify_partition_layout()
+    verify_ble_storage()
+    elf=BUILD_PATH/'EvilKeyV1.ino.elf'
+    if info.get('nvs_guard')!='link-wrap-v1' or info.get('build_inputs_sha256')!=source_digest() or \
+            not elf.is_file() or hashlib.sha256(elf.read_bytes()).hexdigest()!=info.get('elf_sha256'):
+        raise RuntimeError('NVS guard/source/ELF verification is missing or stale; upload cancelled.')
+    if info.get('app_offset')!=APP_OFFSET or info.get('app_capacity')!=APP_CAPACITY:
+        raise RuntimeError('Manifest does not use the reviewed application layout')
     if not image_path.is_file() or image_path.parent != BUILD_PATH.resolve():
         raise RuntimeError("The application image listed in the manifest is missing.")
     digest = hashlib.sha256(image_path.read_bytes()).hexdigest()
@@ -154,31 +167,23 @@ def load_verified_build_info() -> dict[str, object]:
             partition_path.stat().st_size != 0xC00 or \
             hashlib.sha256(partition_path.read_bytes()).hexdigest() != info.get("partition_sha256"):
         raise RuntimeError("The built partition image does not match the manifest.")
+    if parse_table(partition_path.read_bytes())!=(APP_OFFSET,APP_CAPACITY):
+        raise RuntimeError('Built partition table is not the reviewed layout')
     return info
 
 
-def upload_command(esptool: Path, port: dict[str, str], info: dict[str, object]) -> list[str]:
-    return [
-        str(esptool), "--chip", "esp32s3", "--port", port["address"],
-        "--baud", "460800", "--before", "default-reset", "--after", "hard-reset",
-        "write-flash", "--flash-mode", "keep", "--flash-freq", "keep",
-        "--flash-size", "keep", hex(APP_OFFSET), str(info["image_path"]),
-    ]
-
-
 def verify_device_partition(esptool: Path, port: dict[str, str],
-                            info: dict[str, object]) -> None:
-    """Refuse app-only flashing if device offsets differ from this build."""
+                            info: dict[str, object]) -> bytes:
+    """Read and validate the device layout; leave it in ROM for storage hashing."""
     with tempfile.TemporaryDirectory(prefix="evilkey-partition-check-") as directory:
         observed = Path(directory) / "partition.bin"
         subprocess.run([
             str(esptool), "--chip", "esp32s3", "--port", port["address"],
-            "--baud", "460800", "--before", "default-reset", "--after", "hard-reset",
+            "--baud", "115200", "--before", "default-reset", "--after", "no-reset",
             "read-flash", hex(PARTITION_OFFSET), str(info["partition_size"]),
             str(observed),
         ], check=True)
-        if observed.read_bytes() != Path(str(info["partition_path"])).read_bytes():
-            raise RuntimeError("Device partition table differs from the build; app-only upload cancelled.")
+        data=observed.read_bytes();parse_table(data);return data
 
 
 def main() -> int:
@@ -210,7 +215,8 @@ def main() -> int:
         print("Cancelled: the selected port is not in the list above.")
         return 2
     print(f"\nSelected {selected['address']}. Uploading will restart the device.")
-    print("Only the factory application image will be written; NVS is outside this range.")
+    print("Application at 0x500000; a reviewed older layout also requires the 0x8000 table sector.")
+    print("NVS/part0 remain at their original offsets and will be verified by readback hashes.")
     if not confirm_upload(input(f"Build and flash firmware to {selected['address']}? (Y/N): ")):
         print("Cancelled. No build or upload was performed.")
         return 0
@@ -235,16 +241,19 @@ def main() -> int:
 
     print("\nChecking the partition table already stored on the device...")
     try:
-        verify_device_partition(esptool, current, info)
+        observed=verify_device_partition(esptool, current, info)
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
         print(f"ERROR: device partition check failed: {exc}", file=sys.stderr)
         return 2
-    print(f"\n[2/2] Uploading application image only to {current['address']}...")
+    print(f"\n[2/2] Installing and verifying protected storage on {current['address']}...")
     try:
-        subprocess.run(upload_command(esptool, current, info), check=True)
+        install_preserving_storage(esptool,current,info,observed,ROOT/'.flash-backups')
     except subprocess.CalledProcessError as exc:
-        print(f"ERROR: app-only esptool upload exited with code {exc.returncode}.", file=sys.stderr)
+        print(f"ERROR: verified esptool installation exited with code {exc.returncode}.", file=sys.stderr)
         return exc.returncode
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"ERROR: installation verification failed: {exc}. Do not boot this candidate.", file=sys.stderr)
+        return 2
     print(f"\nREADY: firmware was uploaded through {current['address']}.")
     return 0
 

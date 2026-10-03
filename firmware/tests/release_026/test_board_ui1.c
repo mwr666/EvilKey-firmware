@@ -7,6 +7,34 @@
 #define FIDO_V1_MANAGER_DRIVE 1
 #define FIDO_V1_USB_TOOL 1
 #include "../../templates/port/ws_board.c"
+#include "../../EvilKeyV1/src/apps/ek_exit_dialog.c"
+static EkAppsState fake_apps;
+static unsigned fake_apps_launches;
+static unsigned fake_app_contacts;
+static bool fake_app_modal;
+int ek_apps_start(void){return 1;}
+void ek_apps_set_visible(bool visible){if(!visible)fake_apps.running=false;}
+void ek_apps_set_modal(bool visible){fake_app_modal=visible;}
+void ek_apps_snapshot(EkAppsState *out){*out=fake_apps;}
+void ek_apps_input(const EvilKeyAppTouch *t,uint32_t count,bool valid,int32_t x,int32_t y,int32_t z)
+{if(t)fake_app_contacts+=count;(void)valid;(void)x;(void)y;(void)z;}
+void ek_apps_launch(unsigned i){if(i<fake_apps.count){++fake_apps_launches;fake_apps.running=true;}}
+void ek_apps_select_page(unsigned page){if(!fake_apps.running && page*9<fake_apps.count)fake_apps.page=(uint8_t)page;}
+void ek_apps_request(EkAppsCommand c){
+ if(c==EK_APPS_STOP)fake_apps.running=false;
+ else if(c==EK_APPS_NEXT && (unsigned)(fake_apps.page+1)*9<fake_apps.count)++fake_apps.page;
+ else if(c==EK_APPS_PREV && fake_apps.page)--fake_apps.page;
+}
+bool pf_air_mouse_role(void){return false;}
+bool pf_air_mouse_report(uint8_t b,int8_t x,int8_t y,int8_t w){(void)b;(void)x;(void)y;(void)w;return true;}
+void pf_air_mouse_exit(void){}
+void pf_air_mouse_restart_into(void){}
+bool pf_usb_tool_confirmation_pending(void){return false;}
+bool pf_usb_tool_confirm_stage8(void){return false;}
+uint8_t pf_usb_tool_ducky_led(void){return 0;}
+bool pf_usb_tool_storage_present(void){return false;}
+uint32_t pf_usb_tool_storage_activity_age_ms(void){return 0;}
+uint32_t pf_usb_tool_storage_activity_timeout_ms(void){return 0;}
 bool cancel_button;
 static ws_settings_t fake_settings;
 static bool fake_drive_enabled=true,fake_drive_ro=true,fake_drive_ok=true,fake_media_ready=true;
@@ -100,7 +128,8 @@ esp_err_t i2c_param_config(int n,const i2c_config_t *c){(void)n;(void)c;return 0
 esp_err_t i2c_driver_install(int a,int b,int c,int d,int e){(void)a;(void)b;(void)c;(void)d;(void)e;return 0;}
 esp_err_t i2c_master_write_to_device(int a,uint8_t b,const uint8_t*c,size_t d,unsigned e){(void)a;(void)b;(void)c;(void)d;(void)e;return 0;}
 esp_err_t i2c_master_write_read_device(int a,uint8_t b,const uint8_t*c,size_t d,uint8_t*o,size_t n,unsigned e){
- (void)a;(void)b;(void)c;(void)d;(void)e;assert(critical_depth==0);assert(n==5);
+ (void)a;(void)c;(void)d;(void)e;assert(critical_depth==0);
+ if(b!=WS_TOUCH_ADDR)return -1;assert(n==5 || n==11);memset(o,0,n);
  if(!io_ok)return -1;o[0]=fake_points;o[1]=fake_x>>8;o[2]=fake_x;o[3]=fake_y>>8;o[4]=fake_y;return 0;
 }
 void vTaskDelete(void*p){(void)p;}
@@ -115,6 +144,11 @@ static void reset(void){
  s_initialized=false;s_touch_available=false;s_panel_ok=false;s_pending=false;s_pin_active=false;s_pin_owner=WS_PIN_OWNER_NONE;
  s_touch_errors=0;s_touch_polled=0;s_feedback_pending=false;s_show_result=false;s_displayed_epoch=0;
  s_settings_open=false;s_settings_touch_was_down=false;s_settings_page=0;s_settings_transition=0;
+ s_poll_at=s_poll_gap_max=s_render_ms_max=0;
+ s_root_page=WS_ROOT_HOME;s_launcher_open=false;s_launcher_transition=s_launcher_from=s_launcher_to=0;
+ s_launcher_page_offset=s_launcher_page_from=0;s_launcher_page=0;s_launcher_intro=true;s_launcher_page_direction=0;
+ s_apps_touch_mode=false;s_apps_sensor_ok=false;memset(&fake_apps,0,sizeof(fake_apps));fake_apps_launches=0;
+ fake_app_contacts=0;fake_app_modal=false;ek_exit_dialog_reset(&s_app_exit_dialog);
  s_settings_transition_from=0;s_settings_transition_to=0;s_settings_touch_action=0;
  s_settings_feedback=0;s_settings_page_offset=0;s_settings_page_offset_from=0;
  s_settings_transition_at=0;s_settings_page_transition_at=0;s_settings_feedback_at=0;s_settings_opened_at=0;
@@ -131,14 +165,96 @@ static void reset(void){
 }
 static void sample(unsigned points,unsigned x,unsigned y,unsigned ms){fake_points=points;fake_x=x;fake_y=y;tick(ms);}
 static void tap(unsigned x,unsigned y){sample(0,0,0,20);sample(0,0,0,80);sample(1,x,y,20);sample(1,x,y,60);sample(0,0,0,20);sample(0,0,0,80);}
-static void swipe_left_settings(void){sample(0,0,0,20);sample(1,244,220,20);sample(1,190,220,30);sample(1,126,220,30);sample(0,0,0,20);}
-static void swipe_right_settings(void){sample(0,0,0,20);sample(1,42,220,20);sample(1,98,220,30);sample(1,166,220,30);sample(0,0,0,20);}
+static void swipe_next_root(void){sample(0,0,0,20);sample(1,244,220,20);sample(1,190,220,30);sample(1,126,220,30);sample(0,0,0,20);}
+static void swipe_prev_root(void){sample(0,0,0,20);sample(1,42,220,20);sample(1,98,220,30);sample(1,166,220,30);sample(0,0,0,20);}
+static void open_saver(void){swipe_prev_root();tick(WS_SCREENSAVER_TRANSITION_MS);}
 static void swipe_up_settings(void){sample(0,0,0,20);sample(1,80,342,20);sample(1,80,292,30);sample(1,80,238,30);sample(0,0,0,20);}
 static void swipe_down_settings(void){sample(0,0,0,20);sample(1,80,180,20);sample(1,80,236,30);sample(1,80,300,30);sample(0,0,0,20);}
 static void page_up(void){swipe_up_settings();tick(WS_SETTINGS_PAGE_TRANSITION_MS);assert(s_view.settings_page_offset==0);}
 static void make_off(void){tick(30000);assert(s_view.dim && physical_brightness==8);tick(59999);assert(physical_on);tick(1);assert(s_view.screen_off && !physical_on);}
 static void begin_pin(void){s_pin_active=true;s_pin_owner=WS_PIN_OWNER_FIDO;s_pin_epoch=(s_pin_epoch+1U)|0x80000000U;s_pin_retries=8;s_pin_permissions=2;s_displayed_epoch=0;ws_pinpad_begin(&s_pinpad,clock_ms,120000);tick(20);}
-static void open_usb_settings(void){swipe_left_settings();tick(WS_SETTINGS_TRANSITION_MS);assert(s_view.settings_transition==255);for(unsigned i=0;i<5;++i)page_up();assert(s_view.settings_page==WS_SETTINGS_PAGE_USB);}
+static void open_usb_settings(void){swipe_next_root();tick(WS_SETTINGS_TRANSITION_MS);assert(s_view.settings_transition==255);for(unsigned i=0;i<WS_SETTINGS_PAGE_USB;++i)page_up();assert(s_view.settings_page==WS_SETTINGS_PAGE_USB);}
+static void swipe_app_exit(void){
+ sample(0,0,0,20);unsigned delivered=fake_app_contacts;
+ sample(1,20,20,20);assert(s_app_exit_dialog.dragging && fake_app_modal);
+ sample(1,65,100,30);assert(s_view.apps_exit_dragging && s_view.apps_exit_progress==50);
+ sample(1,120,150,30);assert(s_view.apps_exit_progress==100 && !s_view.apps_exit_confirm);
+ sample(1,279,220,30);assert(s_view.apps_exit_progress==100 && !s_view.apps_exit_confirm && fake_app_modal);
+ sample(0,0,0,20);assert(s_view.apps_exit_confirm && fake_app_contacts==delivered);
+}
+static void test_exit_display_invalidation(void){
+ reset();s_view.apps_running=true;s_view.launcher_transition=255;
+ s_view.apps_frame=123;ws_display_cache_t cache={0};
+ assert(ws_display_step(&cache));unsigned r=renders;
+ assert(ws_display_step(&cache) && renders==r);
+ s_view.apps_exit_dragging=true;
+ assert(ws_display_step(&cache) && renders==++r);
+ const unsigned progress[]={1,25,50,75,100,35,0};
+ for(unsigned i=0;i<sizeof(progress)/sizeof(progress[0]);++i){
+  s_view.apps_exit_progress=progress[i];
+  assert(ws_display_step(&cache) && renders==++r);
+  assert(cache.last.apps_frame==123); /* VM is paused: no new game frame. */
+  assert(ws_display_step(&cache) && renders==r);
+ }
+ s_view.apps_exit_dragging=false;
+ assert(ws_display_step(&cache) && renders==++r);
+ assert(ws_display_step(&cache) && renders==r);
+ puts("PASS exit display: start/progress/backtrack/cancel redraw a frozen app frame without redundant renders");
+}
+static void test_launcher(void){
+ reset();fake_apps.ready=fake_apps.catalog_ready=fake_apps.mounted=true;
+ fake_apps.count=10;fake_apps.icon_valid=0x1ff;tick(20);
+ swipe_next_root();tick(WS_SETTINGS_TRANSITION_MS);
+ assert(s_view.launcher_transition==255 && s_root_page==WS_ROOT_APPS && !s_settings_open);
+ assert(s_view.launcher_page==0);
+ tap(50,110);assert(fake_apps_launches==0); /* introduction has no launch targets */
+ swipe_down_settings();tick(20);assert(s_view.launcher_page==2 && s_view.launcher_page_offset<0);
+ tick(WS_SETTINGS_PAGE_TRANSITION_MS+100);assert(s_view.launcher_page==2);
+ swipe_up_settings();tick(20);assert(s_view.launcher_page==0 && s_view.launcher_page_offset>0);
+ tick(WS_SETTINGS_PAGE_TRANSITION_MS+100);
+ swipe_up_settings();tick(20);tick(WS_SETTINGS_PAGE_TRANSITION_MS+100);
+ assert(s_view.launcher_page==1 && fake_apps_launches==0);
+ swipe_up_settings();tick(20);tick(WS_SETTINGS_PAGE_TRANSITION_MS+100);
+ assert(s_view.launcher_page==2 && fake_apps_launches==0);
+ tap(150,110);assert(fake_apps_launches==0); /* empty cell on the last page */
+ swipe_up_settings();tick(20);tick(WS_SETTINGS_PAGE_TRANSITION_MS+100);assert(s_view.launcher_page==0);
+ swipe_down_settings();tick(20);tick(WS_SETTINGS_PAGE_TRANSITION_MS+100);assert(s_view.launcher_page==2);
+ tap(50,110);assert(fake_apps_launches==1 && fake_apps.running);
+ unsigned delivered=fake_app_contacts;
+ swipe_prev_root();tick(20);assert(!s_app_exit_dialog.visible && fake_apps.running);
+ assert(fake_app_contacts>delivered && !fake_app_modal); /* ordinary horizontal app gesture */
+ sample(1,80,20,20);sample(1,20,20,30);sample(1,180,20,30);sample(0,0,0,20);
+ assert(!s_view.apps_exit_confirm && !fake_app_modal); /* slider crosses corner */
+ sample(1,20,20,20);delivered=fake_app_contacts;
+ sample(1,50,20,30);sample(0,0,0,20);
+ assert(!s_view.apps_exit_confirm && !fake_app_modal && fake_app_contacts==delivered);
+ sample(1,20,20,20);sample(2,110,20,30);sample(1,20,20,30);sample(1,120,20,30);
+ assert(!s_view.apps_exit_confirm && fake_app_modal);sample(0,0,0,20);assert(!fake_app_modal);
+ delivered=fake_app_contacts;
+ sample(1,55,55,20);assert(s_view.apps_exit_dragging && fake_app_modal);
+ sample(1,100,55,30);assert(s_view.apps_exit_progress==50);
+ sample(0,0,0,20);assert(!s_view.apps_exit_confirm && !fake_app_modal && fake_app_contacts==delivered);
+ swipe_app_exit();tick(20);assert(s_app_exit_dialog.visible && fake_apps.running);
+ tap(EK_EXIT_NO_X+40,EK_EXIT_Y+20);assert(!s_app_exit_dialog.visible && fake_apps.running);
+ assert(!fake_app_modal);swipe_app_exit();tick(20);assert(s_app_exit_dialog.visible);
+ tap(EK_EXIT_YES_X+40,EK_EXIT_Y+20);tick(20);
+ assert(!fake_apps.running && s_view.launcher_page==2 && s_root_page==WS_ROOT_APPS);
+ swipe_down_settings();tick(20);tick(WS_SETTINGS_PAGE_TRANSITION_MS+100);assert(s_view.launcher_page==1);
+ swipe_down_settings();tick(20);tick(WS_SETTINGS_PAGE_TRANSITION_MS+100);assert(s_view.launcher_page==0);
+ swipe_prev_root();tick(WS_SETTINGS_TRANSITION_MS);assert(s_root_page==WS_ROOT_HOME);
+ swipe_next_root();tick(WS_SETTINGS_TRANSITION_MS);assert(s_view.launcher_page==0);
+ fake_apps.count=5;fake_apps.page=0;tick(20);
+ swipe_down_settings();tick(20);tick(WS_SETTINGS_PAGE_TRANSITION_MS+100);assert(s_view.launcher_page==1);
+ swipe_down_settings();tick(20);tick(WS_SETTINGS_PAGE_TRANSITION_MS+100);assert(s_view.launcher_page==0);
+ swipe_up_settings();tick(20);tick(WS_SETTINGS_PAGE_TRANSITION_MS+100);assert(s_view.launcher_page==1);
+ swipe_up_settings();tick(20);tick(WS_SETTINGS_PAGE_TRANSITION_MS+100);assert(s_view.launcher_page==0);
+ swipe_next_root();tick(WS_SETTINGS_TRANSITION_MS);assert(s_root_page==WS_ROOT_SETTINGS);
+ swipe_next_root();tick(WS_SETTINGS_TRANSITION_MS);assert(s_root_page==WS_ROOT_SETTINGS); /* end clamps */
+ swipe_prev_root();tick(WS_SETTINGS_TRANSITION_MS);assert(s_root_page==WS_ROOT_APPS);
+ ws_board_presence_begin(30000);tick(20);
+ assert(s_view.state==WS_UI_WAITING && !s_view.launcher_transition && s_root_page==WS_ROOT_HOME);
+ puts("PASS launcher: root gestures, cyclic intro/grid navigation (1/2 grids), finger-direction wrap, last-page gaps, swipe/tap exclusion, 56px corner, Yes/No return, security eviction");
+}
 int main(void){
  reset();unsigned r=renders,b=brightness_calls;tick(1000);tick(1000);assert(renders>r && brightness_calls==b);
     fake_settings.animation=false;tick(20);r=renders;b=brightness_calls;tick(1000);tick(1000);assert(renders==r && brightness_calls==b);
@@ -197,25 +313,25 @@ int main(void){
  assert(ws_board_get_pin(out,sizeof(out),&len,8,2)==3 && s_pending && s_presence.active);
  puts("PASS board hardening: live presence request is never stolen by local UV");
  reset();assert(s_view.state==WS_UI_READY && s_view.screensaver_transition==0 && !s_view.screensaver_open);
- swipe_right_settings();assert(s_screensaver_open);tick(WS_SCREENSAVER_TRANSITION_MS);
+ open_saver();assert(s_screensaver_open);
  assert(s_view.screensaver_transition==255 && s_view.screensaver_open && s_view.settings_transition==0);
  uint16_t saver_phase=s_view.screensaver_phase;
  uint16_t saver_text_phase=s_view.screensaver_text_phase;
  assert(saver_text_phase<16U); /* entry-relative R25 fade clock */
  tick(64);
  assert(s_view.screensaver_phase!=saver_phase && s_view.screensaver_text_phase!=saver_text_phase);
- swipe_left_settings();tick(WS_SCREENSAVER_TRANSITION_MS);
+ swipe_next_root();tick(WS_SCREENSAVER_TRANSITION_MS);
  assert(!s_screensaver_open && s_view.screensaver_transition==0);
  puts("PASS board R20: READY swipe-right opens animated logo screensaver; swipe-left returns to idle");
- reset();fake_mode=MODE_SUSPENDED;tick(20);swipe_right_settings();tick(WS_SCREENSAVER_TRANSITION_MS);
+ reset();fake_mode=MODE_SUSPENDED;tick(20);open_saver();
  assert(s_view.state==WS_UI_SUSPENDED && s_view.screensaver_transition==255);
  puts("PASS board R20: STANDBY exposes the same premium screensaver");
- reset();swipe_right_settings();tick(WS_SCREENSAVER_TRANSITION_MS);assert(s_view.screensaver_transition==255);
+ reset();open_saver();assert(s_view.screensaver_transition==255);
  ws_board_presence_begin(30000);tick(20);
  assert(s_view.state==WS_UI_WAITING && s_view.screensaver_transition==0 && !s_screensaver_open);
  puts("PASS board R20 security: authentication state immediately evicts screensaver");
 reset();assert(s_view.state==WS_UI_READY && s_view.settings_transition==0);
- swipe_left_settings();assert(s_settings_open);tick(WS_SETTINGS_TRANSITION_MS);
+ swipe_next_root();assert(s_settings_open);tick(WS_SETTINGS_TRANSITION_MS);
  assert(s_view.settings_transition==255 && s_view.settings_page==WS_SETTINGS_PAGE_HOME && s_view.settings_open);
  /* R24: fully-open Settings stops the hidden main 62.5 Hz phase and advances
   * only its dedicated 64 ms / 256-step slow motion clock. */
@@ -224,9 +340,9 @@ reset();assert(s_view.state==WS_UI_READY && s_view.settings_transition==0);
  assert(s_view.settings_motion_phase!=settings_phase && s_view.animation_phase==0U);
  puts("PASS board R25: Settings uses a dedicated seamless slow phase while hidden main motion is quiescent");
  /* No invisible tap target remains on READY; Settings opens only by swipe. */
- swipe_right_settings();tick(WS_SETTINGS_TRANSITION_MS);assert(!s_settings_open);
+ swipe_prev_root();tick(WS_SETTINGS_TRANSITION_MS);assert(!s_settings_open);
  tap(250,20);assert(!s_settings_open && s_view.settings_transition==0);
- swipe_left_settings();tick(WS_SETTINGS_TRANSITION_MS);page_up();
+ swipe_next_root();tick(WS_SETTINGS_TRANSITION_MS);page_up();
  assert(s_view.settings_page==WS_SETTINGS_PAGE_DISPLAY);
  uint32_t rev=fake_settings.revision;uint8_t old_brightness=fake_settings.brightness;
  tap(230,204);assert(fake_settings.brightness>old_brightness && fake_settings.revision==rev+1);
@@ -236,17 +352,19 @@ reset();assert(s_view.state==WS_UI_READY && s_view.settings_transition==0);
  uint16_t old_dim=fake_settings.dim_seconds;rev=fake_settings.revision;tap(230,204);
  assert(fake_settings.dim_seconds>old_dim && fake_settings.revision==rev+1);
  page_up();assert(s_view.settings_page==WS_SETTINGS_PAGE_AUTH);
+ page_up();assert(s_view.settings_page==WS_SETTINGS_PAGE_DIAGNOSTICS);
+ page_up();assert(s_view.settings_page==WS_SETTINGS_PAGE_AIR_MOUSE);
  page_up();assert(s_view.settings_page==WS_SETTINGS_PAGE_USB);
  page_up();assert(s_view.settings_page==WS_SETTINGS_PAGE_USB_TOOL);
  page_up();assert(s_view.settings_page==WS_SETTINGS_PAGE_HOME);
  swipe_down_settings();tick(WS_SETTINGS_PAGE_TRANSITION_MS);assert(s_view.settings_page==WS_SETTINGS_PAGE_USB_TOOL);
- swipe_right_settings();tick(WS_SETTINGS_TRANSITION_MS);
+ swipe_prev_root();tick(WS_SETTINGS_TRANSITION_MS);
  assert(!s_settings_open && s_view.settings_transition==0);
- puts("PASS board R15: swipe-only Settings opens on a landing screen; seven spacious pages cycle up/down and persist values");
- reset();fake_mode=MODE_SUSPENDED;tick(20);swipe_left_settings();tick(WS_SETTINGS_TRANSITION_MS);
+ puts("PASS board: nine Settings pages cycle up/down and persist values");
+ reset();fake_mode=MODE_SUSPENDED;tick(20);swipe_next_root();tick(WS_SETTINGS_TRANSITION_MS);
  assert(s_view.state==WS_UI_SUSPENDED && s_view.settings_transition==255);
  puts("PASS board R15: STANDBY exposes the same swipe-only Settings surface");
- reset();swipe_left_settings();tick(WS_SETTINGS_TRANSITION_MS);assert(s_view.settings_transition==255);
+ reset();swipe_next_root();tick(WS_SETTINGS_TRANSITION_MS);assert(s_view.settings_transition==255);
  ws_board_presence_begin(30000);assert(s_view.state==WS_UI_WAITING && s_view.settings_transition==0 && !s_settings_open);
  sample(1,250,110,20);sample(0,0,0,20);assert(ws_board_presence_poll()==BUTTON_EV_NONE);
  puts("PASS board R15 security: authentication state immediately evicts Settings; setting coordinates cannot approve");
@@ -274,7 +392,7 @@ reset();open_usb_settings();assert(fake_drive_ro);
  assert(fake_drive_ro && fake_supplied_calls==0 && !ws_board_settings_pin_busy());
  assert(s_settings_feedback==WS_SETTINGS_FEEDBACK_PIN_REQUIRED);
  puts("PASS board R15: write access cannot be enabled when no FIDO PIN is configured");
- reset();swipe_left_settings();tick(WS_SETTINGS_TRANSITION_MS);for(unsigned i=0;i<6;++i)page_up();
+ reset();swipe_next_root();tick(WS_SETTINGS_TRANSITION_MS);for(unsigned i=0;i<WS_SETTINGS_PAGE_USB_TOOL;++i)page_up();
  assert(s_view.settings_page==WS_SETTINGS_PAGE_USB_TOOL && fake_drive_enabled && !fake_tool_enabled);
  tap(140,204);assert(fake_tool_enabled && !fake_drive_enabled && s_usb_tool_restart_pending && !s_manager_restart_pending && fake_restarts==0);
  assert(s_view.usb_tool_restarting && s_view.usb_tool_enabled);tick(700);assert(fake_restarts==1);
@@ -291,5 +409,5 @@ reset();open_usb_settings();assert(fake_drive_ro);
  assert(s_view.accent_rgb==0x70B8FF && s_view.settings_revision==9);
  tick(5000);assert(s_view.dim && physical_brightness==12);tick(6000);assert(s_view.screen_off);
  sample(1,50,300,20);assert(!s_view.screen_off && physical_brightness==130 && !s_touch.valid);
- puts("PASS board M1: runtime brightness, dim/off timing, palette, revision and consumed wake gesture");return 0;
+ puts("PASS board M1: runtime brightness, dim/off timing, palette, revision and consumed wake gesture");test_exit_display_invalidation();test_launcher();return 0;
  }

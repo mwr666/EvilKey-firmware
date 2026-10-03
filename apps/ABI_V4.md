@@ -10,14 +10,92 @@ USB, NVS, native pointers, filesystem paths, or WASI.
 ## Single-file package and sidecar
 
 Copy `<id>.ekapp` to `/evilkey/apps/` on FAT microSD. No install command is
-needed. The ID must equal the filename stem. The 192-byte `EKEYAPP1` header
-uses unsigned little-endian values. Its layout is unchanged through byte 185
-from ABI v3, except: package revision at bytes 10–11 is **3**, ABI at bytes
-12–13 is **4**, bytes 58–89 are SHA-256 of **Wasm plus asset blob**, bytes
-186–189 contain asset blob size (`u32`), and bytes 190–191 are zero. Bytes
-54–57 contain Wasm size. Exact file length is `192 + wasm_size + asset_size`.
-Wasm size is 8–65,536 bytes; assets are at most 1,048,576 bytes. Older ABI
-packages are rejected. SHA-256 detects corruption, not publisher identity.
+needed. The ID must equal the filename stem. Package revision **5** embeds a
+mandatory display name, launcher icon and UI profile **corner-exit-v1**.
+**Runtime ABI remains v4**: exports, mailbox and commands keep their layout.
+The touch routing contract below is mandatory. Older package revisions are
+rejected; rebuild their UI before declaring the new profile.
+
+The `EKEYAPP1` header is 320 bytes. Integers are unsigned little endian.
+Strings must be nonempty, NUL terminated, and zero padded to their field size.
+UTF-8 strings must be valid UTF-8 without control characters.
+
+| Offset | Bytes | Field |
+| --- | --- | --- |
+| 0 | 8 | Magic `EKEYAPP1` |
+| 8 | 2 | Header size: 320 |
+| 10 | 2 | Package revision: 5 |
+| 12 | 2 | Runtime ABI: 4 |
+| 14 | 2 | Flags: zero |
+| 16, 18, 20 | 2 each | Major, minor, patch |
+| 22 | 32 | ID, restricted ASCII; also the `.save` filename stem |
+| 54 | 4 | Wasm size, 8–65,536 bytes |
+| 58 | 32 | SHA-256 of Wasm followed by the asset blob |
+| 90 | 64 | Copyright owner, UTF-8 |
+| 154 | 32 | License identifier, ASCII |
+| 186 | 4 | Asset blob size, at most 1,048,576 bytes |
+| 190 | 2 | Reserved: zero |
+| 192 | 64 | Display name, UTF-8, at most 63 encoded bytes |
+| 256 | 32 | SHA-256 of the icon |
+| 288 | 2 | Required UI profile: 1 (`corner-exit-v1`) |
+| 290 | 30 | Reserved: zero |
+| 320 | 8,192 | Mandatory 64×64 opaque RGB565 icon, little endian |
+| 8,512 | Wasm size | Wasm module |
+| 8,512 + Wasm size | Asset size | Asset blob |
+
+Exact file length is `8512 + wasm_size + asset_size`. The launcher reads only
+headers in a single directory pass. It caches up to 64 apps and reads icons
+only for the current page of nine. Excess valid apps are reported; navigation
+does not silently wrap. Icon hashes are checked before enabling launch, and
+the Wasm/asset digest is verified again before executing guest code. SHA-256
+detects corruption, not publisher identity. Publisher names and licenses are
+metadata, not authentication.
+
+Create packages with `sdk/pack_ekapp.py --wasm program.wasm --output
+evil.example.ekapp --id evil.example --owner "Your name" --license MIT
+--version 1.0.0 --name "Example" --icon icon.rgb565 --assets assets.json
+--ui-profile corner-exit-v1`.
+The icon is mandatory even when the app has no sprites. The icon is not an
+asset ID and consumes no guest memory or asset slot. A binary distribution
+manifest includes `name`, `package_revision: 5`, `ui_profile: "corner-exit-v1"`,
+and icon dimensions, format and SHA-256. The per-app copyright/license remain
+independent of the firmware. A profile declaration is an author's assertion,
+not proof that an arbitrary bitmap contains no important content in the zone.
+
+## System corner and touch ownership (corner-exit-v1)
+
+Display coordinates stay 280x456, with the origin at top left. Reserve
+`0 <= x < 56, 0 <= y < 56` for firmware input: no app controls there.
+The visible grip is 40x40 at (4,4). Reserve a separate 48x48 visual square
+at the origin for background only: no labels, scores or essential artwork.
+Noninteractive labels may occupy the outer touch margin. Begin header
+content at x=50. Artwork and
+full-screen clears may cover the square; firmware composites its grip last,
+including after partial app presents. Apps must not implement a second copy
+of the exit gesture or handle. See the MIT SDK constants and
+[`sdk/UI_PROFILE.md`](sdk/UI_PROFILE.md) for the layout example.
+
+At the beginning of an all-up-to-contact sequence, exactly one fresh contact
+in the square belongs to firmware. Its entire sequence is withheld from the
+app. Other starts, including initial two-finger contacts, belong to the app
+until all fingers lift, even if a slider moves into or through the square.
+Contact IDs are respected. Adding a finger to a firmware gesture, replacing
+its ID or stale samples cancels it, including after completion. The
+remaining contacts stay withheld until a fresh all-up sample; there is no
+synthetic app press on cancellation.
+
+After corner capture, the active band expands to the full display width
+and upper 160px. Before completion, leaving that band or releasing early
+cancels; horizontal backtracking reduces partial progress.
+Drag right by 90px to latch 100%, then release, to open LEAVE APP? YES/NO.
+Further movement towards the edge, vertical movement or backtracking cannot
+erase completion. Zero coordinates in the release sample do not reset it.
+Firmware shows a top progress
+panel; it temporarily owns the display while dragging and confirming.
+The VM and its active-app clock pause for the firmware-owned sequence and
+confirmation. NO resumes without a time jump; YES returns to the same Apps
+grid page. This does not promise a forced save on exit: apps still use SAVE
+and handle its result as specified below. No app data is written to NVS.
 
 An app may save up to 4,096 bytes in `/evilkey/apps/<id>.save`. The firmware
 derives the path from the validated package ID. It never accepts a guest path

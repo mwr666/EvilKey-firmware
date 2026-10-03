@@ -5,6 +5,24 @@
  * in ws_presence.c and ws_pinpad.c; LVGL is presentation-only.
  */
 #include "ws_ui.h"
+
+ws_root_page_t ws_ui_root_next(ws_root_page_t page,int direction,bool has_apps)
+{
+    if(!direction)return page;
+    int next=(int)page+(direction>0?1:direction<0?-1:0);
+    if(next==WS_ROOT_APPS && !has_apps) next+=direction>0?1:-1;
+    if(next<WS_ROOT_SETTINGS) next=WS_ROOT_SETTINGS;
+    if(next>WS_ROOT_SAVER) next=WS_ROOT_SAVER;
+    return (ws_root_page_t)next;
+}
+
+uint8_t ws_ui_launcher_hit_test(uint16_t x,uint16_t y)
+{
+    if(x<8 || x>=272 || y<64 || y>=386) return 0;
+    unsigned col=(x-8)/90,row=(y-64)/110;
+    if(col>=3 || row>=3 || (x-8)%90>=84 || (y-64)%110>=102) return 0;
+    return (uint8_t)(row*3+col+1);
+}
 #include "ws_ui_layout.h"
 
 ws_action_t ws_ui_hit_test(uint16_t x,uint16_t y)
@@ -83,11 +101,9 @@ ws_settings_action_t ws_ui_settings_hit_test(uint8_t page,uint16_t x,uint16_t y)
     case WS_SETTINGS_PAGE_DIAGNOSTICS:
         return row==0 && in_wide(x)?WS_SETTINGS_ACTION_DIAGNOSTICS_TOGGLE:WS_SETTINGS_ACTION_NONE;
     case WS_SETTINGS_PAGE_AIR_MOUSE:
-        return row==0 && in_wide(x)?WS_SETTINGS_ACTION_AIR_MOUSE_START:WS_SETTINGS_ACTION_NONE;
-    case WS_SETTINGS_PAGE_APPS:
-        if(row==0) return in_minus(x)?WS_SETTINGS_ACTION_APPS_PREV:
-                         in_plus(x)?WS_SETTINGS_ACTION_APPS_NEXT:WS_SETTINGS_ACTION_NONE;
-        return in_wide(x)?WS_SETTINGS_ACTION_APPS_RUN:WS_SETTINGS_ACTION_NONE;
+        return in_wide(x)?(row==0?WS_SETTINGS_ACTION_AIR_MOUSE_TRANSPORT:WS_SETTINGS_ACTION_AIR_MOUSE_START):WS_SETTINGS_ACTION_NONE;
+    case WS_SETTINGS_PAGE_GAMEPAD:
+        return in_wide(x)?(row==0?WS_SETTINGS_ACTION_GAMEPAD_PROFILE:WS_SETTINGS_ACTION_GAMEPAD_START):WS_SETTINGS_ACTION_NONE;
     case WS_SETTINGS_PAGE_HOME:
     case WS_SETTINGS_PAGE_COUNT:
     default:
@@ -115,7 +131,7 @@ uint8_t ws_ui_air_mouse_hit_test(bool settings_open,uint16_t x,uint16_t y)
     if(x>=WS_MOUSE_CAL_X && x<WS_MOUSE_CAL_X+WS_MOUSE_CAL_W &&
        y>=WS_MOUSE_CAL_Y && y<WS_MOUSE_CAL_Y+WS_MOUSE_CAL_H)return 2U;
     if(x>=WS_MOUSE_LEFT_X && x<WS_MOUSE_LEFT_X+WS_MOUSE_LEFT_W &&
-       y>=WS_MOUSE_LEFT_Y && y<WS_MOUSE_LEFT_Y+WS_MOUSE_LEFT_H)return 3U;
+       y>=WS_MOUSE_LEFT_Y && y<WS_MOUSE_LEFT_Y+WS_MOUSE_LEFT_H)return y>=180U?16U:3U;
     if(x>=WS_MOUSE_RIGHT_X && x<WS_MOUSE_RIGHT_X+WS_MOUSE_RIGHT_W &&
        y>=WS_MOUSE_RIGHT_Y && y<WS_MOUSE_RIGHT_Y+WS_MOUSE_RIGHT_H)return 4U;
     if(x>=WS_MOUSE_SCROLL_X && x<WS_MOUSE_SCROLL_X+WS_MOUSE_SCROLL_W &&

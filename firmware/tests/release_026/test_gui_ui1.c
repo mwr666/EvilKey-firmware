@@ -67,6 +67,10 @@ static ws_settings_action_t expected_settings(uint8_t page,unsigned x,unsigned y
                       (minus?WS_SETTINGS_ACTION_USB_LAYOUT_PREV:plus?WS_SETTINGS_ACTION_USB_LAYOUT_NEXT:WS_SETTINGS_ACTION_NONE);
     case WS_SETTINGS_PAGE_DIAGNOSTICS:
         return row==0 && wide?WS_SETTINGS_ACTION_DIAGNOSTICS_TOGGLE:WS_SETTINGS_ACTION_NONE;
+    case WS_SETTINGS_PAGE_AIR_MOUSE:
+        return wide?(row==0?WS_SETTINGS_ACTION_AIR_MOUSE_TRANSPORT:WS_SETTINGS_ACTION_AIR_MOUSE_START):WS_SETTINGS_ACTION_NONE;
+    case WS_SETTINGS_PAGE_GAMEPAD:
+        return wide?(row==0?WS_SETTINGS_ACTION_GAMEPAD_PROFILE:WS_SETTINGS_ACTION_GAMEPAD_START):WS_SETTINGS_ACTION_NONE;
     default:return WS_SETTINGS_ACTION_NONE;
     }
 }
@@ -76,7 +80,7 @@ static void test_settings_hit_maps(void)
     for(uint8_t page=0;page<WS_SETTINGS_PAGE_COUNT;++page)
         for(unsigned y=0;y<456;++y)for(unsigned x=0;x<280;++x)
             assert(ws_ui_settings_hit_test(page,(uint16_t)x,(uint16_t)y)==expected_settings(page,x,y));
-    puts("PASS: all eight Settings screens have exact half-open touch maps with two large controls max");
+    puts("PASS: all Settings screens have exact half-open touch maps with two large controls max");
 }
 
 static void test_usb_tool_hit_map(void)

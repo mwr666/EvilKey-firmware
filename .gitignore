@@ -9,3 +9,8 @@ build-arduino/
 release/
 *.ekapp
 *.wasm
+
+artifacts/
+firmware/.ble-libraries/
+firmware/.flash-backups/
+firmware/build/
