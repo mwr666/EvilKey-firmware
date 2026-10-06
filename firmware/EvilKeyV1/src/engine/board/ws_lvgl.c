@@ -337,7 +337,8 @@ typedef struct {
     lv_obj_t *settings_dot[SETTINGS_DOTS];
     lv_obj_t *apps_group;
     lv_obj_t *launcher_group,*launcher_content,*launcher_status,*launcher_counter;
-    lv_obj_t *launcher_header,*launcher_intro,*launcher_glow,*launcher_orbit,*launcher_orbit_inner;
+    lv_obj_t *launcher_header,*launcher_intro,*launcher_glow,*launcher_orbit,*launcher_orbit_inner,*launcher_glint;
+    lv_obj_t *launcher_spark[4];
     lv_obj_t *launcher_tiles[9],*launcher_count;
     lv_obj_t *launcher_cell[EK_APPS_PAGE_SIZE],*launcher_icon[EK_APPS_PAGE_SIZE];
     lv_obj_t *launcher_name[EK_APPS_PAGE_SIZE],*launcher_dot[9];
@@ -946,26 +947,33 @@ static void build_setting_row(ws_setting_row_t *r,lv_obj_t *parent)
     r->plus_label=label(r->plus,"+",&lv_font_montserrat_28,0,8,WS_SETTINGS_PLUS_W,34);
 }
 
-static void build_settings(void)
+/* Both landing pages use the same LVGL geometry and slow orbit clock. */
+static void build_landing_rings(lv_obj_t *parent,lv_obj_t **glow,lv_obj_t **outer,
+                                lv_obj_t **inner,lv_obj_t **glint,lv_obj_t **sparks)
 {
-    ui.settings_group=group_at(ui.screen,WS_LCD_WIDTH,0,WS_LCD_WIDTH,WS_LCD_HEIGHT);
-    ui.settings_content=group_at(ui.settings_group,0,0,WS_LCD_WIDTH,WS_LCD_HEIGHT);
-
-    /* Landing page: the gear is deliberately the dominant visual element. */
-    ui.settings_glow=circle(ui.settings_content,62,58,156,RGB24_DEFAULT,LV_OPA_TRANSP,
+    *glow=circle(parent,62,58,156,RGB24_DEFAULT,LV_OPA_TRANSP,
                             RGB24_DEFAULT,1,LV_OPA_30);
-    ui.settings_orbit=arc_obj(ui.settings_content,54,50,172,RGB24_DEFAULT,1,3,
+    *outer=arc_obj(parent,54,50,172,RGB24_DEFAULT,1,3,
                               LV_OPA_TRANSP,LV_OPA_50,0,76);
-    ui.settings_orbit_inner=arc_obj(ui.settings_content,70,66,140,RGB24_DEFAULT,1,2,
+    *inner=arc_obj(parent,70,66,140,RGB24_DEFAULT,1,2,
                                     LV_OPA_TRANSP,LV_OPA_40,0,132);
-    ui.settings_glint=arc_obj(ui.settings_content,62,58,156,RGB24_DEFAULT,1,4,
+    *glint=arc_obj(parent,62,58,156,RGB24_DEFAULT,1,4,
                               LV_OPA_TRANSP,LV_OPA_70,0,28);
     /* R25: four fixed pinpricks sit around the hero. They never blink out or
      * orbit; only a restrained coherent luminance breath gives the field depth. */
     static const int16_t settings_spark_xy[4][2]={{72,93},{207,96},{211,181},{69,186}};
     for(unsigned i=0;i<4U;++i)
-        ui.settings_spark[i]=circle(ui.settings_content,settings_spark_xy[i][0],settings_spark_xy[i][1],
+        sparks[i]=circle(parent,settings_spark_xy[i][0],settings_spark_xy[i][1],
                                     4,RGB24_DEFAULT,LV_OPA_50,RGB24_DEFAULT,0,LV_OPA_TRANSP);
+}
+
+static void build_settings(void)
+{
+    ui.settings_group=group_at(ui.screen,WS_LCD_WIDTH,0,WS_LCD_WIDTH,WS_LCD_HEIGHT);
+    ui.settings_content=group_at(ui.settings_group,0,0,WS_LCD_WIDTH,WS_LCD_HEIGHT);
+
+    build_landing_rings(ui.settings_content,&ui.settings_glow,&ui.settings_orbit,
+        &ui.settings_orbit_inner,&ui.settings_glint,ui.settings_spark);
     icon_init(&ui.settings_gear,ui.settings_content,80,76,120,120);
     build_gear_icon(&ui.settings_gear,120);
 
@@ -1016,12 +1024,8 @@ static void build_apps(void)
     ui.launcher_header=label(ui.launcher_group,"APPS",&lv_font_montserrat_28,12,15,170,38);
     ui.launcher_counter=label(ui.launcher_group,"",&lv_font_montserrat_14,180,25,88,24);
     ui.launcher_intro=group_at(ui.launcher_group,0,0,WS_LCD_WIDTH,386);
-    ui.launcher_glow=circle(ui.launcher_intro,62,58,156,RGB24_DEFAULT,LV_OPA_TRANSP,
-        RGB24_DEFAULT,1,LV_OPA_30);
-    ui.launcher_orbit=arc_obj(ui.launcher_intro,54,50,172,RGB24_DEFAULT,1,3,
-        LV_OPA_TRANSP,LV_OPA_50,0,76);
-    ui.launcher_orbit_inner=arc_obj(ui.launcher_intro,70,66,140,RGB24_DEFAULT,1,2,
-        LV_OPA_TRANSP,LV_OPA_40,0,132);
+    build_landing_rings(ui.launcher_intro,&ui.launcher_glow,&ui.launcher_orbit,
+        &ui.launcher_orbit_inner,&ui.launcher_glint,ui.launcher_spark);
     for(unsigned i=0;i<9;++i)
         ui.launcher_tiles[i]=card(ui.launcher_intro,98+(int)(i%3)*29,
             94+(int)(i/3)*29,26,26,5);
@@ -1812,25 +1816,76 @@ static const char *settings_default_subtitle(uint8_t page)
     }
 }
 
+static void update_landing_rings(lv_obj_t *glow,lv_obj_t *outer,lv_obj_t *inner,
+    lv_obj_t *glint,lv_obj_t **sparks,uint8_t phase,bool animated,uint32_t accent)
+{
+    lv_obj_set_style_border_color(glow,color(accent),0);
+    lv_obj_set_style_bg_color(glow,color(accent),0);
+    lv_obj_set_style_bg_opa(glow,LV_OPA_TRANSP,0);
+    lv_obj_t *const arcs[]={outer,inner,glint};
+    for(unsigned i=0;i<3U;++i)
+        lv_obj_set_style_arc_color(arcs[i],color(accent),LV_PART_INDICATOR);
+    for(unsigned i=0;i<4U;++i)
+        lv_obj_set_style_bg_color(sparks[i],color(accent),0);
+    if(!animated) {
+        lv_obj_set_style_border_opa(glow,34,0);
+        lv_obj_set_style_arc_opa(outer,88,LV_PART_INDICATOR);
+        lv_obj_set_style_arc_opa(inner,62,LV_PART_INDICATOR);
+        lv_obj_set_style_arc_opa(glint,116,LV_PART_INDICATOR);
+        lv_arc_set_rotation(outer,0);
+        lv_arc_set_rotation(inner,180);
+        lv_arc_set_rotation(glint,32);
+        for(unsigned i=0;i<4U;++i)
+            lv_obj_set_style_bg_opa(sparks[i],LV_OPA_50,0);
+        return;
+    }
+    /* premium_wave() is a 64-step closed curve. Divide the 256-step Settings
+     * phase by four so ambient luminance breathes exactly once per full loop. */
+    const uint8_t wave=premium_wave((uint8_t)(phase>>2));
+    const uint8_t phase_quarter=(uint8_t)(phase+64U);
+    const uint8_t wave2=premium_wave((uint8_t)(phase_quarter>>2));
+    const int rotation=((int)phase*360)/256;
+    const int inner_rotation=(180+360-rotation)%360;
+    const int glint_rotation=(32+rotation*2)%360;
+
+    /* One deterministic closed composition. The gear is the visual anchor;
+     * the outer and inner strokes each complete one whole turn in opposite
+     * directions over the same 6.144 s period, while the glint completes two.
+     * At phase 255 -> 0 every object advances only by its normal angular step. */
+    lv_obj_set_style_border_opa(glow,(lv_opa_t)(22U+wave/16U),0);
+    lv_obj_set_style_bg_opa(glow,LV_OPA_TRANSP,0);
+
+    lv_obj_set_style_arc_color(outer,color(accent),LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(inner,color(accent),LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(glint,color(accent),LV_PART_INDICATOR);
+    lv_obj_set_style_arc_opa(outer,(lv_opa_t)(82U+wave/16U),LV_PART_INDICATOR);
+    lv_obj_set_style_arc_opa(inner,(lv_opa_t)(58U+wave2/18U),LV_PART_INDICATOR);
+    lv_obj_set_style_arc_opa(glint,(lv_opa_t)(108U+wave/12U),LV_PART_INDICATOR);
+
+    lv_arc_set_rotation(outer,(int16_t)rotation);
+    lv_arc_set_rotation(inner,(int16_t)inner_rotation);
+    lv_arc_set_rotation(glint,(int16_t)glint_rotation);
+
+    /* Icons stay anchored; only the surrounding decoration moves. */
+
+    /* Four fixed pinpricks remain visible throughout the loop. Opposite pairs
+     * share the same slow breath; there are no independent blink envelopes. */
+    static const uint8_t spark_base[4]={42U,48U,46U,52U};
+    for(unsigned i=0;i<4U;++i) {
+        const uint8_t sw=(i&1U)?wave2:wave;
+        lv_obj_set_style_bg_opa(sparks[i],(lv_opa_t)(spark_base[i]+sw/20U),0);
+    }
+}
+
 static void update_settings(const ws_ui_snapshot_t *v,uint32_t accent)
 {
     uint8_t page=v->settings_page<WS_SETTINGS_PAGE_COUNT?v->settings_page:WS_SETTINGS_PAGE_HOME;
     const bool home=page==WS_SETTINGS_PAGE_HOME;
 
     icon_tint(&ui.settings_gear,accent);
-    lv_obj_set_style_border_color(ui.settings_glow,color(accent),0);
-    lv_obj_set_style_bg_color(ui.settings_glow,color(accent),0);
-    lv_obj_set_style_border_opa(ui.settings_glow,34,0);
-    lv_obj_set_style_bg_opa(ui.settings_glow,LV_OPA_TRANSP,0);
-    lv_obj_t *const settings_arcs[]={ui.settings_orbit,ui.settings_orbit_inner,ui.settings_glint};
-    for(unsigned i=0;i<sizeof(settings_arcs)/sizeof(settings_arcs[0]);++i)
-        lv_obj_set_style_arc_color(settings_arcs[i],color(accent),LV_PART_INDICATOR);
-    lv_obj_set_style_arc_opa(ui.settings_orbit,88,LV_PART_INDICATOR);
-    lv_obj_set_style_arc_opa(ui.settings_orbit_inner,62,LV_PART_INDICATOR);
-    lv_obj_set_style_arc_opa(ui.settings_glint,116,LV_PART_INDICATOR);
-    lv_arc_set_rotation(ui.settings_orbit,0);
-    lv_arc_set_rotation(ui.settings_orbit_inner,180);
-    lv_arc_set_rotation(ui.settings_glint,32);
+    update_landing_rings(ui.settings_glow,ui.settings_orbit,ui.settings_orbit_inner,
+        ui.settings_glint,ui.settings_spark,v->settings_motion_phase,
+        v->settings_animation,accent);
     hidden(ui.settings_glow,!home);
     hidden(ui.settings_orbit,!home);
     hidden(ui.settings_orbit_inner,!home);
@@ -2066,45 +2121,10 @@ static void update_settings(const ws_ui_snapshot_t *v,uint32_t accent)
 
 static void update_settings_motion(const ws_ui_snapshot_t *v,uint32_t accent)
 {
-    if(!v->settings_animation || v->settings_page!=WS_SETTINGS_PAGE_HOME) return;
-    const uint8_t phase=v->settings_motion_phase;
-    /* premium_wave() is a 64-step closed curve. Divide the 256-step Settings
-     * phase by four so ambient luminance breathes exactly once per full loop. */
-    const uint8_t wave=premium_wave((uint8_t)(phase>>2));
-    const uint8_t phase_quarter=(uint8_t)(phase+64U);
-    const uint8_t wave2=premium_wave((uint8_t)(phase_quarter>>2));
-    const int rotation=((int)phase*360)/256;
-    const int inner_rotation=(180+360-rotation)%360;
-    const int glint_rotation=(32+rotation*2)%360;
-
-    /* One deterministic closed composition. The gear is the visual anchor;
-     * the outer and inner strokes each complete one whole turn in opposite
-     * directions over the same 6.144 s period, while the glint completes two.
-     * At phase 255 -> 0 every object advances only by its normal angular step. */
-    lv_obj_set_style_border_opa(ui.settings_glow,(lv_opa_t)(22U+wave/16U),0);
-    lv_obj_set_style_bg_opa(ui.settings_glow,LV_OPA_TRANSP,0);
-
-    lv_obj_set_style_arc_color(ui.settings_orbit,color(accent),LV_PART_INDICATOR);
-    lv_obj_set_style_arc_color(ui.settings_orbit_inner,color(accent),LV_PART_INDICATOR);
-    lv_obj_set_style_arc_color(ui.settings_glint,color(accent),LV_PART_INDICATOR);
-    lv_obj_set_style_arc_opa(ui.settings_orbit,(lv_opa_t)(82U+wave/16U),LV_PART_INDICATOR);
-    lv_obj_set_style_arc_opa(ui.settings_orbit_inner,(lv_opa_t)(58U+wave2/18U),LV_PART_INDICATOR);
-    lv_obj_set_style_arc_opa(ui.settings_glint,(lv_opa_t)(108U+wave/12U),LV_PART_INDICATOR);
-
-    lv_arc_set_rotation(ui.settings_orbit,(int16_t)rotation);
-    lv_arc_set_rotation(ui.settings_orbit_inner,(int16_t)inner_rotation);
-    lv_arc_set_rotation(ui.settings_glint,(int16_t)glint_rotation);
-
-    /* Keep the gear fully opaque and fixed. Its A8 mask is rasterized once and
-     * the moving arcs supply the motion without repeatedly invalidating it. */
-
-    /* Four fixed pinpricks remain visible throughout the loop. Opposite pairs
-     * share the same slow breath; there are no independent blink envelopes. */
-    static const uint8_t spark_base[4]={42U,48U,46U,52U};
-    for(unsigned i=0;i<4U;++i) {
-        const uint8_t sw=(i&1U)?wave2:wave;
-        lv_obj_set_style_bg_opa(ui.settings_spark[i],(lv_opa_t)(spark_base[i]+sw/20U),0);
-    }
+    if(v->settings_page!=WS_SETTINGS_PAGE_HOME) return;
+    update_landing_rings(ui.settings_glow,ui.settings_orbit,ui.settings_orbit_inner,
+        ui.settings_glint,ui.settings_spark,v->settings_motion_phase,
+        v->settings_animation,accent);
 }
 
 static void main_state(const ws_ui_snapshot_t *v,uint32_t accent)
@@ -2606,14 +2626,10 @@ static void update_launcher(const ws_ui_snapshot_t *v,uint32_t accent)
 static void update_launcher_motion(const ws_ui_snapshot_t *v,uint32_t accent)
 {
     if(v->launcher_page!=0) return;
-    unsigned phase=v->settings_animation?v->settings_motion_phase:0;
-    uint8_t wave=premium_wave((uint8_t)(phase>>2));
-    lv_obj_set_style_border_color(ui.launcher_glow,color(accent),0);
-    lv_obj_set_style_border_opa(ui.launcher_glow,(lv_opa_t)(22U+wave/16U),0);
-    lv_obj_set_style_arc_color(ui.launcher_orbit,color(accent),LV_PART_INDICATOR);
-    lv_obj_set_style_arc_color(ui.launcher_orbit_inner,color(accent),LV_PART_INDICATOR);
-    lv_arc_set_rotation(ui.launcher_orbit,(int16_t)(phase*360/256));
-    lv_arc_set_rotation(ui.launcher_orbit_inner,(int16_t)((540-phase*360/256)%360));
+    update_landing_rings(ui.launcher_glow,ui.launcher_orbit,ui.launcher_orbit_inner,
+        ui.launcher_glint,ui.launcher_spark,v->settings_motion_phase,
+        v->settings_animation,accent);
+    uint8_t wave=premium_wave((uint8_t)((v->settings_animation?v->settings_motion_phase:0)>>2));
     for(unsigned i=0;i<9;++i) {
         bool bright=i==0 || i==4 || i==8;
         set_card_flat(ui.launcher_tiles[i],bright?accent:COL_PANEL2,accent,1);

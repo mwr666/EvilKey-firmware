@@ -1,5 +1,16 @@
 # Release checks
 
+## 0.6.1 acceptance
+
+The owner accepted the exact 0.6.1 BIN on 2026-10-06 after a verified COM5
+installation. Application readback matched and protected NVS, wsdev, part0
+and otadata hashes remained unchanged; no partition migration was required.
+The changed Apps/Settings rings passed 1024 host pixel comparisons.
+App ABI remains v4 and package revision remains 5. Long-duration endurance
+was not measured. [Release notes](RELEASE_0.6.1.md) identify the accepted BIN.
+
+## 0.6.0 baseline checks
+
 Firmware **0.6.0** was flashed through `EvilKey.cmd` and accepted by the owner
 on the PCB V1 device. The confirmation covers Gamepad appearance/controls,
 Center and settings feedback, Rotate 180, AirMouse, return to USB/FIDO with

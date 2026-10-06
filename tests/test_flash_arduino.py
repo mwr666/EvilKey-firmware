@@ -3,12 +3,14 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 import tempfile
+import sys
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "firmware"))
 SPEC = importlib.util.spec_from_file_location(
     "picofido_flash_arduino", ROOT / "firmware" / "flash_arduino.py"
 )
@@ -34,24 +36,23 @@ class FlashArduinoTests(unittest.TestCase):
             self.assertEqual(FLASH.main(), 0)
             run.assert_not_called()
 
-    def test_y_builds_then_rechecks_port_before_upload(self):
+    def test_y_builds_rechecks_port_and_uses_storage_preserving_installer(self):
         ports = [{"address": "COM7", "label": "EvilKey", "protocol": "serial", "boards": ""}]
-        info = {"fqbn": "vendor:arch:board:EraseFlash=none",
-                "image_path": "C:/private/firmware.bin"}
+        info = {"fqbn": "vendor:arch:board:EraseFlash=none", "image_path": "C:/private/firmware.bin"}
         with patch.object(FLASH.shutil, "which", return_value="arduino-cli"), \
              patch.object(FLASH, "discover_ports", side_effect=[ports, ports]) as discover, \
              patch.object(FLASH, "load_verified_build_info", return_value=info), \
              patch.object(FLASH, "resolve_esptool", return_value=Path("esptool.exe")), \
-             patch.object(FLASH, "verify_device_partition",return_value=b'reviewed table'), \
+             patch.object(FLASH, "verify_device_partition", return_value=b"reviewed table"), \
              patch.object(FLASH, "install_preserving_storage") as install, \
              patch("builtins.input", side_effect=["1", "Y"]), \
              patch.object(FLASH.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as run, \
              patch.object(FLASH.sys, "argv", ["flash_arduino.py"]):
             self.assertEqual(FLASH.main(), 0)
             self.assertEqual(discover.call_count, 2)
-            self.assertEqual(run.call_count, 1)
-            self.assertEqual(run.call_args_list[0].args[0][1], str(FLASH.BUILD_SCRIPT))
-            install.assert_called_once_with(Path('esptool.exe'),ports[0],info,b'reviewed table',FLASH.ROOT/'.flash-backups')
+            run.assert_called_once_with([FLASH.sys.executable, str(FLASH.BUILD_SCRIPT)])
+            install.assert_called_once_with(Path("esptool.exe"), ports[0], info,
+                                            b"reviewed table", FLASH.ROOT / '.flash-backups')
 
     def test_port_parser_lists_only_unique_windows_com_ports_numerically(self):
         payload = {
@@ -76,9 +77,16 @@ class FlashArduinoTests(unittest.TestCase):
         self.assertIsNone(FLASH.choose_port(ports, "COM99"))
         self.assertIsNone(FLASH.choose_port(ports, "3"))
 
-    def test_unsafe_erase_commands_rejected(self):
-        for token in ['erase_flash','erase-flash','erase-region','--erase-all']:
-            with self.assertRaises(RuntimeError):FLASH.validate_command(['esptool',token])
+    def test_write_guard_bounds_application_and_rejects_protected_sectors(self):
+        self.assertEqual(FLASH.APP_OFFSET, 0x500000)
+        FLASH.validate_write(FLASH.APP_OFFSET, 2205088,
+                             app_offset=FLASH.APP_OFFSET, app_capacity=FLASH.APP_CAPACITY)
+        for offset, size in FLASH.PROTECTED.values():
+            with self.assertRaises(RuntimeError):
+                FLASH.validate_write(offset, size,
+                                     app_offset=FLASH.APP_OFFSET, app_capacity=FLASH.APP_CAPACITY)
+        with self.assertRaises(RuntimeError):
+            FLASH.validate_command(["esptool.exe", "erase-flash"])
 
     def test_app_partition_is_disjoint_from_nvs_and_other_data(self):
         FLASH.verify_partition_layout()

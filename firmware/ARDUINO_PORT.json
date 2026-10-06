@@ -1,9 +1,9 @@
 {
-  "port_version": "0.6.0",
+  "port_version": "0.6.1",
   "target": "Arduino IDE 2.x / Arduino-ESP32 3.3.12 recommended (3.3.11 supported)",
   "board": "Waveshare ESP32-S3-Touch-AMOLED-1.64 PCB V1",
   "usb": "native USB-OTG: FIDO CTAP HID OR explicit-run USB Tool HID; optional microSD MSC Manager Drive is a separate mutually-exclusive profile",
-  "status": "EvilKey 0.6.0; exact release image accepted on PCB V1 on 2026-10-03",
+  "status": "EvilKey 0.6.1; exact release image accepted on PCB V1 on 2026-10-06",
   "dependencies": {
     "pico-fido": "fc7c60e9b45338fe815a43bb228d234322e48d97",
     "pico-keys-sdk": "507ac45956b7f1c763bb5e88a6411438093d10c7",
@@ -40,7 +40,7 @@
     "psram_hot_path": false,
     "settings_pages": 9
   },
-  "package_revision": "0.5.1",
+  "package_revision": "0.6.1",
   "packaging_fix": "R14_ARDUINO_3_3_12; R17_ARDUINO_STAGEABLE_LOCAL_UV_HEADER; R18_SCOPED_SETTINGS_PIN_CANCEL; R22_ASYNC_DOUBLE_BUFFER_ZERO_COPY; R26_USB_TOOL; R27_HAK5_COMPAT_FONT_FIX; R28_DYNAMIC_PAYLOAD_INDEX_PSRAM_FALLBACK; R34_TINYUSB_HOST_FINGERPRINT_S2",
   "manager_drive": {
     "compiled": true,

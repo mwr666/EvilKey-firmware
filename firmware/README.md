@@ -1,4 +1,4 @@
-# EvilKey firmware 0.6.0
+# EvilKey firmware 0.6.1
 
 Arduino firmware for the Waveshare ESP32-S3 Touch AMOLED 1.64 **PCB V1**:
 FIDO2, LVGL, Apps on microSD, BLE Gamepad, USB/BLE AirMouse, Manager Drive

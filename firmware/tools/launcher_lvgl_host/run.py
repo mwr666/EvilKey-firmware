@@ -2,15 +2,16 @@
 """Actual LVGL composition/rasterization; panel and logo inflater are host mocks."""
 import argparse,subprocess,os
 from pathlib import Path
-p=argparse.ArgumentParser();p.add_argument('--zig',required=True)
-p.add_argument('--packages',nargs=5,type=Path,required=True,help='Five compatible packages you are authorized to use')
-p.add_argument('--frame',type=Path,required=True,help='280x456 test frame you are authorized to use')
+p=argparse.ArgumentParser();p.add_argument('--zig',required=True);p.add_argument('--rings-only',action='store_true')
+p.add_argument('--packages',nargs=5,type=Path,help='Five compatible packages you are authorized to use')
+p.add_argument('--frame',type=Path,help='280x456 test frame you are authorized to use')
 a=p.parse_args()
+if not a.rings_only and (not a.packages or not a.frame):p.error('--packages and --frame are required unless --rings-only is selected')
 root=Path(__file__).resolve().parents[3];here=Path(__file__).parent
 renderer=root/'firmware/build/launcher-renderer.c'
 renderer.parent.mkdir(exist_ok=True)
-text=(root/'firmware/templates/port/ws_lvgl.c').read_text().replace('../../EvilKeyV1/src/apps/','').replace('../lvgl/lvgl.h','lvgl.h')
-renderer.write_text(text)
+text=(root/'firmware/templates/port/ws_lvgl.c').read_text(encoding='utf-8').replace('../../EvilKeyV1/src/apps/','').replace('../lvgl/lvgl.h','lvgl.h')
+renderer.write_text(text,encoding='utf-8')
 for name in ['ws_gamepad_view.c','ws_gamepad_view.h']:
     text=(root/'firmware/templates/port'/name).read_text().replace('../lvgl/lvgl.h','lvgl.h')
     (renderer.parent/name).write_text(text)
@@ -19,6 +20,9 @@ out=root/'firmware/build/launcher-lvgl-test.exe';out.parent.mkdir(exist_ok=True)
 cmd=[a.zig,'cc','-target','x86-windows-gnu','-O1','-UNDEBUG','-include','stdlib.h','-DLV_ASSERT_HANDLER=abort();',f'-I{here}',f'-I{root}/firmware/EvilKeyV1/src',f'-I{root}/firmware/EvilKeyV1/src/apps',f'-I{root}/firmware/templates/port',f'-I{root}/firmware/EvilKeyV1/src/engine/lvgl',f'-I{root}/firmware/build',str(here/'test.c'),str(root/'firmware/templates/port/ws_ui.c'),str(renderer.parent/'ws_gamepad_view.c'),str(root/'firmware/templates/port/ws_controls.c'),*map(str,sources),'-o',str(out)]
 r=subprocess.run(cmd,capture_output=True,text=True)
 if r.returncode:print(r.stderr);raise SystemExit(r.returncode)
+if a.rings_only:
+    subprocess.run([str(out),'--rings-only'],check=True,timeout=60,cwd=root)
+    raise SystemExit(0)
 from PIL import Image
 import struct
 packages=[x.resolve(strict=True) for x in a.packages]

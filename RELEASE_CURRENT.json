@@ -1,26 +1,27 @@
 {
   "schema": "evilkey-public-release-v1",
   "release_status": "final; exact image accepted by owner",
-  "snapshot_date": "2026-10-03",
+  "snapshot_date": "2026-10-06",
   "start_here": "EvilKey.cmd",
   "firmware": {
-    "version": "0.6.0",
-    "artifact": "artifacts/firmware/EvilKey_0.6.0.bin",
-    "device_smoke": "2026-10-03: owner accepted Gamepad controls/style, Center/settings, Rotate 180, AirMouse, USB/FIDO return with existing keys and game saves",
+    "version": "0.6.1",
     "runtime_abi": 4,
     "app_package_revision": 5,
     "ui_profile": "corner-exit-v1",
+    "device_acceptance": "accepted_by_user",
+    "artifact": "artifacts/firmware/EvilKey_0.6.1.bin",
+    "size_bytes": 2204448,
+    "sha256": "90c0064a5e68e46e083307997374b13c4323d4d07c23c3f69a55a3a046a5c5b5",
     "app_offset": "0x500000",
     "partition_sha256": "e49a263f7d7426a8ef81b9b6a09da1e831f57b5fc2a2e00c843e541827b1aff5",
     "nvs_written": false,
-    "endurance": "not measured",
-    "size_bytes": 2205088,
-    "sha256": "db6ea2a349c711d7ff5d3e274d7f1bf4c64acb4f026216c1b90e1306d3297fe8",
-    "build": "Arduino-ESP32 3.3.12; static RAM 179560 bytes; 4 MiB factory application",
-    "screensaver_version": "PF_FIRMWARE_VERSION_STRING (0.6.0)",
-    "device_acceptance": "accepted_by_user"
+    "flash_readback_verified": true,
+    "device_smoke": "2026-10-06: owner confirmed everything works after installation of this exact 0.6.1 image",
+    "build": "Arduino-ESP32 3.3.12; static RAM 179576 bytes; 4 MiB factory application",
+    "screensaver_version": "PF_FIRMWARE_VERSION_STRING (0.6.1)",
+    "endurance": "not measured"
   },
   "public_source_repository": "https://github.com/mwr666/EvilKey-firmware",
-  "source_export": "device source and templates synchronized with accepted 0.6.0; private Git history excluded",
+  "source_export": "device source and templates synchronized with accepted 0.6.1; private Git history, applications and CAD excluded",
   "validation": "docs/VALIDATION.md"
 }

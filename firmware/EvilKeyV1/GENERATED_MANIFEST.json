@@ -1,6 +1,6 @@
 {
   "profile": "arduino-v1-development",
-  "port_version": "0.6.0",
+  "port_version": "0.6.1",
   "arduino_core": "3.3.12-recommended;3.3.11-supported",
   "revisions": {
     "fido": "fc7c60e9b45338fe815a43bb228d234322e48d97",
@@ -25,7 +25,7 @@
     "board/ws_gui_theme.h": "5e7f0f756ba74237fe96c957a922c83d32791e93f0e953a310fbd8a054c6d06d",
     "board/ws_local_uv.h": "f3fd4b3d55a26cd8ae00c61b7c5f875193641fe90d4332678a56edc2235dbbe9",
     "board/ws_logo_assets.h": "2449840c04782655552bb870fe7945593f949921b0f8332f216a2d4948f90e1f",
-    "board/ws_lvgl.c": "d8c5db36bc2e77d5b5aacd60736d78f35b049b051cb006bba70019699061b23b",
+    "board/ws_lvgl.c": "613d90f2172fcc27f22bfd71c879cc38066ef4ec9ae786ca274026023c8b3fe0",
     "board/ws_lvgl.h": "5e2b339bfaff03f3415f7fd473eee69d39aabb8c3f7f8b5356784458eeb89796",
     "board/ws_manager_config.h": "b03bf4db9f4140090aae0b508a2028d0fbcaf6fd1cdab6126c52ea45b575194c",
     "board/ws_manager_drive_state.c": "2a424aa160c179bd325dd564ee8d0b26e515b4420ed255b97efc2ee9662ae3c4",
@@ -857,7 +857,7 @@
     "CRYSTAL_SCREENSAVER_R37",
     "CRYSTAL_CONTRAST_R38"
   ],
-  "package_revision": "EVILKEY_0_6_0_BLE_CONTROLS_ABI_V4",
+  "package_revision": "EVILKEY_0_6_1_SHARED_RINGS_ABI_V4",
   "external_usbd_stack_bytes_required": 16384,
   "validation": "source-generation checks only; not a hardware certification"
 }

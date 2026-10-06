@@ -509,11 +509,11 @@ def prepare(cache: Path, offline: bool) -> None:
             for p in root.glob("*"):
                 if p.is_file() and p.name.upper().startswith(("LICENSE", "LICENCE", "COPYING", "NOTICE")):
                     shutil.copy2(p, license_dir / (name + "_" + p.name))
-        manifest = {"profile": "arduino-v1-development", "port_version": "0.6.0", "arduino_core": "3.3.12-recommended;3.3.11-supported",
+        manifest = {"profile": "arduino-v1-development", "port_version": "0.6.1", "arduino_core": "3.3.12-recommended;3.3.11-supported",
                     "revisions": {name: sha for name, (_, sha) in REPOS.items()},
                     "translation_units": len(list(dest.rglob("*.c"))), "generated_sha256": generated,
                     "integrated_changes": ["C1", "S2", "LVGL_R5", "LVGL_R8_PREMIUM", "M1", "ARDUINO_HEADER_R1", "USB_TOOL_R26", "USB_TOOL_R27_HAK5", "USB_TOOL_R28_RAM_OPT", "PSRAM_DUCKY3_R29", "HAK5_AUTO_SYNC_R30", "HAK5_WINDOWS_IO_R31", "DUCKY3_ARCH_R32", "DUCKY3_OS_FIX_R33", "DUCKY3_HOST_OS_R34", "DUCKY3_COMPAT_ARCH_R35", "STAGE8A_8B_R35", "LOOT_INDEX_R35", "HAK5_LIBRARY_AUDIT_R35", "USB_TOOL_SAFE_AUTO_DETACH_R36", "CRYSTAL_SCREENSAVER_R37", "CRYSTAL_CONTRAST_R38"],
-                    "package_revision": "EVILKEY_0_6_0_BLE_CONTROLS_ABI_V4",
+                    "package_revision": "EVILKEY_0_6_1_SHARED_RINGS_ABI_V4",
                     "external_usbd_stack_bytes_required": 16384,
                     "validation": "source-generation checks only; not a hardware certification"}
         (ROOT / "EvilKeyV1/GENERATED_MANIFEST.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")

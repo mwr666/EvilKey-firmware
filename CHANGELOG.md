@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.1 — matching landing-page rings
+
+- Apps and Settings share identical orbit geometry, highlight, light points,
+  brightness changes and the same 6.144-second animation cycle.
+- Animation OFF shows the same fixed ring composition on both pages.
+- Retained the existing Apps and Settings icons and the LVGL interface.
+- App runtime remains ABI v4; package revision 5.
+
 ## 0.6.0 — BLE controls
 
 - Added landscape BLE Gamepad with PC/Xbox and Generic/Android HID profiles,

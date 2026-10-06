@@ -93,7 +93,34 @@ for(unsigned i=0;i<=255;++i){
     }
     if(i==128)ppm(to_settings?"firmware/build/launcher-to-settings.ppm":"firmware/build/settings-to-launcher.ppm");
 }}
-int main(int argc,char **argv){assert(argc==7);FILE *app=fopen(argv[6],"rb");assert(app);assert(fread(app_pixels,1,sizeof(app_pixels),app)==sizeof(app_pixels));fclose(app);assert(ws_lvgl_init()==ESP_OK);memory("init");ws_ui_snapshot_t v={0};v.state=WS_UI_READY;v.settings_animation=true;v.accent_rgb=0x4de3c1;
+/* Compare actual landing-page raster output outside the distinct icon area.
+ * Exercise normal rendering, phase wrap, accent changes and animation OFF. */
+static int test_landing_rings(void){
+ assert(ws_lvgl_init()==ESP_OK);
+ ws_ui_snapshot_t v={0};v.state=WS_UI_READY;v.apps_catalog_ready=true;v.apps_count=5;
+ v.settings_storage_ok=v.manager_drive_storage_ok=v.usb_tool_storage_ok=true;
+ uint16_t *reference=malloc(sizeof frame);assert(reference);
+ const uint32_t accents[]={0x4de3c1,0xff8855};
+ for(unsigned c=0;c<2;++c)for(unsigned animated=0;animated<2;++animated)
+ for(unsigned phase=0;phase<256;++phase){
+  v.accent_rgb=accents[c];v.settings_animation=animated;v.settings_motion_phase=phase;
+  v.settings_open=true;v.settings_transition=255;v.launcher_transition=0;render(&v);
+  memcpy(reference,frame,sizeof frame);
+  if(c==0 && animated && phase==64)ppm("firmware/build/rings-settings.ppm");
+  v.settings_open=false;v.settings_transition=0;v.launcher_transition=255;render(&v);
+  if(c==0 && animated && phase==64)ppm("firmware/build/rings-apps.ppm");
+  for(unsigned y=50;y<222;++y)for(unsigned x=54;x<226;++x){
+   if(x>=80 && x<200 && y>=76 && y<196)continue;
+   if(frame[y*280+x]!=reference[y*280+x]){
+    fprintf(stderr,"Ring mismatch accent=%u animated=%u phase=%u at %u,%u\n",c,animated,phase,x,y);
+    abort();
+   }
+  }
+ }
+ free(reference);memory("rings parity");
+ puts("PASS: Apps/Settings ring pixels match at all 256 phases, 2 accents, animation ON/OFF; >20 KiB LVGL headroom");return 0;
+}
+int main(int argc,char **argv){if(argc==2 && strcmp(argv[1],"--rings-only")==0)return test_landing_rings();assert(argc==7);FILE *app=fopen(argv[6],"rb");assert(app);assert(fread(app_pixels,1,sizeof(app_pixels),app)==sizeof(app_pixels));fclose(app);assert(ws_lvgl_init()==ESP_OK);memory("init");ws_ui_snapshot_t v={0};v.state=WS_UI_READY;v.settings_animation=true;v.accent_rgb=0x4de3c1;
 if(pf_control_mode()==PF_CONTROL_BLE_PAD) {
  assert(!s_pixels_b && s_draw_pixels==280*16 && s_rotation_bytes==LV_DISP_ROT_MAX_BUF);
  v.gamepad_active=true;ws_controls_defaults(&v.controls);v.gamepad.report.hat=8;
