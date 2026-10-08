@@ -33,12 +33,8 @@ def rounded_outline(points, radius=2.8):
     return outline
 
 
-def render() -> Image.Image:
-    """Eight rounded teeth, a dark body and clean theme-tintable outlines."""
-    size = SIZE * SCALE
-    center = size / 2
-    mask = Image.new("L", (size, size), 0)
-    draw = ImageDraw.Draw(mask)
+def gear_outline():
+    """Shared original contour for the A8 mask and Jet geometry."""
     outline = []
     for tooth in range(8):
         angle = tooth * 2 * pi / 8 - pi / 2
@@ -46,7 +42,16 @@ def render() -> Image.Image:
                                 (8, 46), (12, 36), (18, 36)):
             a = angle + degrees * pi / 180
             outline.append((SIZE/2 + radius * cos(a), SIZE/2 + radius * sin(a)))
-    outline = rounded_outline(outline)
+    return rounded_outline(outline)
+
+
+def render() -> Image.Image:
+    """Eight rounded teeth, a dark body and clean theme-tintable outlines."""
+    size = SIZE * SCALE
+    center = size / 2
+    mask = Image.new("L", (size, size), 0)
+    draw = ImageDraw.Draw(mask)
+    outline = gear_outline()
     # Low-alpha fill on black gives the same dark teal surface as Apps tiles.
     # The bright border is about two device pixels, with smooth rounded flanks.
     draw.polygon(outline, fill=38)

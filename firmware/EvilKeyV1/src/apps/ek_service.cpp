@@ -5,6 +5,7 @@
 #include "ek_service.h"
 #include "ek_storage.h"
 #include "ek_vm.h"
+#include <esp_timer.h>
 #include <Arduino.h>
 #include <esp_heap_caps.h>
 #include <esp_attr.h>
@@ -36,6 +37,7 @@ static uint8_t *s_payload;
 static EkAssets s_assets;
 static char s_running_id[32];
 static EkVm s_vm;
+static EkScene3D *s_scene3d;
 /* The 4 KiB save mailbox must not live on the 16 KiB Apps task stack or in
  * internal BSS needed by TinyUSB. Only the Apps worker uses this PSRAM copy. */
 static EvilKeyAppInput *s_input;
@@ -103,6 +105,10 @@ static void rect(void *,int32_t x,int32_t y,int32_t w,int32_t h,uint16_t colour)
         uint16_t *line=s_back+row*EK_APPS_WIDTH+x;
         for (int32_t col=0;col<w;++col) line[col]=colour;
     }
+}
+static uint64_t scene_clock(void *) {return (uint64_t)esp_timer_get_time();}
+static EkSceneStats render_scene(void *,const uint8_t *scene,unsigned x,unsigned y,unsigned w,unsigned h) {
+    return ek_scene3d_render(s_scene3d,scene,s_back,EK_APPS_WIDTH,x,y,w,h,scene_clock,nullptr);
 }
 static void present(void *,int32_t x,int32_t y,int32_t w,int32_t h) {
     if (!s_back || !s_front) return;
@@ -317,6 +323,7 @@ static void load_page_icons(void) {
 }
 static void stop_vm(void) {
     if (s_vm_open) {ek_vm_close(&s_vm);s_vm_open=false;}
+    ek_scene3d_destroy(s_scene3d);s_scene3d=nullptr;
     s_save_queued=false;s_save_queued_size=0;
     free(s_payload);s_payload=nullptr;
     memset(&s_assets,0,sizeof(s_assets));s_running_id[0]=0;
@@ -372,6 +379,12 @@ static void run_selected(const char *id) {
     }
     EkVmHost host={nullptr,rect,present,blit,text_draw,save_app,&s_assets};
     host.blit_region=blit_region;
+    host.abi_version=ek_storage_loaded_abi();
+    if(host.abi_version==5) {
+        s_scene3d=ek_scene3d_create();
+        if(!s_scene3d){stop_vm();state_text("3D memory unavailable");return;}
+        host.scene3d=render_scene;
+    }
     mark_stage(APP_VM_OPEN);
     log_memory("before VM open");
     bool ok=ek_vm_open(&s_vm,bytes,wasm_size,host)!=0;

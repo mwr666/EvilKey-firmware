@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later
- * EvilKey Apps ABI v4: zero imports, bounded input mailbox and command list.
+ * EvilKey Apps ABI v4/v5: zero imports, bounded input mailbox and command list.
  */
 #include "ek_vm.h"
 #include "wasm3/m3_env.h"
@@ -59,7 +59,7 @@ static int apply_output(EkVm *vm, uint32_t offset) {
         count > (memory_size - offset - 4) / sizeof(EvilKeyAppCommand)) {
         set_error(vm, "app output length out of bounds"); return 0;
     }
-    uint32_t draws = 0, pixels = 0, presents = 0, saves = 0;
+    uint32_t draws = 0, pixels = 0, presents = 0, saves = 0, scenes = 0;
     for (uint32_t i = 0; i < count; ++i) {
         const uint8_t *c = output + 4 + i * sizeof(EvilKeyAppCommand);
         uint16_t kind = rd16(c), flags = rd16(c + 2);
@@ -97,6 +97,14 @@ static int apply_output(EkVm *vm, uint32_t offset) {
                 !add_pixels(vm,&pixels,arg1*6*w*8*w)) goto invalid;
             for (uint32_t j = 0; j < arg1; ++j)
                 if (memory[arg0+j] < 0x20 || memory[arg0+j] > 0x7e) goto invalid;
+        } else if (kind == EVILKEY_APP_SCENE3D) {
+            if (vm->host.abi_version!=5 || !vm->host.scene3d || flags ||
+                ++scenes>1 || !region(x,y,w,h) || (w&1) || (h&1) ||
+                w>EVILKEY_3D_MAX_WIDTH || h>EVILKEY_3D_MAX_HEIGHT ||
+                arg1!=sizeof(EvilKey3DScene) ||
+                !memory_region(memory_size,arg0,arg1) ||
+                !ek_scene3d_validate(memory+arg0,arg1) ||
+                ++draws>EK_VM_MAX_DRAWS_PER_CALL || !add_pixels(vm,&pixels,w*h)) goto invalid;
         } else if (kind == EVILKEY_APP_SAVE) {
             if (flags || x || y || w || h || arg1 > EVILKEY_APP_MAX_SAVE_BYTES ||
                 !memory_region(memory_size,arg0,arg1) || ++saves > 1)
@@ -126,7 +134,9 @@ invalid:
                                  ek_assets_find(vm->host.assets,(uint16_t)arg0));
         else if (kind == EVILKEY_APP_TEXT)
             vm->host.text(vm->host.user,x,y,w,rd16(c+2),memory+arg0,arg1);
-        else {
+        else if (kind == EVILKEY_APP_SCENE3D)
+            vm->scene_stats=vm->host.scene3d(vm->host.user,memory+arg0,x,y,w,h);
+        else if (kind == EVILKEY_APP_SAVE) {
             vm->save_status = vm->host.save(vm->host.user,memory+arg0,arg1)
                 ? EVILKEY_APP_SAVE_OK : EVILKEY_APP_SAVE_FAILED;
         }
@@ -165,8 +175,9 @@ static int call_u32(EkVm *vm, IM3Function function, uint32_t *out) {
 int ek_vm_open(EkVm *vm, const uint8_t *bytes, size_t size, EkVmHost host) {
     if (!vm) return 0;
     memset(vm,0,sizeof(*vm));
+    if(!host.abi_version)host.abi_version=4;
     vm->host = host;
-    if (!bytes || size < 8 || size > EK_VM_MAX_WASM || !host.rect ||
+    if (!bytes || size < 8 || size > EK_VM_MAX_WASM || (host.abi_version!=4 && host.abi_version!=5) || !host.rect ||
         !host.present || !host.blit || !host.text || !host.save) {
         set_error(vm,"invalid EvilKey app input"); return 0;
     }
@@ -241,8 +252,15 @@ static int deliver_input(EkVm *vm, const EvilKeyAppInput *input) {
     }
     uint8_t *destination = memory+vm->input_offset;
     memcpy(destination,input,sizeof(*input));
-    const uint32_t abi = EVILKEY_APP_ABI_VERSION;
+    const uint32_t abi = vm->host.abi_version;
     memcpy(destination+offsetof(EvilKeyAppInput,abi),&abi,sizeof(abi));
+    uint32_t render_info[3]={0,0,0};
+    if(abi==5) {
+        render_info[0]=vm->scene_stats.status;
+        render_info[1]=vm->scene_stats.elapsed_us;
+        render_info[2]=vm->scene_stats.triangles;
+    }
+    memcpy(destination+offsetof(EvilKeyAppInput,reserved),render_info,sizeof(render_info));
     if (vm->save_status != EVILKEY_APP_SAVE_NONE) {
         const uint32_t status = vm->save_status;
         const uint32_t empty = 0;

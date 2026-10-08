@@ -19,3 +19,12 @@ license files are copied to `../EvilKeyV1/data/upstream-licenses/`.
 `../tools/prepare_ble.py` applies the reviewed local storage,
 memory and HID adaptations to isolated libraries; it does not modify globally
 installed Arduino libraries.
+
+
+## Jet GUI rasterizer
+
+The software rasterizer is pinned to CubeCoders/Jet commit
+`c56dfc0c012ba7a09a6e49b4123340ec24981441`. Its MIT license and
+provenance are retained in `firmware/third_party/jet`; the Arduino license bundle
+also includes `Jet_LICENSE`. The C++ frontend is native firmware code and does
+not extend the microSD app ABI or expose authenticator state to apps.

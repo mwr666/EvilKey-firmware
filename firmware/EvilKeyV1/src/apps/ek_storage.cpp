@@ -150,11 +150,13 @@ extern "C" int ek_storage_icon(const EkPackageInfo *info,uint8_t *rgb565,size_t 
         memcmp(digest,info->icon_sha256,32)==0;
     return ok?1:fail("App icon missing or corrupt");
 }
+static uint16_t s_loaded_abi;
+extern "C" uint16_t ek_storage_loaded_abi(void) {return s_loaded_abi;}
 extern "C" int ek_storage_load(const char *id,uint8_t **payload,
                                  size_t *wasm_size,size_t *asset_size) {
     if (!s_mounted || !ek_package_valid_id(id) || !payload || !wasm_size || !asset_size)
         return fail("Invalid app request");
-    *payload=nullptr;*wasm_size=0;*asset_size=0;
+    *payload=nullptr;*wasm_size=0;*asset_size=0;s_loaded_abi=0;
     char filename[80];
     if (!path(filename,sizeof(filename),id,"ekapp")) return fail("Invalid app path");
     File file=SD.open(filename,FILE_READ);
@@ -173,7 +175,7 @@ extern "C" int ek_storage_load(const char *id,uint8_t **payload,
     if (!ek_assets_parse(buffer+info.wasm_size,info.asset_size,&assets)) {
         free(buffer);return fail("App assets invalid");
     }
-    *payload=buffer;*wasm_size=info.wasm_size;*asset_size=info.asset_size;
+    *payload=buffer;*wasm_size=info.wasm_size;*asset_size=info.asset_size;s_loaded_abi=info.abi;
     s_error[0]=0;return 1;
 }
 

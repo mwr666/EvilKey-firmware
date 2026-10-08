@@ -21,6 +21,7 @@ void ek_storage_scan_end(void);
 int ek_storage_icon(const EkPackageInfo *info, uint8_t *rgb565, size_t capacity);
 int ek_storage_load(const char *id, uint8_t **payload, size_t *wasm_size,
                     size_t *asset_size);
+uint16_t ek_storage_loaded_abi(void);
 /* Returns 1 for a valid record (including an empty payload), 0 otherwise. */
 int ek_storage_save_load(const char *id, uint8_t *out, size_t capacity,
                          size_t *out_size);

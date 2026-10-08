@@ -116,7 +116,8 @@ class ArduinoLayoutTests(unittest.TestCase):
                       "#define WS_PIN_CANCEL_Y 400"):
             self.assertIn(token, layout)
         self.assertIn("settings.animation && v.state!=WS_UI_PIN", board)
-        self.assertIn("(now/16U)%64U", board)
+        self.assertIn("(now/96U)%64U", board)
+        self.assertIn("(settings_elapsed/24U)%256U", board)
         self.assertIn("WS_SETTINGS_PAGE_TRANSITION_MS 165U", board)
         self.assertIn("WS_SETTINGS_TRANSITION_MS 230U", board)
         self.assertIn("WS_SETTINGS_PAGE_SLIDE_PX 56", board)
@@ -129,6 +130,7 @@ class ArduinoLayoutTests(unittest.TestCase):
         self.assertIn("WS_SETTINGS_ACTION_MANAGER_DRIVE_TOGGLE", board)
         self.assertIn("settings_force_closed();", board)
         self.assertIn("#define LV_MEM_SIZE (128U * 1024U)", conf)
+        self.assertIn("MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT", conf)
         self.assertNotIn("build_manager(", ui)
         self.assertNotIn("lv_obj_add_event_cb", ui)
 
@@ -322,7 +324,7 @@ class ArduinoLayoutTests(unittest.TestCase):
         self.assertIn("USBMode=default", script)
         self.assertIn("validate_output(ROOT/", script)
 
-    @unittest.skipUnless((ROOT/'manager/evilkey_manager/project.py').is_file(),'Manager is distributed separately')
+    @unittest.skipUnless((ROOT/'manager/evilkey_manager/project.py').is_file(), 'Manager is distributed separately')
     def test_full_manager_export_carries_fixed_generator_and_header(self):
         sys.path.insert(0, str(ROOT / "manager"))
         from evilkey_manager.project import DEFAULTS, export_project

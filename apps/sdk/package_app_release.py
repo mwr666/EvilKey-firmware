@@ -39,7 +39,7 @@ def build(app: Path):
      wasm_size, digest, raw_owner, raw_license, asset_size, reserved,
      raw_name, icon_digest, extension_reserved) = HEADER.unpack_from(data)
     if (magic, size, revision, abi, flags, reserved, extension_reserved) != \
-            (b"EKEYAPP1", 320, PACKAGE_REVISION, 4, 0, bytes(2), UI_PROFILE_BYTES):
+            (b"EKEYAPP1", 320, PACKAGE_REVISION, abi, 0, bytes(2), UI_PROFILE_BYTES) or abi not in (4,5):
         raise ValueError("unsupported package header")
     icon = data[HEADER.size:PAYLOAD_OFFSET]
     if len(icon) != ICON_BYTES or hashlib.sha256(icon).digest() != icon_digest:
@@ -58,7 +58,7 @@ def build(app: Path):
         manifest["id"], manifest["owner"], manifest["license"]):
         raise ValueError("header and manifest metadata differ")
     if (manifest["version"], manifest["api"], manifest["bundle_sha256"]) != (
-        f"{major}.{minor}.{patch}", "evilkey_v4",
+        f"{major}.{minor}.{patch}", f"evilkey_v{abi}",
         hashlib.sha256(data).hexdigest()):
         raise ValueError("manifest version, ABI, size or hash mismatch")
     if manifest.get("program_sha256", hashlib.sha256(program).hexdigest()) != \
@@ -85,7 +85,7 @@ def build(app: Path):
     }
     out_dir = ROOT / "release" / "apps"
     out_dir.mkdir(parents=True, exist_ok=True)
-    out = out_dir / f"{app_id}_{manifest['version']}_ABI4.zip"
+    out = out_dir / f"{app_id}_{manifest['version']}_ABI{abi}.zip"
     if out.exists():
         raise ValueError(f"refusing to overwrite {out}")
     with zipfile.ZipFile(out, "x", compression=zipfile.ZIP_DEFLATED) as archive:

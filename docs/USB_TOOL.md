@@ -1,15 +1,41 @@
 # USB Tool
 
-USB Tool is an explicitly selected USB role with a keyboard, mouse, and optional microSD storage. Its USB identity is `FEFF:FCFB` by default. It is mutually exclusive with FIDO and Manager Drive during USB enumeration.
+USB Tool is a programmable HID role with a keyboard, mouse and optional
+microSD storage. Its default USB identity is `FEFF:FCFB`. During USB enumeration
+it is mutually exclusive with FIDO and Manager Drive.
 
-It is a programmable HID scripting mode, not an automatic action on connection. Scripts can drive keyboard and mouse interactions, move files or collect data accessible to the connected host session, and save results on microSD. Keystroke Reflection provides a return channel when a mass-storage drive is unavailable. Host permissions and defenses still apply; these capabilities are not a promise to bypass them. Use this role only on systems you own or are authorized to test.
+## Run a script
 
-Payloads never run during boot, USB enumeration, or card mounting. Select a script on the device and press *RUN* to start it locally. Review scripts before running them because they can type commands into the host. The included Windows-only `hello_world.duck` example minimizes windows, opens Notepad, creates a new document and types a harmless three-line message. Save your work before using it.
+1. Review the payload and save work on the connected computer.
+2. Select USB Tool and a script on the device.
+3. Press **RUN** locally. Scripts never run at boot, enumeration or card mounting.
 
-[Watch the real USB Tool Short](https://youtube.com/shorts/k0a0o6s1Ayg). It documents this harmless HID test on the owner's Windows computer; it does not show file transfer, data collection or a defense bypass.
+Use it on systems you own or are authorized to test. Scripts can type commands
+into the host, drive keyboard/mouse interactions, transfer files and collect
+data accessible to that host session. Keystroke Reflection provides a return
+channel when mass storage is unavailable. Host permissions and defenses still
+apply; support for scripting does not guarantee a bypass.
 
-The built-in keyboard layout selector provides `US`, `PL Programmer`, `DE`, `FR`, or `ES`. It covers the implemented printable layout mapping and does not provide general UTF-8 typing. The language-code setting supports the pinned Hak5 language adapter separately.
+## Examples and layouts
 
-Captured values and feedback are stored in `loot.bin`. A neighboring `loot.idx` records segment kinds, offsets, and a SHA-256 digest. The Manager *USB Tool data* tab can inspect these files offline and export CSV.
+The Windows `hello_world.duck` example minimizes windows, opens Notepad,
+creates a document and types a harmless three-line message.
+[The real USB Tool Short](https://youtube.com/shorts/k0a0o6s1Ayg) shows this HID
+test, not file transfer or data collection. Examples are a
+[separate component](https://github.com/mwr666/EvilKey-examples).
 
-For STORAGE-to-HID return, read-only sessions may switch after the payload finishes and storage is idle. After host writes, firmware waits for cache synchronization or host eject before detaching to avoid truncating the card data.
+The built-in layout selector offers `US`, `PL Programmer`, `DE`, `FR` and `ES`.
+It maps implemented printable characters; it is not general UTF-8 typing.
+The language-code setting uses the pinned Hak5 language adapter separately.
+
+## Results
+
+Captured values and feedback go to `loot.bin`. The adjacent `loot.idx` identifies
+segment kinds/offsets and a SHA-256 digest. Manager's **USB Tool data** tab
+reads these files offline and exports CSV; see [Manager](https://github.com/mwr666/EvilKey-Manager).
+
+## Returning from storage to HID
+
+A read-only session may switch after its payload finishes and storage is idle.
+After host writes, firmware waits for cache synchronization or host eject
+before detaching, to avoid truncating card data.

@@ -18,7 +18,7 @@ enum {
     EK_PACKAGE_ID_SIZE = 32,
     EK_PACKAGE_OWNER_SIZE = 64,
     EK_PACKAGE_LICENSE_SIZE = 32,
-    EK_PACKAGE_API_VERSION = 4,
+    EK_PACKAGE_API_VERSION = 5,
     EK_PACKAGE_MAX_WASM = 65536,
     EK_PACKAGE_MAX_ASSETS = 1024 * 1024,
     EK_PACKAGE_MAX_BYTES = EK_PACKAGE_PAYLOAD_OFFSET + EK_PACKAGE_MAX_WASM + EK_PACKAGE_MAX_ASSETS
@@ -30,7 +30,7 @@ typedef struct {
     char license[EK_PACKAGE_LICENSE_SIZE];
     char name[EK_PACKAGE_NAME_SIZE];
     uint8_t icon_sha256[32];
-    uint16_t major, minor, patch;
+    uint16_t major, minor, patch, abi;
     uint32_t wasm_size;
     uint32_t asset_size;
     uint8_t sha256[32];

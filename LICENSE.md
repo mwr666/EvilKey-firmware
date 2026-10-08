@@ -10,7 +10,7 @@ version 3 with all applicable third-party terms. See `NOTICE.md` and
 
 GNU AGPL version 3: https://www.gnu.org/licenses/agpl-3.0.html
 
-The app-facing [ABI specification](apps/ABI_V3.md) and minimal [SDK](apps/sdk/README.md)
+The app-facing [ABI specification](apps/ABI_V4.md) and minimal [SDK](apps/sdk/README.md)
 are independently licensed under MIT. This firmware license does not cover
 separately supplied `.ekapp` applications, the [EvilKey Manager](https://github.com/mwr666/EvilKey-Manager),
 or the [original microSD examples](https://github.com/mwr666/EvilKey-examples).

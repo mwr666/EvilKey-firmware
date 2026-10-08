@@ -1,27 +1,38 @@
 {
   "schema": "evilkey-public-release-v1",
   "release_status": "final; exact image accepted by owner",
-  "snapshot_date": "2026-10-06",
+  "snapshot_date": "2026-10-08",
   "start_here": "EvilKey.cmd",
   "firmware": {
-    "version": "0.6.1",
-    "runtime_abi": 4,
+    "version": "0.7.4",
+    "runtime_abi": 5,
+    "supported_runtime_abis": [
+      4,
+      5
+    ],
     "app_package_revision": 5,
     "ui_profile": "corner-exit-v1",
     "device_acceptance": "accepted_by_user",
-    "artifact": "artifacts/firmware/EvilKey_0.6.1.bin",
-    "size_bytes": 2204448,
-    "sha256": "90c0064a5e68e46e083307997374b13c4323d4d07c23c3f69a55a3a046a5c5b5",
+    "artifact": "artifacts/firmware/EvilKey_0.7.4.bin",
+    "size_bytes": 2265808,
+    "sha256": "7244d58bfd38c12cd81f7dcb865428227985e2cf5e3c3c7eafce4d801754db19",
     "app_offset": "0x500000",
     "partition_sha256": "e49a263f7d7426a8ef81b9b6a09da1e831f57b5fc2a2e00c843e541827b1aff5",
-    "nvs_written": false,
     "flash_readback_verified": true,
-    "device_smoke": "2026-10-06: owner confirmed everything works after installation of this exact 0.6.1 image",
-    "build": "Arduino-ESP32 3.3.12; static RAM 179576 bytes; 4 MiB factory application",
-    "screensaver_version": "PF_FIRMWARE_VERSION_STRING (0.6.1)",
+    "compiler_optimization": "Os",
+    "arduino_core": "3.3.12",
+    "tested_hardware": "Waveshare ESP32-S3 Touch AMOLED 1.64 PCB V1.0",
+    "device_smoke": "2026-10-08: owner accepted exact release image for GUI, Apps and FIDO/PIN",
+    "protected_partitions_unchanged": [
+      "nvs",
+      "wsdev",
+      "part0",
+      "otadata"
+    ],
+    "partition_migration": false,
     "endurance": "not measured"
   },
   "public_source_repository": "https://github.com/mwr666/EvilKey-firmware",
-  "source_export": "device source and templates synchronized with accepted 0.6.1; private Git history, applications and CAD excluded",
+  "source_export": "Firmware, templates, generated source, ABI4/ABI5 MIT SDK and upstream notices; private Git history, app packages, CAD and device backup data excluded",
   "validation": "docs/VALIDATION.md"
 }

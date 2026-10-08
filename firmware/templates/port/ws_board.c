@@ -6,6 +6,7 @@
 #include "ws_settings.h"
 #include "pf_engine_api.h"
 #include "esp_system.h"
+#include "esp_heap_caps.h"
 #ifndef FIDO_V1_MANAGER_DRIVE
 #define FIDO_V1_MANAGER_DRIVE 0
 #endif
@@ -1284,10 +1285,11 @@ static void display_task(void *arg)
 {
     (void)arg;
     ws_display_cache_t cache={0};
+    uint32_t deadline=now_ms();
     while(ws_display_step(&cache)) {
-        /* R22: active presentation is polled at 8 ms so an absolute-time
-         * 16 ms phase can be caught without accumulating render-time drift.
-         * Static screens still fall back to the inexpensive 50 ms cadence. */
+        /* Absolute-time phases retain the same animation period. Rendering
+         * consumes the frame budget instead of adding an 8ms delay afterward.
+         * Input/authentication polling remains in its independent board task. */
         uint32_t frame_ms=50U;
         if(cache.valid) {
             const ws_ui_snapshot_t *v=&cache.last;
@@ -1301,7 +1303,12 @@ static void display_task(void *arg)
             else if(v->settings_animation && v->state!=WS_UI_PIN)
                 frame_ms=8U;
         }
-        vTaskDelay(pdMS_TO_TICKS(frame_ms));
+        /* JET images have their own 33ms gate in LVGL; cheap decoration and
+         * navigation retain the 8ms cadence and their original durations. */
+        deadline+=frame_ms;
+        const uint32_t now=now_ms();
+        if((int32_t)(deadline-now)<=0){deadline=now;vTaskDelay(pdMS_TO_TICKS(1U));}
+        else vTaskDelay(pdMS_TO_TICKS(deadline-now));
     }
     vTaskDelete(NULL);
 }
@@ -1331,11 +1338,7 @@ void ws_board_init(void)
     if(pf_control_mode()<PF_CONTROL_BLE_MOUSE && !ek_apps_start()) ESP_LOGW(TAG,"Apps worker unavailable; FIDO remains available");
     ESP_LOGW(TAG,"DEVELOPMENT ONLY: keys in unencrypted NVS, no eFuse programming");
 #ifdef CONFIG_WS_V1_DISPLAY
-    esp_err_t err=ws_panel_init();
-    if(err==ESP_OK) err=ws_lvgl_init();
-    s_panel_ok=err==ESP_OK;
-    if(err!=ESP_OK) ESP_LOGE(TAG,"AMOLED/LVGL init: %s; touch/PIN unavailable",esp_err_to_name(err));
-    err=touch_init();
+    esp_err_t err=touch_init();
     s_touch_available=err==ESP_OK;
     if(err!=ESP_OK) ESP_LOGW(TAG,"FT3168 unavailable: %s",esp_err_to_name(err));
     s_air_mouse_sensor_ok=s_touch_available && qmi_probe();
@@ -1348,13 +1351,31 @@ void ws_board_init(void)
 #ifdef CONFIG_WS_V1_TOUCH_CONFIRM
     s_view.touch_enabled=true;
 #endif
-    if(s_panel_ok && xTaskCreate(display_task,"ws_display",8192,NULL,1,NULL)!=pdPASS) {
-        s_panel_ok=false;
-        ESP_LOGE(TAG,"Cannot start AMOLED task; touch/PIN unavailable");
-    }
 #else
     /* Reference the optional initializer to avoid unused-function diagnostics. */
     (void)touch_init;
+#endif
+}
+
+void ws_board_start_display(void)
+{
+#ifdef CONFIG_WS_V1_DISPLAY
+    static bool started;
+    if(started || !s_initialized)return;
+    started=true;
+    ESP_LOGI(TAG,"Display startup after transport: internal free=%u, largest=%u",
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT),
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
+    esp_err_t err=ws_panel_init();
+    if(err==ESP_OK)err=ws_lvgl_init();
+    portENTER_CRITICAL(&s_lock);
+    s_panel_ok=err==ESP_OK;
+    portEXIT_CRITICAL(&s_lock);
+    if(err!=ESP_OK)ESP_LOGE(TAG,"AMOLED/LVGL init: %s; touch/PIN unavailable",esp_err_to_name(err));
+    if(err==ESP_OK && xTaskCreate(display_task,"ws_display",8192,NULL,1,NULL)!=pdPASS) {
+        portENTER_CRITICAL(&s_lock);s_panel_ok=false;portEXIT_CRITICAL(&s_lock);
+        ESP_LOGE(TAG,"Cannot start AMOLED task; touch/PIN unavailable");
+    }
 #endif
 }
 
@@ -1890,12 +1911,12 @@ void ws_board_poll(void)
     v.usb_tool_storage_ok=true;
 #endif
     v.manager_drive_pressed=v.settings_pressed_action==WS_SETTINGS_ACTION_MANAGER_DRIVE_TOGGLE;
-    /* R22 main-screen motion remains a 16 ms (~62.5 Hz) absolute-time phase.
-     * R24 stops advancing that fast phase once Settings or the saver fully owns
-     * the screen; their dedicated slower phases then drive only visible motion. */
+    /* Static status symbols use a quiet 6.144 s halo loop (64 x 96 ms).
+     * Stop advancing it once another page fully owns the screen; Settings,
+     * Apps and the saver retain their independent animation clocks. */
     if(settings.animation && v.state!=WS_UI_PIN &&
        s_settings_transition!=255U && s_screensaver_transition!=255U && s_launcher_transition!=255U)
-        v.animation_phase=(uint8_t)((now/16U)%64U);
+        v.animation_phase=(uint8_t)((now/96U)%64U);
 
     if(settings.animation && (s_settings_open || s_settings_transition!=0U ||
         (s_launcher_transition!=0U && s_launcher_intro))) {

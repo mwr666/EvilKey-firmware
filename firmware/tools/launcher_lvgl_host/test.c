@@ -13,9 +13,21 @@ static uint16_t app_pixels[280*456];
 static uint32_t app_generation=1;
 int ek_apps_copy_icons(uint8_t *p,size_t n,uint32_t *g){assert(n>=sizeof icons);if(*g==1)return 0;memcpy(p,icons,sizeof icons);*g=1;return 1;}
 int ek_apps_copy_frame(uint16_t *p,size_t n,uint32_t *g,EkAppsDirty *d){assert(n>=280*456);if(*g==app_generation)return 0;memcpy(p,app_pixels,sizeof(app_pixels));*g=app_generation;d->x=0;d->y=0;d->width=280;d->height=456;return 1;}
-esp_err_t ws_panel_wait_idle(uint32_t t){(void)t;return ESP_OK;}
+static const uint16_t *pending_dma;
+static uint16_t pending_copy[280*16];
+static size_t pending_pixels;
+esp_err_t ws_panel_wait_idle(uint32_t t){(void)t;
+ if(pending_dma){assert(memcmp(pending_dma,pending_copy,pending_pixels*2)==0);pending_dma=NULL;}
+ return ESP_OK;}
 esp_err_t ws_panel_flush_async(uint16_t x,uint16_t y,uint16_t x2,uint16_t y2,const uint16_t *p,size_t n,ws_panel_flush_done_cb_t done,void *ctx){
+assert(ws_panel_wait_idle(500)==ESP_OK);
 assert(x2<280 && y2<456);
+assert(!(x&1) && !(y&1) && (x2&1) && (y2&1));
+if(s_staging[0]) {
+ assert(p==(const uint16_t *)s_staging[0] || p==(const uint16_t *)s_staging[1]);
+ assert(n<=280*16);assert(!pending_dma);
+ if(done==staging_done){pending_dma=p;pending_pixels=n;memcpy(pending_copy,p,n*2);}
+}
 if(pf_control_mode()==PF_CONTROL_USB_MOUSE || pf_control_mode()==PF_CONTROL_BLE_MOUSE){
  if((x&1)||(y&1)||!(x2&1)||!(y2&1))fprintf(stderr,"Unaligned mouse panel window: %u,%u..%u,%u\n",x,y,x2,y2);
  assert(!(x&1) && !(y&1) && (x2&1) && (y2&1));
@@ -36,6 +48,51 @@ static void mouse_redraw(ws_ui_snapshot_t *v){
  lv_obj_invalidate(ui.screen);render(v);assert(memcmp(reference,frame,sizeof frame)==0);free(reference);
 }
 static void ppm(const char *path){FILE *f=fopen(path,"wb");assert(f);fprintf(f,"P6\n280 456\n255\n");for(unsigned i=0;i<280*456;++i){uint16_t c=frame[i];c=(uint16_t)((c<<8)|(c>>8));unsigned char rgb[3]={((c>>11)&31)*255/31,((c>>5)&63)*255/63,(c&31)*255/31};assert(fwrite(rgb,1,3,f)==3);}assert(fclose(f)==0);}
+static void test_landing_halo(ws_ui_snapshot_t *v) {
+ const ws_ui_snapshot_t saved=*v;
+ v->settings_page=WS_SETTINGS_PAGE_HOME;v->launcher_page=0;
+ v->screensaver_transition=0;v->screensaver_open=false;
+ uint16_t *reference=malloc(sizeof frame);assert(reference);
+ for(unsigned enabled=0;enabled<2;enabled++)for(unsigned phase=0;phase<256;phase+=17) {
+  v->settings_animation=enabled;v->settings_motion_phase=phase;
+  v->settings_open=true;v->settings_transition=255;v->launcher_transition=0;render(v);
+  hidden(ui.settings_gear.root,true);lv_obj_invalidate(ui.screen);lv_refr_now(NULL);
+  memcpy(reference,frame,sizeof frame);
+  v->settings_open=false;v->settings_transition=0;v->launcher_transition=255;render(v);
+  if(s_3d_available)hidden(s_3d_objects[WS_3D_APPS],true);
+  for(unsigned i=0;i<9;i++)hidden(ui.launcher_tiles[i],true);
+  lv_obj_invalidate(ui.screen);lv_refr_now(NULL);
+  for(unsigned y=46;y<222;y++)for(unsigned x=50;x<230;x++)
+   assert(reference[y*280+x]==frame[y*280+x]);
+  hidden(ui.settings_gear.root,false);
+  if(s_3d_available)hidden(s_3d_objects[WS_3D_APPS],false);
+  else for(unsigned i=0;i<9;i++)hidden(ui.launcher_tiles[i],false);
+ }
+ free(reference);*v=saved;render(v);
+ puts("PASS: Apps/Settings landing halos are pixel-identical at 16 phases, animation on/off, including classic fallback");
+}
+
+static void export_classic_icons(ws_ui_snapshot_t *v) {
+ render(v);hidden(ui.hero_outer,true);hidden(ui.hero_mid,true);hidden(ui.hero_inner,true);
+ hidden(ui.hero_orbit,true);hidden(ui.hero_glint,true);
+ for(unsigned i=1;i<ICON_COUNT;i++) {
+  icon_show_only((hero_icon_id_t)i);icon_tint(&ui.icons[i],0x4de3c1);
+  lv_obj_set_style_opa(ui.icons[i].root,LV_OPA_COVER,0);
+  for(unsigned j=0;j<ui.icons[i].count;j++)lv_obj_set_style_bg_grad_dir(ui.icons[i].part[j],LV_GRAD_DIR_NONE,0);
+  if(i==HERO_SPINNER)update_spinner(0,0x4de3c1);
+  lv_obj_invalidate(ui.screen);lv_refr_now(NULL);
+  char path[100];snprintf(path,sizeof(path),"firmware/build/classic-icon-%u.ppm",i);ppm(path);
+ }
+ v->settings_transition=255;v->settings_open=true;v->settings_page=WS_SETTINGS_PAGE_HOME;render(v);
+ hidden(ui.settings_glow,true);hidden(ui.settings_orbit,true);hidden(ui.settings_orbit_inner,true);hidden(ui.settings_glint,true);
+ for(unsigned i=0;i<4;i++)hidden(ui.settings_spark[i],true);
+ lv_obj_invalidate(ui.screen);lv_refr_now(NULL);ppm("firmware/build/classic-gear.ppm");
+ v->settings_open=false;v->settings_transition=0;v->launcher_transition=255;
+ v->launcher_page=0;v->apps_count=5;v->apps_catalog_ready=true;render(v);
+ hidden(ui.launcher_glow,true);hidden(ui.launcher_orbit,true);hidden(ui.launcher_orbit_inner,true);
+ lv_obj_invalidate(ui.screen);lv_refr_now(NULL);ppm("firmware/build/classic-apps.ppm");
+ puts("PASS: exported original LVGL icon references without decorative surroundings");
+}
 static void launcher_dots(const ws_ui_snapshot_t *v){
  unsigned n=(v->apps_count+8)/9+1;assert(n<=9);
  for(unsigned i=0;i<9;++i){
@@ -93,6 +150,18 @@ for(unsigned i=0;i<=255;++i){
     }
     if(i==128)ppm(to_settings?"firmware/build/launcher-to-settings.ppm":"firmware/build/settings-to-launcher.ppm");
 }}
+static void jet_cadence_contract(void){
+ if(!s_3d_available || pf_control_mode()!=PF_CONTROL_NORMAL)return;
+ ws_ui_snapshot_t view={0};view.state=WS_UI_READY;view.accent_rgb=0x4de3c1;view.settings_animation=true;
+ view.settings_open=true;view.settings_transition=255;view.settings_page=WS_SETTINGS_PAGE_HOME;
+ host_time_us+=100000;assert(ws_lvgl_render(&view)==ESP_OK);
+ unsigned before=ws_gui_3d_channel_stats(WS_3D_GEAR).frames;
+ for(unsigned i=1;i<=125;++i){host_time_us+=8000;view.settings_motion_phase=(uint8_t)(i*8/24);assert(ws_lvgl_render(&view)==ESP_OK);}
+ unsigned made=ws_gui_3d_channel_stats(WS_3D_GEAR).frames-before;
+ assert(made>=28 && made<=31);
+ assert(((lv_arc_t *)ui.settings_orbit)->rotation==(int)view.settings_motion_phase*360/256);
+ printf("PASS: independent JET deadline makes %u frames per simulated second with 8ms LVGL ticks and 24ms phases; halo keeps its phase\n",made);
+}
 /* Compare actual landing-page raster output outside the distinct icon area.
  * Exercise normal rendering, phase wrap, accent changes and animation OFF. */
 static int test_landing_rings(void){
@@ -120,7 +189,9 @@ static int test_landing_rings(void){
  free(reference);memory("rings parity");
  puts("PASS: Apps/Settings ring pixels match at all 256 phases, 2 accents, animation ON/OFF; >20 KiB LVGL headroom");return 0;
 }
-int main(int argc,char **argv){if(argc==2 && strcmp(argv[1],"--rings-only")==0)return test_landing_rings();assert(argc==7);FILE *app=fopen(argv[6],"rb");assert(app);assert(fread(app_pixels,1,sizeof(app_pixels),app)==sizeof(app_pixels));fclose(app);assert(ws_lvgl_init()==ESP_OK);memory("init");ws_ui_snapshot_t v={0};v.state=WS_UI_READY;v.settings_animation=true;v.accent_rgb=0x4de3c1;
+int main(int argc,char **argv){if(argc==2 && strcmp(argv[1],"--rings-only")==0)return test_landing_rings();assert(argc==7);FILE *app=fopen(argv[6],"rb");assert(app);assert(fread(app_pixels,1,sizeof(app_pixels),app)==sizeof(app_pixels));fclose(app);assert(ws_lvgl_init()==ESP_OK);assert(pf_control_mode()==PF_CONTROL_BLE_PAD || s_3d_available==!getenv("EVILKEY_TEST_3D_FALLBACK"));memory("init");ws_ui_snapshot_t v={0};v.state=WS_UI_READY;v.settings_animation=true;v.accent_rgb=0x4de3c1;
+if(getenv("EVILKEY_TEST_STAGING")){assert(s_pixels_b && s_draw_pixels==280*64 && s_staging[0] && s_staging[1]);}
+if(getenv("EVILKEY_EXPORT_CLASSIC_ICONS")){assert(!s_3d_available);export_classic_icons(&v);return 0;}
 if(pf_control_mode()==PF_CONTROL_BLE_PAD) {
  assert(!s_pixels_b && s_draw_pixels==280*16 && s_rotation_bytes==LV_DISP_ROT_MAX_BUF);
  v.gamepad_active=true;ws_controls_defaults(&v.controls);v.gamepad.report.hat=8;
@@ -176,12 +247,19 @@ if(pf_control_mode()==PF_CONTROL_BLE_MOUSE || pf_control_mode()==PF_CONTROL_USB_
     lv_obj_invalidate(ui.screen);render(&v);assert(memcmp(reference,frame,sizeof frame)==0);free(reference);
     memory("BLE mouse");puts("PASS BLE mouse LVGL: pairing status, settings/confirmation geometry, dialog closes cleanly, partial redraw");return 0;
 }
-for(unsigned i=0;i<20;++i){v.animation_phase=i;render(&v);}memory("home");
+for(unsigned i=0;i<20;++i){v.animation_phase=i;render(&v);}memory("home");ppm("firmware/build/3d-ready.ppm");jet_cadence_contract();
+test_landing_halo(&v);
 for(unsigned i=0;i<=255;i+=15){v.settings_transition=i;v.settings_open=true;render(&v);}memory("settings transition");
 v.settings_storage_ok=v.manager_drive_storage_ok=v.usb_tool_storage_ok=true;render(&v);ppm("firmware/build/settings-intro.ppm");
 for(unsigned page=0;page<WS_SETTINGS_PAGE_COUNT;++page){v.settings_page=page;for(unsigned phase=0;phase<64;phase+=8){v.settings_motion_phase=phase;render(&v);}}memory("all Settings pages");
-v.settings_page=WS_SETTINGS_PAGE_DIAGNOSTICS;v.diagnostics_enabled=true;v.apps_mount_ms=220;v.apps_scan_ms=38;v.apps_icon_ms=15;v.ui_poll_gap_ms=24;v.ui_render_ms=43;for(unsigned section=0;section<3;++section){v.diagnostics_tick=section*3;render(&v);}memory("Diagnostics three sections");
-for(unsigned i=0;i<=255;i+=15){v.settings_transition=255-i;v.screensaver_transition=i;v.screensaver_open=true;render(&v);}memory("screensaver transition (inflater mocked)");
+v.settings_page=WS_SETTINGS_PAGE_DIAGNOSTICS;v.diagnostics_enabled=true;v.apps_mount_ms=220;v.apps_scan_ms=38;v.apps_icon_ms=15;v.ui_poll_gap_ms=24;v.ui_render_ms=43;for(unsigned section=0;section<4;++section){v.diagnostics_tick=section*3;render(&v);
+ if(section==2)assert(strstr(lv_label_get_text(ui.diagnostics_memory),"Frame P95"));
+ if(section==3){assert(strstr(lv_label_get_text(ui.diagnostics_memory),"samples"));assert(strstr(lv_label_get_text(ui.diagnostics_memory),"live"));assert(!strstr(lv_label_get_text(ui.diagnostics_memory),"PSRAM"));}
+}memory("Diagnostics four sections");ppm("firmware/build/3d-diagnostics.ppm");
+v.settings_page=WS_SETTINGS_PAGE_HOME;
+for(unsigned i=0;i<=255;i+=15){v.settings_transition=255-i;v.screensaver_transition=i;v.screensaver_open=true;render(&v);}
+v.screensaver_phase=32;v.screensaver_text_phase=100;render(&v);ppm("firmware/build/3d-saver.ppm");
+v.screensaver_phase=63;render(&v);ppm("firmware/build/3d-glitch.ppm");memory("screensaver transition (inflater mocked)");
 for(unsigned i=0;i<=255;i+=15){v.screensaver_transition=255-i;v.settings_transition=i;render(&v);}v.screensaver_open=false;
 v.apps_catalog_generation=1;v.apps_catalog_ready=true;v.apps_count=5;v.apps_icon_valid=31;strcpy(v.apps_status,"Tap an app to run");
 for(unsigned i=0;i<5;++i){FILE *f=fopen(argv[i+1],"rb");assert(f);assert(fseek(f,192,SEEK_SET)==0);assert(fread(v.apps_names[i],1,64,f)==64);assert(fseek(f,320,SEEK_SET)==0);assert(fread(icons+i*8192,1,8192,f)==8192);fclose(f);}
@@ -219,5 +297,5 @@ assert(!lv_obj_is_visible(ui.apps_exit_overlay) && lv_obj_is_visible(ui.apps_exi
 memory("app exit overlay");
 v.apps_running=false;render(&v);assert(!lv_obj_is_visible(ui.apps_group));
 puts("PASS actual LVGL: corner grip, progress 55/100, modal hit geometry, NO redraw, app repaint keeps grip, Apps return");
-v.launcher_transition=0;v.state=WS_UI_PIN;render(&v);memory("PIN eviction");
+v.launcher_transition=0;v.state=WS_UI_PIN;v.touch_enabled=v.touch_available=true;v.uv_retries=8;v.seconds_left=105;render(&v);memory("PIN eviction");ppm("firmware/build/3d-pin.ppm");
 puts("PASS actual LVGL: Home/Settings/Saver/Apps transitions, 10 Settings pages, 0..10 app layouts, PIN eviction, >20KiB free (panel/inflater mocked)");return 0;}

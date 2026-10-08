@@ -13,6 +13,8 @@ static unsigned char last_byte;
 static const void *last_color_ptr;
 static esp_lcd_panel_io_spi_config_t config;
 static unsigned done_calls;
+int64_t esp_timer_get_time(void){static int64_t now;return ++now;}
+void ws_gui_3d_record_panel_wait(uint32_t us){(void)us;}
 
 SemaphoreHandle_t xSemaphoreCreateBinary(void){sem_token=false;return (void*)1;}
 BaseType_t xSemaphoreGiveFromISR(SemaphoreHandle_t s,BaseType_t*a){(void)s;sem_token=true;*a=pdTRUE;return pdTRUE;}

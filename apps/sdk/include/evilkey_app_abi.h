@@ -1,11 +1,13 @@
 /* SPDX-License-Identifier: MIT
- * Independent wire declarations for EvilKey Apps ABI v4. No firmware code.
+ * Independent wire declarations for EvilKey Apps ABI v4/v5. No firmware code.
  */
 #ifndef EVILKEY_APP_ABI_H
 #define EVILKEY_APP_ABI_H
 #include <stdint.h>
 
-#define EVILKEY_APP_ABI_VERSION 4u
+#define EVILKEY_APP_ABI_VERSION 4u /* legacy default for existing apps */
+#define EVILKEY_APP_ABI_LATEST 5u
+#include "evilkey_scene3d.h"
 #define EVILKEY_APP_DISPLAY_WIDTH 280u
 #define EVILKEY_APP_DISPLAY_HEIGHT 456u
 /* UI contract corner-exit-v1; these constants do not alter the mailbox.

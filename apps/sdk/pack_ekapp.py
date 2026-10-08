@@ -67,7 +67,9 @@ def assets_blob(manifest_path: Path | None) -> bytes:
 
 def encode_package(program: bytes, blob: bytes, app_id: str, owner: str,
                    license_id: str, version: str, name: str, image: bytes,
-                   ui_profile: str) -> bytes:
+                   ui_profile: str, abi: int = 4) -> bytes:
+    if abi not in (4, 5):
+        raise ValueError("only ABI 4 and 5 supported")
     if ui_profile != UI_PROFILE:
         raise ValueError("explicit ui_profile='corner-exit-v1' is required; reserve 56x56 touch and 48x48 visual zones")
     if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,30}", app_id) or \
@@ -84,7 +86,7 @@ def encode_package(program: bytes, blob: bytes, app_id: str, owner: str,
     if len(image) != ICON_BYTES:
         raise ValueError("icon must be a 64x64 little-endian RGB565 image (8192 bytes)")
     payload = program + blob
-    header = HEADER.pack(b"EKEYAPP1", HEADER_SIZE, PACKAGE_REVISION, 4, 0, *map(int, parts),
+    header = HEADER.pack(b"EKEYAPP1", HEADER_SIZE, PACKAGE_REVISION, abi, 0, *map(int, parts),
                          field(app_id, 32, "ascii"), len(program),
                          hashlib.sha256(payload).digest(),
                          field(owner, 64, "utf-8"),
@@ -95,11 +97,11 @@ def encode_package(program: bytes, blob: bytes, app_id: str, owner: str,
 
 def pack(wasm: Path, output: Path, app_id: str, owner: str,
          license_id: str, version: str, assets: Path | None,
-         name: str, icon: Path, ui_profile: str) -> Path:
+         name: str, icon: Path, ui_profile: str, abi: int = 4) -> Path:
     if output.name != f"{app_id}.ekapp":
         raise ValueError("output filename must match app ID")
     package = encode_package(wasm.read_bytes(), assets_blob(assets), app_id, owner,
-                             license_id, version, name, icon.read_bytes(), ui_profile)
+                             license_id, version, name, icon.read_bytes(), ui_profile, abi)
     if output.exists():
         raise FileExistsError(output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -114,9 +116,10 @@ def main() -> None:
     for name in ("wasm", "output", "id", "owner", "license", "version", "name", "icon", "ui-profile"):
         parser.add_argument(f"--{name}", required=True)
     parser.add_argument("--assets", type=Path)
+    parser.add_argument("--abi", type=int, choices=[4,5], default=4)
     args = parser.parse_args()
     print(pack(Path(args.wasm), Path(args.output), args.id, args.owner,
-               args.license, args.version, args.assets, args.name, Path(args.icon), args.ui_profile))
+               args.license, args.version, args.assets, args.name, Path(args.icon), args.ui_profile, args.abi))
 
 
 if __name__ == "__main__":

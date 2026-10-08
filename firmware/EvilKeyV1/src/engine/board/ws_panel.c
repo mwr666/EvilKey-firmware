@@ -12,6 +12,8 @@
  */
 #include "ws_panel.h"
 #include "ws_pins.h"
+#include "ws_gui_3d.h"
+#include "esp_timer.h"
 #include <stdint.h>
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
@@ -38,12 +40,14 @@ static bool color_done(esp_lcd_panel_io_handle_t io,
     void *done_ctx=s_flush_ctx;
     s_flush_done=NULL;
     s_flush_ctx=NULL;
-    s_pending=false;
     BaseType_t awakened=pdFALSE;
-    xSemaphoreGiveFromISR(s_done,&awakened);
     /* Waveshare's LVGL reference also releases lv_disp_flush_ready() from this
      * color-transfer callback. Keep the callback tiny and ISR-safe. */
     if(done) done(done_ctx);
+    /* Publish idle only after the callback consumed its frame context. The
+     * display owner can otherwise recycle that context while ISR still reads it. */
+    s_pending=false;
+    xSemaphoreGiveFromISR(s_done,&awakened);
     return awakened==pdTRUE;
 }
 
@@ -56,7 +60,10 @@ esp_err_t ws_panel_wait_idle(uint32_t timeout_ms)
         (void)xSemaphoreTake(s_done,0);
         return ESP_OK;
     }
-    if(xSemaphoreTake(s_done,pdMS_TO_TICKS(timeout_ms))!=pdTRUE) {
+    const uint64_t start=esp_timer_get_time();
+    const BaseType_t completed=xSemaphoreTake(s_done,pdMS_TO_TICKS(timeout_ms));
+    ws_gui_3d_record_panel_wait((uint32_t)(esp_timer_get_time()-start));
+    if(completed!=pdTRUE) {
         s_usable=false;
         return ESP_ERR_TIMEOUT;
     }

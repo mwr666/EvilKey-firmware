@@ -11,7 +11,7 @@ def source_digest(root=ROOT):
     result=hashlib.sha256()
     for directory in (root/'EvilKeyV1',root/'.ble-libraries'):
         for file in sorted(directory.rglob('*')):
-            if file.is_file() and file.suffix.lower() in ('.c','.cpp','.h','.ino','.csv'):
+            if file.is_file() and file.suffix.lower() in ('.c','.cpp','.h','.hpp','.ino','.csv'):
                 result.update(file.relative_to(root).as_posix().encode()+b'\0')
                 result.update(hashlib.sha256(file.read_bytes()).digest())
     return result.hexdigest()

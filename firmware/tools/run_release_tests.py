@@ -12,7 +12,7 @@ def main():
       ('presence',[t/'test_presence.c',p/'ws_presence.c'],'board_stubs'),
       ('pinpad',[t/'test_pinpad.c',p/'ws_pinpad.c',p/'ws_presence.c',p/'ws_ui.c'],'board_stubs'),
       ('gui',[t/'test_gui_ui1.c',p/'ws_ui.c'],'board_stubs'),
-      ('board',[t/'test_board_ui1.c',p/'ws_pinpad.c',p/'ws_presence.c',p/'ws_ui.c',p/'ws_settings_codec.c'],'board_stubs'),
+      ('board',[t/'test_board_ui1.c',p/'ws_pinpad.c',p/'ws_presence.c',p/'ws_ui.c',p/'ws_settings_codec.c',p/'ws_controls.c'],'board_stubs'),
       ('panel',[t/'test_panel_ui1.c',p/'ws_ui.c'],'panel_stubs'),
       ('local_uv_binding',[t/'test_local_uv_binding.c'],'board_stubs'),
     ]

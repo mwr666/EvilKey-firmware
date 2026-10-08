@@ -47,7 +47,7 @@ failure instead of formatting storage.
 ## Installation
 
 Use **EvilKey.cmd → 7** to build or **11** to build and flash with protected
-storage verification. Firmware 0.6.0 uses a 4 MiB factory app at `0x500000`.
+storage verification. Firmware 0.7.4 uses a 4 MiB factory app at `0x500000`.
 The uploader preserves `nvs`, `otadata`, `part0` and `wsdev` at their existing
 offsets. No full-flash erase or eFuse provisioning is involved.
 See [installation and rollback](../firmware/INSTALLATION_INFORMATION.md) and

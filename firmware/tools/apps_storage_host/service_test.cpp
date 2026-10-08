@@ -7,7 +7,13 @@
 static unsigned clock_ms=1000,scan_index,icon_reads,ends,vm_steps;
 static bool role_allowed=true,stop_on_idle,vm_closed;
 static int guard_depth;
-static unsigned cancel_after;
+static unsigned cancel_after,selected_abi=4,scene_allocations,scene_frees;
+static bool fail_scene;
+int64_t esp_timer_get_time(void){return (int64_t)clock_ms*1000;}
+extern "C" uint16_t ek_storage_loaded_abi(void){return selected_abi;}
+extern "C" EkScene3D *ek_scene3d_create(void){++scene_allocations;return fail_scene?nullptr:(EkScene3D *)malloc(1);}
+extern "C" void ek_scene3d_destroy(EkScene3D *p){if(p)++scene_frees;free(p);}
+extern "C" EkSceneStats ek_scene3d_render(EkScene3D *,const uint8_t *,uint16_t *,unsigned,unsigned,unsigned,unsigned,unsigned,EkSceneClock,void *){assert(!guard_depth);return {1,1,12,20};}
 static std::vector<EkPackageInfo> packages;
 struct TaskStopped{};
 uint32_t millis(void){return clock_ms;}
@@ -39,7 +45,7 @@ extern "C" int ek_storage_load(const char *,uint8_t **p,size_t *w,size_t *a){
 }
 extern "C" int ek_storage_save_load(const char *,uint8_t *,size_t,size_t *){assert(!guard_depth);return 0;}
 extern "C" int ek_storage_save_write(const char *,const uint8_t *,size_t,EkStorageSaveTrace,void *){assert(!guard_depth);return 1;}
-extern "C" int ek_vm_open(EkVm *,const uint8_t *,size_t,EkVmHost){vm_closed=false;return 1;}
+extern "C" int ek_vm_open(EkVm *,const uint8_t *,size_t,EkVmHost host){assert(host.abi_version==selected_abi);assert((host.scene3d!=nullptr)==(selected_abi==5));vm_closed=false;return 1;}
 extern "C" int ek_vm_init(EkVm *,const EvilKeyAppInput *){return 1;}
 extern "C" int ek_vm_step(EkVm *,const EvilKeyAppInput *){assert(!vm_closed);++vm_steps;return 1;}
 extern "C" void ek_vm_close(EkVm *){vm_closed=true;}
@@ -79,7 +85,9 @@ int main(){
  ek_apps_set_visible(false);once();assert(!s_state.running && vm_closed && vm_steps==steps);
  ek_apps_set_visible(true);ek_apps_launch(9);once();assert(s_state.running);
  role_allowed=false;once();assert(!s_state.running && !s_state.mounted && s_state.count==0 && ends==1);
- role_allowed=true;s_state.mounted=true;cancel_after=2;catalog(10);
+ role_allowed=true;s_state.mounted=true;selected_abi=5;catalog(1);load_page_icons();fail_scene=true;ek_apps_launch(0);once();assert(!s_state.running && !s_scene3d && !s_back && !s_front);
+ fail_scene=false;ek_apps_launch(0);once();assert(s_state.running && s_scene3d);ek_apps_set_visible(false);once();assert(!s_scene3d && scene_frees==1 && scene_allocations==2);
+ s_state.mounted=true;cancel_after=2;catalog(10);
  assert(!s_state.catalog_ready && !s_state.count && s_state.headers_read==2);
- puts("PASS worker: 0/1/5/9/10/70 catalog, 64 limit, page-only icons, cache generations, launch bounds, hidden stop, USB role release, scan cancellation, no I/O under guard");
+ puts("PASS worker: 0/1/5/9/10/70 catalog, 64 limit, page-only icons, cache generations, launch bounds, hidden stop, USB role release, scan cancellation, ABI4/5 allocation and failure cleanup, no I/O under guard");
 }

@@ -49,6 +49,7 @@ int pf_engine_start(void) {
             pf_control_restart(PF_CONTROL_NORMAL);return -3;
         }
         if(!pf_ble_start()){pf_control_restart(PF_CONTROL_NORMAL);return -6;}
+        ws_board_start_display();
         return 0;
     }
     serial_init();
@@ -82,5 +83,9 @@ int pf_engine_start(void) {
         hcore0 = NULL;
         return -4;
     }
+    // TinyUSB's contiguous stack/endpoints must exist before display DMA strips.
+    // Board/PIN state and the FIDO worker are already initialized; UI stays
+    // fail-closed until the display owner commits a visible authorization frame.
+    ws_board_start_display();
     return 0;
 }

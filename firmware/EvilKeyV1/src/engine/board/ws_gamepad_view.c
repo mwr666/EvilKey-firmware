@@ -33,6 +33,7 @@ static lv_obj_t *box(lv_obj_t *parent,int x,int y,int w,int h,int radius,uint32_
     lv_obj_t *o=lv_obj_create(parent);lv_obj_remove_style_all(o);
     lv_obj_set_pos(o,x,y);lv_obj_set_size(o,w,h);
     lv_obj_set_style_radius(o,radius,0);lv_obj_set_style_bg_color(o,lv_color_hex(fill),0);
+    if(fill==PANEL){lv_obj_set_style_bg_grad_color(o,lv_color_hex(0x0C1518),0);lv_obj_set_style_bg_grad_dir(o,LV_GRAD_DIR_VER,0);}
     lv_obj_set_style_bg_opa(o,LV_OPA_COVER,0);lv_obj_set_style_border_width(o,1,0);
     lv_obj_set_style_border_color(o,lv_color_hex(edge),0);
     lv_obj_clear_flag(o,LV_OBJ_FLAG_SCROLLABLE|LV_OBJ_FLAG_CLICKABLE);return o;
@@ -53,6 +54,7 @@ static lv_obj_t *pad_button(const char *s,WsPadArea area,uint32_t color) {
     return button(screen,s,r->x,r->y,r->w,r->h,color);
 }
 static void pressed(lv_obj_t *o,bool down,uint32_t color) {
+    lv_obj_set_style_bg_grad_dir(o,down?LV_GRAD_DIR_NONE:LV_GRAD_DIR_VER,0);
     lv_color_t fill=lv_color_hex(down?color:PANEL),edge=lv_color_hex(down?color:BORDER);
     if(lv_color_to32(lv_obj_get_style_bg_color(o,0))!=lv_color_to32(fill))
         lv_obj_set_style_bg_color(o,fill,0);

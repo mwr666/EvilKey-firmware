@@ -7,6 +7,7 @@
 #include "wasm3/wasm3.h"
 #include "ek_assets.h"
 #include "evilkey_app_abi.h"
+#include "ek_scene3d.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -34,6 +35,9 @@ typedef struct {
     void (*blit_region)(void *user, int32_t x, int32_t y,
                         uint32_t source_x, uint32_t source_y,
                         uint32_t width, uint32_t height, const EkAsset *asset);
+    uint16_t abi_version; /* 0 -> legacy ABI4, package-selected 4 or 5 */
+    EkSceneStats (*scene3d)(void *user, const uint8_t *scene,
+        unsigned x,unsigned y,unsigned width,unsigned height);
 } EkVmHost;
 
 typedef struct {
@@ -45,6 +49,7 @@ typedef struct {
     IM3Function input_function;
     uint32_t input_offset;
     uint32_t save_status;
+    EkSceneStats scene_stats;
     uint8_t *bytes;
     EkVmHost host;
     char error[128];

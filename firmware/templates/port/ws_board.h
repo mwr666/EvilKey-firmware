@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include "button.h"
 void ws_board_init(void);
+/* Call after USB/BLE startup so display allocations cannot starve the transport. */
+void ws_board_start_display(void);
 void ws_board_poll(void);
 void ws_board_presence_begin(uint32_t timeout_ms);
 button_event_t ws_board_presence_poll(void);

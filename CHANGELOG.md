@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.4 — 2026-10-08
+
+- Native Jet GUI, original icon designs, matching Apps/Settings rings and visible icon depth.
+- Cached geometry, rasterizer/transfer improvements and scene diagnostics; Os release.
+- Native Scene3D through ABI v5, ABI v4 compatibility and revision-5 packages.
+- Exact image accepted on PCB V1.0; public SDK, guides and notices synchronized.
+
+[Release details](docs/RELEASE_0.7.4.md).
+
 ## 0.6.1 — matching landing-page rings
 
 - Apps and Settings share identical orbit geometry, highlight, light points,

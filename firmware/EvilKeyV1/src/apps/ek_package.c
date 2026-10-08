@@ -49,7 +49,7 @@ int ek_package_parse(const uint8_t *header, size_t header_size,
         memcmp(header, magic, sizeof(magic)) != 0 ||
         read16(header + 8) != EK_PACKAGE_HEADER_SIZE ||
         read16(header + 10) != EK_PACKAGE_FORMAT_VERSION ||
-        read16(header + 12) != EK_PACKAGE_API_VERSION ||
+        (read16(header + 12) != 4 && read16(header + 12) != EK_PACKAGE_API_VERSION) ||
         read16(header + 14) != 0 ||
         read16(header + 288) != EK_PACKAGE_UI_PROFILE) return 0;
     for (unsigned i = 190; i < 192; ++i)
@@ -89,6 +89,7 @@ int ek_package_parse(const uint8_t *header, size_t header_size,
         for (size_t i = n + 1; i < lengths[field]; ++i)
             if (raw[i] != 0) return 0;
     }
+    info.abi = read16(header + 12);
     info.major = read16(header + 16);
     info.minor = read16(header + 18);
     info.patch = read16(header + 20);

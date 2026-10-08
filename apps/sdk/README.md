@@ -1,5 +1,5 @@
 <!-- SPDX-License-Identifier: MIT -->
-# EvilKey Apps SDK v4
+# EvilKey Apps SDK v4 / v5
 
 This small, independently authored header declares the app-facing ABI. It is
 licensed under MIT; firmware implementation code is not part of this SDK.
@@ -12,13 +12,13 @@ Package the module in a `.ekapp` file. The `.ekapp` is copied to
 `/evilkey/apps/` on FAT microSD. Neither SDK nor firmware requires access to
 an application's source to run it.
 
-`pack_ekapp.py` builds one ABI v4 package from a Wasm module and an optional
+`pack_ekapp.py` builds one ABI v4 or v5 package from a Wasm module and an optional
 JSON manifest of raw RGB565 image assets. Each asset entry supplies `id`,
 `width`, `height`, `file`, and optional `transparent_zero`. IDs are increasing.
 Package revision 5 requires a display name (up to 63 UTF-8 bytes) and
 an opaque 64×64 little-endian RGB565 launcher icon (8192 bytes). The 320-byte
 header is followed by the icon; Wasm starts at byte 8512. The icon and
-Wasm/assets have separate SHA-256 digests. Runtime ABI remains v4.
+Wasm/assets have separate SHA-256 digests. Runtime ABI is selected explicitly (4 by default, or 5 for native scenes).
 The header explicitly declares UI profile 1 (`corner-exit-v1`).
 
 ```sh
@@ -49,3 +49,9 @@ validated again by firmware before launch.
 `package_app_release.py --app-dir <directory>` validates an app package and
 creates a binary-only ZIP with its manifest, own license and this SDK's MIT
 notice. Pass the app directory explicitly; the SDK has no built-in app bundle.
+
+## Native scenes (ABI5)
+
+Use `include/evilkey_scene3d.h` and command 7 for bounded builtin 3D scenes.
+Pass `--abi 5` when packaging; released firmware 0.7.4 supports this API. ABI4 stays
+compatible and remains the default. See [ABI v5](../ABI_V5.md).

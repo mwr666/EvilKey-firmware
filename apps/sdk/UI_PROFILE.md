@@ -2,7 +2,8 @@
 # UI profile corner-exit-v1
 
 Package revision 5 declares numeric profile 1 at header offset 288 (u16 LE).
-Runtime ABI stays v4. The packer requires `--ui-profile corner-exit-v1`;
+This UI profile applies to runtime ABI v4 and v5; it does not change their
+wire layouts. The packer requires `--ui-profile corner-exit-v1`;
 Python `encode_package` and `pack` require the corresponding explicit argument.
 
 ## Layout

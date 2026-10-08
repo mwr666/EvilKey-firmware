@@ -1,6 +1,6 @@
 # Source and license notice
 
-EvilKey firmware 0.4.0 is derived from Pico FIDO. Current device graphics originate from `firmware/assets/evilkey_mark_source.png`. The LVGL mark has separate masks for the mint body and white crystal. The separately published Manager uses artwork based on the same source.
+EvilKey firmware is derived from Pico FIDO. Current device graphics originate from `firmware/assets/evilkey_mark_source.png`. The LVGL mark has separate masks for the mint body and white crystal. The separately published Manager uses artwork based on the same source.
 
 The Arduino PCB V1 port is based on an earlier V1 development package and Pico FIDO / Pico Keys SDK by Pol Henarejos and contributors. EvilKey is not an official Pico Keys, Waveshare, or Espressif release.
 
@@ -9,6 +9,8 @@ The Arduino PCB V1 port is based on an earlier V1 development package and Pico F
 - EvilKey Manager and original microSD examples are separately published with their own licenses: [Manager](https://github.com/mwr666/EvilKey-Manager) and [examples](https://github.com/mwr666/EvilKey-examples).
 - Mbed TLS fork: repository licenses (Apache-2.0 or GPL-2.0-or-later depending on selected variant and file); original headers are retained.
 - TinyCBOR: MIT.
+- Jet software rasterizer: MIT, pinned to `c56dfc0c012ba7a09a6e49b4123340ec24981441`; see `firmware/third_party/jet/LICENSE` and `PROVENANCE.md`.
+- ESP32-BLE-Gamepad v0.8.0: MIT; NimBLE-Arduino 2.5.1: Apache-2.0 with retained NOTICE. See `firmware/BLE_LOCK.json`.
 - LVGL 8.4.0: MIT, pinned to commit `4495f428630cc1741bd8bfd977f080e8460e8e8d`.
 - Wasm3 interpreter: MIT, pinned to commit `0228c02233f6f4f5d3a85ab0b14244a2ebadc1ba`; its license is retained in `firmware/EvilKeyV1/src/apps/wasm3/LICENSE`.
 - App-facing ABI specification and minimal SDK declarations: MIT under `apps/sdk/LICENSE`. Independently supplied `.ekapp` applications retain their own licenses and are not bundled here.

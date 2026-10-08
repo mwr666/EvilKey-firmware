@@ -42,17 +42,22 @@ def main():
     build=need(FW/'build_arduino.py','PSRAM=enabled','build.psram_type=opi')
     if 's_tx[i]=' in panel or 'p<<8' in panel or 'p>>8' in panel:
         raise SystemExit('FAIL: per-pixel RGB565 byte-swap/copy returned to the flush path')
-    if 'if(s_pixels_a && s_pixels_b)' not in ui or 's_pixels_b=NULL' not in ui:
+    if 'if(s_pixels_a && (ble_role || s_pixels_b))' not in ui or 's_pixels_b=NULL' not in ui:
         raise SystemExit('FAIL: double-buffer target or single-buffer fallback is missing')
     if 'lv_obj_invalidate(ui.screen)' in ui:
         raise SystemExit('FAIL: full-screen invalidation defeats partial-buffer throughput')
     draw_allocation=ui.split('static const uint16_t row_candidates[]=',1)[1].split('lv_disp_draw_buf_init(',1)[0]
-    if 'PSRAM=disabled' in build or 'MALLOC_CAP_SPIRAM' in draw_allocation:
-        raise SystemExit('FAIL: PSRAM is disabled or hot LVGL draw buffers were moved out of internal DMA SRAM')
-    print('PASS: two 64-row internal DMA buffers are targeted with the validated single-buffer fallback')
-    print('PASS: R22 is zero-copy from LVGL draw buffer to esp_lcd color DMA; LVGL releases on DMA completion')
+    if 'PSRAM=disabled' in build:
+        raise SystemExit('FAIL: PSRAM is disabled')
+    if 'MALLOC_CAP_SPIRAM' in draw_allocation:
+        need(PORT/'ws_lvgl.c','if(!s_pixels_a && !ble_role && FIDO_V1_GUI_3D)',
+             '#define STAGING_ROWS 16U','if(s_staging[0])',
+             'last?flush_done:staging_done,last?drv:NULL',
+             's_disp_drv.rounder_cb=controls_rounder_cb;')
+    print('PASS: two 64-row internal buffers are preferred; 3D USB fallback uses PSRAM composition and internal DMA staging')
+    print('PASS: direct DMA path retained; staged path releases LVGL only after final DMA completion (ownership exercised by host test)')
     print('PASS: R22 removes per-pixel flush byte swapping via LV_COLOR_16_SWAP=1')
     print('PASS: R22 main GUI keeps ~62.5 Hz phase when visible; R23 saver uses ~41.7 Hz coherent-core cadence')
-    print('PASS: LVGL object pool uses OPI PSRAM; RGB565 draw buffers stay in internal DMA SRAM')
+    print('PASS: LVGL object pool uses OPI PSRAM; panel DMA receives internal SRAM only')
 
 if __name__=='__main__': main()

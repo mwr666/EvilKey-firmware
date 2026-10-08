@@ -1,6 +1,7 @@
 # M1 display/settings protocol — version 1
 
-Implementation-specific protocol for the Arduino Waveshare V1 port 0.2.6.
+Implementation-specific protocol for EvilKey firmware 0.7.4 on Waveshare PCB V1.
+The M1 wire/API version remains 1; it is independent of the firmware version.
 This document describes the new code in this package, not a FIDO Alliance
 standard or a statement of conformance certification.
 
@@ -88,7 +89,7 @@ Canonical CBOR map, keys in ascending integer order:
 |---|---|
 | 1 | M1 API version: 1 |
 | 2 | Effective 32-byte settings record |
-| 3 | Port release string: `0.2.6-dev` |
+| 3 | Firmware release string from `PF_FIRMWARE_VERSION_STRING`: `0.7.4` in this release |
 | 4 | Boolean storage-health result |
 | 5 | Build flags: bit 0 local UV, bit 1 touch confirmation, bit 2 BOOT fallback, bit 3 display |
 

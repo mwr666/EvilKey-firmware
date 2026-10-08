@@ -1,11 +1,45 @@
 # Graphics and interface
 
-EvilKey retains the black background and mint accent of the original interface. The faceted crystal is white and has its own color mask. Changing the accent changes the mint body, not the crystal. The PIN keypad, touch regions, and swipe gestures retain their established geometry.
+## Appearance
 
-The Ghost Signal screensaver is shared by all USB roles. Its 200 × 200 px mark moves over a closed 28 × 20 px path. The mint body tilts in 3D together with the crystal, while the crystal also rotates around its vertical axis. The animation has 256 frames at 24 ms per frame, a 6.144-second loop, and localized 252 × 252 px invalidation. Short glitch pulses and orbit lines remain part of the design.
+The device keeps the original black background, mint accent, white faceted
+crystal and rounded controls. Changing the accent affects the body, not the
+white crystal. LVGL owns readable text, PIN keypad layout, swipe navigation
+and touch zones; these are not transformed into a 3D scene.
 
-Indexed frames are decoded one at a time into PSRAM. LVGL uses RGB565 output. Normal/USB modes request two 64-row internal DMA buffers with a smaller single-buffer fallback; BLE modes use a single 16-row buffer to retain controller memory. Stable 8 × 8 dithering improves dark gradients. Flat fills and moving arcs are not dithered. A8 masks soften the logo and Settings icon. Diagnostics displays the actual buffer allocation once per second while that page is open.
+## Animation in 0.7.4
 
-In the Windows Manager, the small header logo is static. The animated 3D mark sits beside the device name on Overview. It uses a prebuilt 256-frame sprite sheet and does not change forms, tabs, or USB operations.
+The **Ghost Signal** screensaver uses native Jet rendering. Its 200×200 mark
+moves on the established closed path; the body tilts and the crystal also
+turns around its own axis. Orbit lines and short intentional glitch pulses
+remain part of the design. The phase loop is 256 × 24 ms (6.144 seconds);
+this is animation timing, not a guarantee of 256 displayed frames.
 
-Brand assets: [repository banner](github/hero.svg), [static EvilKey mark](../manager/assets/evilkey_logo_hero.png), and the [Manager animation sprite sheet](../manager/assets/evilkey_logo_hero_animated.png). The original display animation remains in the firmware source; graphical validation is documented in [Validation](VALIDATION.md).
+**Apps and Settings** share orbit geometry, highlight, light points and phase
+timing. Only the center icon differs: nine app tiles or the original gear.
+Both have 24-unit extrusion so their side faces are visible during rotation.
+Animation OFF uses a fixed composition.
+
+Other status icons stay frontal and stable. Their surrounding effects convey
+state without rapid, chaotic icon rotations. A rendered frame never counts
+as FIDO user presence or verification.
+
+## Display and diagnostics
+
+Output is RGB565. Normal mode supports two 64-row draw buffers, using internal
+DMA memory when available or PSRAM with DMA staging. BLE mode uses a smaller
+buffer to retain controller memory. Allocation fallbacks keep the GUI usable.
+Diagnostics reports actual allocation and per-scene Jet timing, distinct from
+an app's Scene3D rendering telemetry.
+
+See [native GUI architecture](design/3d-gui/README.md) for memory, timing,
+fallback and panel transfer, and [validation](VALIDATION.md) for scope.
+
+## Windows Manager and assets
+
+The small Manager header logo is static. Overview uses an animated 256-frame
+sprite sheet beside the device name, independently of the device's Jet renderer.
+
+- [Repository banner](github/hero-lvgl.png)
+- [Static mark](https://github.com/mwr666/EvilKey-Manager/blob/main/manager/assets/evilkey_logo_hero.png)
+- [Manager sprite sheet](https://github.com/mwr666/EvilKey-Manager/blob/main/manager/assets/evilkey_logo_hero_animated.png)

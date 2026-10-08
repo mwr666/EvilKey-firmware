@@ -1,5 +1,7 @@
 #include "../../pf_build_config.h"
 /* SPDX-License-Identifier: AGPL-3.0-or-later
+ * Experimental Jet 3D frontend: shared logo/crystal pose, live hero icons and
+ * gear, spatial AA, shallow LVGL surfaces. Classic source fallback is retained.
  * LVGL 8.4 presentation layer for Waveshare ESP32-S3-Touch-AMOLED-1.64 V1.
  *
  * R22 keeps the validated Pico FIDO interaction/security geometry.
@@ -25,6 +27,7 @@
 #include "ws_panel.h"
 #include "ws_gamepad_view.h"
 #include "ws_control_style.h"
+#include "ws_gui_3d.h"
 #include "ws_pins.h"
 #include "ws_ui_layout.h"
 #include "ws_gui_theme.h"
@@ -32,6 +35,7 @@
 #include "../../apps/ek_exit_dialog.h"
 #include "esp_err.h"
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
 #include "esp_log.h"
 #include "miniz.h"
 #include <stdio.h>
@@ -118,11 +122,27 @@ static lv_disp_draw_buf_t s_draw_buf;
 static lv_disp_drv_t s_disp_drv;
 static lv_color_t *s_pixels_a;
 static lv_color_t *s_pixels_b;
+/* External composition buffers can preserve 2 x 64 rows after USB has
+ * reserved internal SRAM. Only these two 16-row staging strips reach DMA. */
+static lv_color_t *s_staging[2];
+#define STAGING_ROWS 16U
 static lv_color_t *s_rotation_dma;
 static size_t s_rotation_bytes;
 static uint32_t s_draw_pixels;
 static esp_err_t s_flush_error=ESP_OK;
 static bool s_ready;
+static bool s_3d_available;
+static lv_img_dsc_t s_3d_sources[WS_3D_CHANNELS];
+static lv_obj_t *s_3d_objects[WS_3D_CHANNELS];
+static uint32_t s_3d_generations[WS_3D_CHANNELS];
+static uint32_t s_3d_deadlines[WS_3D_CHANNELS],s_3d_accents[WS_3D_CHANNELS],s_3d_icons[WS_3D_CHANNELS];
+static uint32_t s_render_tick,s_frame_id;
+static bool s_3d_force_frame;
+typedef struct { lv_disp_drv_t *drv; uint32_t frame; bool final; } frame_flush_t;
+static frame_flush_t s_frame_flush[2];
+static unsigned s_frame_flush_slot;
+typedef struct { lv_obj_t *glow; uint32_t accent; int rotation[3]; uint8_t opacity[8]; bool valid; } halo_cache_t;
+static halo_cache_t s_halo_cache[2];
 static uint16_t *s_apps_pixels;
 static uint32_t s_apps_frame;
 static uint8_t *s_launcher_pixels;
@@ -438,6 +458,57 @@ static lv_obj_t *label(lv_obj_t *parent,const char *text,const lv_font_t *font,
     return o;
 }
 
+/* Jet owns only the decorative image sources. LVGL remains the sole display
+ * owner and retains native-resolution typography and security hit geometry. */
+static bool jet_image_due(unsigned channel)
+{
+    return s_3d_available && (!s_3d_sources[channel].data || (int32_t)(s_render_tick-s_3d_deadlines[channel])>=0);
+}
+static void update_3d_image(unsigned channel,uint16_t phase,uint32_t accent,unsigned icon)
+{
+    ws_gui_3d_frame_t frame;
+    if(channel!=WS_3D_HERO && s_3d_sources[channel].data && !s_3d_force_frame &&
+       s_3d_accents[channel]==accent && s_3d_icons[channel]==icon &&
+       !jet_image_due(channel))return;
+    if(!s_3d_available || !s_3d_objects[channel] ||
+       !ws_gui_3d_render(channel,phase,accent,icon,&frame)) return;
+    const bool fresh=!s_3d_sources[channel].data;
+    if(fresh || s_3d_force_frame || s_3d_accents[channel]!=accent || s_3d_icons[channel]!=icon)
+        s_3d_deadlines[channel]=s_render_tick+33000U;
+    else {
+        s_3d_deadlines[channel]+=33000U;
+        if((int32_t)(s_render_tick-s_3d_deadlines[channel])>=0)s_3d_deadlines[channel]=s_render_tick+33000U;
+    }
+    s_3d_accents[channel]=accent;s_3d_icons[channel]=icon;
+    if(!fresh && s_3d_generations[channel]==frame.generation)return;
+    lv_img_dsc_t *d=&s_3d_sources[channel];
+    const bool first=!d->data;
+    d->header.cf=LV_IMG_CF_TRUE_COLOR_ALPHA;d->header.w=frame.width;d->header.h=frame.height;
+    d->data_size=(uint32_t)frame.width*frame.height*3U;d->data=frame.pixels;
+    s_3d_generations[channel]=frame.generation;
+    if(first)lv_img_set_src(s_3d_objects[channel],d);
+    lv_obj_invalidate(s_3d_objects[channel]);
+}
+static void create_3d_image(unsigned channel,lv_obj_t *parent,int x,int y)
+{
+    if(!s_3d_available)return;
+    s_3d_objects[channel]=lv_img_create(parent);
+    lv_obj_clear_flag(s_3d_objects[channel],LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_pos(s_3d_objects[channel],x,y);
+    update_3d_image(channel,0,RGB24_DEFAULT,channel==WS_3D_HERO?HERO_KEY:0);
+}
+static void surface_depth(lv_obj_t *o,uint32_t bg)
+{
+    /* Two RGB565 gradient stops and an inset highlight convey shallow depth.
+     * No blur/shadow buffers, perspective text or transformed touch targets. */
+    uint32_t bottom=(((bg>>16)&255U)*3U/4U)<<16 | (((bg>>8)&255U)*3U/4U)<<8 | (bg&255U)*3U/4U;
+    lv_obj_set_style_bg_color(o,color(bg),0);
+    lv_obj_set_style_bg_grad_color(o,color(bottom),0);
+    lv_obj_set_style_bg_grad_dir(o,LV_GRAD_DIR_VER,0);
+    lv_obj_set_style_bg_main_stop(o,0,0);
+    lv_obj_set_style_bg_grad_stop(o,255,0);
+}
+
 static lv_obj_t *card(lv_obj_t *parent,int x,int y,int w,int h,int radius)
 {
     lv_obj_t *o=lv_obj_create(parent);
@@ -447,6 +518,7 @@ static lv_obj_t *card(lv_obj_t *parent,int x,int y,int w,int h,int radius)
     lv_obj_set_style_bg_color(o,color(COL_PANEL),0);
     lv_obj_set_style_border_width(o,1,0);
     lv_obj_set_style_border_color(o,color(COL_BORDER),0);
+    surface_depth(o,COL_PANEL);
     return o;
 }
 
@@ -507,6 +579,8 @@ static void set_card(lv_obj_t *o,uint32_t bg,uint32_t border,int border_width)
     lv_obj_set_style_bg_opa(o,LV_OPA_COVER,0);
     lv_obj_set_style_border_color(o,color(border),0);
     lv_obj_set_style_border_width(o,border_width,0);
+    if(bg==COL_PANEL || bg==COL_PANEL2) surface_depth(o,bg);
+    else lv_obj_set_style_bg_grad_dir(o,LV_GRAD_DIR_NONE,0);
 }
 
 static void set_card_flat(lv_obj_t *o,uint32_t bg,uint32_t border,int border_width)
@@ -556,8 +630,11 @@ static void flush_done(void *ctx)
 {
     /* esp_lcd invokes this from the color-DMA completion callback. LVGL 8.4
      * waits for this signal before reusing the single DMA draw buffer. */
-    lv_disp_flush_ready((lv_disp_drv_t *)ctx);
+    frame_flush_t *stamp=(frame_flush_t *)ctx;
+    if(stamp->final)ws_gui_3d_frame_complete(stamp->frame,(uint32_t)esp_timer_get_time());
+    lv_disp_flush_ready(stamp->drv);
 }
+static void staging_done(void *ctx) { (void)ctx; }
 
 static void controls_rounder_cb(lv_disp_drv_t *drv,lv_area_t *area)
 {
@@ -582,12 +659,36 @@ static void flush_cb(lv_disp_drv_t *drv,const lv_area_t *area,lv_color_t *px)
         lv_disp_flush_ready(drv);
         return;
     }
+    esp_err_t pending=ws_panel_wait_idle(500U);
+    if(pending!=ESP_OK){s_flush_error=pending;lv_disp_flush_ready(drv);return;}
+    frame_flush_t *stamp=&s_frame_flush[s_frame_flush_slot++&1U];
+    *stamp=(frame_flush_t){drv,s_frame_id,lv_disp_flush_is_last(drv)};
     const int32_t w=area->x2-area->x1+1;
     const int32_t h=area->y2-area->y1+1;
     if(w<=0 || h<=0 || area->x1<0 || area->y1<0 ||
        area->x2>=WS_LCD_WIDTH || area->y2>=WS_LCD_HEIGHT) {
         s_flush_error=ESP_ERR_INVALID_ARG;
         lv_disp_flush_ready(drv);
+        return;
+    }
+    if(s_staging[0]) {
+        esp_err_t idle=ws_panel_wait_idle(500U);
+        if(idle!=ESP_OK){s_flush_error=idle;lv_disp_flush_ready(drv);return;}
+        /* Full-width, even address windows are guaranteed by the rounder.
+         * Alternate scratch ownership: submit N only after N-1 completed;
+         * copy into the other strip while N-1 is still being transmitted. */
+        for(int row=0,slot=0;row<h;slot^=1) {
+            const int rows=h-row>(int)STAGING_ROWS?(int)STAGING_ROWS:h-row;
+            memcpy(s_staging[slot],px+(size_t)row*w,(size_t)rows*w*sizeof(*px));
+            const bool last=row+rows==h;
+            esp_err_t err=ws_panel_flush_async((uint16_t)area->x1,(uint16_t)(area->y1+row),
+                (uint16_t)area->x2,(uint16_t)(area->y1+row+rows-1),
+                (const uint16_t *)s_staging[slot],(size_t)w*rows,
+                last?flush_done:staging_done,last?stamp:NULL);
+            if(err!=ESP_OK){s_flush_error=err;lv_disp_flush_ready(drv);return;}
+            ws_gui_3d_frame_flush(s_frame_id,(uint32_t)((size_t)w*rows*2U));
+            row+=rows;
+        }
         return;
     }
     /* LVGL's 90-degree scratch buffer belongs to its PSRAM pool. Only
@@ -610,7 +711,8 @@ static void flush_cb(lv_disp_drv_t *drv,const lv_area_t *area,lv_color_t *px)
     esp_err_t err=ws_panel_flush_async((uint16_t)area->x1,(uint16_t)area->y1,
                                        (uint16_t)area->x2,(uint16_t)area->y2,
                                        (const uint16_t *)px,(size_t)w*(size_t)h,
-                                       flush_done,drv);
+                                       flush_done,stamp);
+    if(err==ESP_OK)ws_gui_3d_frame_flush(s_frame_id,(uint32_t)((size_t)w*h*2U));
     if(err!=ESP_OK) {
         if(s_flush_error==ESP_OK) s_flush_error=err;
         /* No DMA owns this buffer when queueing failed. */
@@ -771,6 +873,7 @@ static void build_hero(void)
     build_warning_icon(&ui.icons[HERO_WARNING]);
     build_usb_icon(&ui.icons[HERO_USB]);
     icon_show_only(HERO_KEY);
+    create_3d_image(WS_3D_HERO,ui.hero,14,14);
 }
 
 static void build_gear_icon(ws_icon_t *ic,int size)
@@ -783,6 +886,7 @@ static void build_gear_icon(ws_icon_t *ic,int size)
     lv_obj_set_pos(p,(size-120)/2,(size-120)/2);
     lv_obj_clear_flag(p,LV_OBJ_FLAG_CLICKABLE);
     icon_add(ic,p);
+    if(s_3d_available){hidden(p,true);create_3d_image(WS_3D_GEAR,ic->root,0,0);}
 }
 
 static void build_settings_hint(void)
@@ -903,6 +1007,9 @@ static void build_screensaver(void)
                    SAVER_LOGO_BASE+WS_UNIFIED_CRYSTAL_Y_OFFSET);
     lv_obj_clear_flag(ui.screensaver_logo_white,LV_OBJ_FLAG_CLICKABLE);
 
+    create_3d_image(WS_3D_SAVER,ui.screensaver_core,SAVER_LOGO_BASE,SAVER_LOGO_BASE);
+    if(s_3d_available){hidden(ui.screensaver_logo,true);hidden(ui.screensaver_logo_white,true);
+        hidden(ui.screensaver_logo_glow,true);}
     ui.screensaver_text_group=group_at(ui.screensaver_group,4,314,272,134);
     ui.screensaver_brand=label(ui.screensaver_text_group,"EVILKEY",&lv_font_montserrat_28,
                                6,0,260,38);
@@ -947,24 +1054,17 @@ static void build_setting_row(ws_setting_row_t *r,lv_obj_t *parent)
     r->plus_label=label(r->plus,"+",&lv_font_montserrat_28,0,8,WS_SETTINGS_PLUS_W,34);
 }
 
-/* Both landing pages use the same LVGL geometry and slow orbit clock. */
-static void build_landing_rings(lv_obj_t *parent,lv_obj_t **glow,lv_obj_t **outer,
-                                lv_obj_t **inner,lv_obj_t **glint,lv_obj_t **sparks)
+static void build_landing_halo(lv_obj_t *parent,lv_obj_t **glow,lv_obj_t **orbit,
+                               lv_obj_t **inner,lv_obj_t **glint,lv_obj_t **spark)
 {
-    *glow=circle(parent,62,58,156,RGB24_DEFAULT,LV_OPA_TRANSP,
-                            RGB24_DEFAULT,1,LV_OPA_30);
-    *outer=arc_obj(parent,54,50,172,RGB24_DEFAULT,1,3,
-                              LV_OPA_TRANSP,LV_OPA_50,0,76);
-    *inner=arc_obj(parent,70,66,140,RGB24_DEFAULT,1,2,
-                                    LV_OPA_TRANSP,LV_OPA_40,0,132);
-    *glint=arc_obj(parent,62,58,156,RGB24_DEFAULT,1,4,
-                              LV_OPA_TRANSP,LV_OPA_70,0,28);
-    /* R25: four fixed pinpricks sit around the hero. They never blink out or
-     * orbit; only a restrained coherent luminance breath gives the field depth. */
-    static const int16_t settings_spark_xy[4][2]={{72,93},{207,96},{211,181},{69,186}};
+    *glow=circle(parent,62,58,156,RGB24_DEFAULT,LV_OPA_TRANSP,RGB24_DEFAULT,1,LV_OPA_30);
+    *orbit=arc_obj(parent,54,50,172,RGB24_DEFAULT,1,3,LV_OPA_TRANSP,LV_OPA_50,0,76);
+    *inner=arc_obj(parent,70,66,140,RGB24_DEFAULT,1,2,LV_OPA_TRANSP,LV_OPA_40,0,132);
+    *glint=arc_obj(parent,62,58,156,RGB24_DEFAULT,1,4,LV_OPA_TRANSP,LV_OPA_70,0,28);
+    static const int16_t xy[4][2]={{72,93},{207,96},{211,181},{69,186}};
     for(unsigned i=0;i<4U;++i)
-        sparks[i]=circle(parent,settings_spark_xy[i][0],settings_spark_xy[i][1],
-                                    4,RGB24_DEFAULT,LV_OPA_50,RGB24_DEFAULT,0,LV_OPA_TRANSP);
+        spark[i]=circle(parent,xy[i][0],xy[i][1],4,RGB24_DEFAULT,LV_OPA_50,
+                        RGB24_DEFAULT,0,LV_OPA_TRANSP);
 }
 
 static void build_settings(void)
@@ -972,7 +1072,8 @@ static void build_settings(void)
     ui.settings_group=group_at(ui.screen,WS_LCD_WIDTH,0,WS_LCD_WIDTH,WS_LCD_HEIGHT);
     ui.settings_content=group_at(ui.settings_group,0,0,WS_LCD_WIDTH,WS_LCD_HEIGHT);
 
-    build_landing_rings(ui.settings_content,&ui.settings_glow,&ui.settings_orbit,
+    /* Landing page: the gear is deliberately the dominant visual element. */
+    build_landing_halo(ui.settings_content,&ui.settings_glow,&ui.settings_orbit,
         &ui.settings_orbit_inner,&ui.settings_glint,ui.settings_spark);
     icon_init(&ui.settings_gear,ui.settings_content,80,76,120,120);
     build_gear_icon(&ui.settings_gear,120);
@@ -1024,11 +1125,15 @@ static void build_apps(void)
     ui.launcher_header=label(ui.launcher_group,"APPS",&lv_font_montserrat_28,12,15,170,38);
     ui.launcher_counter=label(ui.launcher_group,"",&lv_font_montserrat_14,180,25,88,24);
     ui.launcher_intro=group_at(ui.launcher_group,0,0,WS_LCD_WIDTH,386);
-    build_landing_rings(ui.launcher_intro,&ui.launcher_glow,&ui.launcher_orbit,
+    build_landing_halo(ui.launcher_intro,&ui.launcher_glow,&ui.launcher_orbit,
         &ui.launcher_orbit_inner,&ui.launcher_glint,ui.launcher_spark);
     for(unsigned i=0;i<9;++i)
         ui.launcher_tiles[i]=card(ui.launcher_intro,98+(int)(i%3)*29,
             94+(int)(i/3)*29,26,26,5);
+    if(s_3d_available) {
+        for(unsigned i=0;i<9;++i)hidden(ui.launcher_tiles[i],true);
+        create_3d_image(WS_3D_APPS,ui.launcher_intro,80,76);
+    }
     label(ui.launcher_intro,"APPS",&lv_font_montserrat_28,10,222,260,38);
     ui.launcher_count=label(ui.launcher_intro,"0 apps on microSD",
         &lv_font_montserrat_20,10,276,260,30);
@@ -1354,6 +1459,19 @@ esp_err_t ws_lvgl_init(void)
         if(s_pixels_b) heap_caps_free(s_pixels_b);
         s_pixels_a=NULL;s_pixels_b=NULL;
     }
+    if(!s_pixels_a && !ble_role && FIDO_V1_GUI_3D) {
+        s_pixels_a=(lv_color_t *)heap_caps_malloc(target_bytes,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+        s_pixels_b=(lv_color_t *)heap_caps_malloc(target_bytes,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+        for(unsigned i=0;i<2;i++)s_staging[i]=(lv_color_t *)heap_caps_malloc(
+            DRAW_PIXELS(STAGING_ROWS)*sizeof(lv_color_t),MALLOC_CAP_DMA|MALLOC_CAP_INTERNAL);
+        if(s_pixels_a && s_pixels_b && s_staging[0] && s_staging[1]) {
+            s_draw_pixels=target_pixels;selected_rows=target_rows;
+        } else {
+            heap_caps_free(s_pixels_a);heap_caps_free(s_pixels_b);
+            s_pixels_a=s_pixels_b=NULL;
+            for(unsigned i=0;i<2;i++){heap_caps_free(s_staging[i]);s_staging[i]=NULL;}
+        }
+    }
     for(unsigned i=0;!s_pixels_a && i<sizeof(row_candidates)/sizeof(row_candidates[0]);++i) {
         const uint16_t rows=row_candidates[i];
         if(rows>WS_LCD_STRIP_ROWS || rows>target_rows) continue;
@@ -1367,9 +1485,10 @@ esp_err_t ws_lvgl_init(void)
         }
     }
     if(!s_pixels_a || s_draw_pixels==0U) return ESP_ERR_NO_MEM;
-    ESP_LOGI(TAG,"LVGL draw buffers: %u x %u rows (%u bytes each), internal DMA SRAM; free DMA=%u, largest=%u",
+    ESP_LOGI(TAG,"LVGL draw buffers: %u x %u rows (%u bytes each), %s; free DMA=%u, largest=%u",
              s_pixels_b?2U:1U,(unsigned)selected_rows,
              (unsigned)(s_draw_pixels*sizeof(lv_color_t)),
+             s_staging[0]?"PSRAM + 2 x 16-row internal DMA":"internal DMA SRAM",
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA|MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA|MALLOC_CAP_INTERNAL));
 
@@ -1380,9 +1499,10 @@ esp_err_t ws_lvgl_init(void)
     s_disp_drv.flush_cb=flush_cb;
     s_disp_drv.draw_buf=&s_draw_buf;
     s_disp_drv.sw_rotate=pf_control_mode()==PF_CONTROL_BLE_PAD;
-    if(s_disp_drv.sw_rotate || pf_control_mode()==PF_CONTROL_USB_MOUSE ||
-       pf_control_mode()==PF_CONTROL_BLE_MOUSE)
-        s_disp_drv.rounder_cb=controls_rounder_cb;
+    /* Every V1 panel window must start even/end odd, including animated
+     * decorative images and Settings. Mouse-only rounding left ordinary
+     * moving images able to submit odd partial windows. */
+    s_disp_drv.rounder_cb=controls_rounder_cb;
     if(s_disp_drv.sw_rotate) {
         s_rotation_bytes=LV_DISP_ROT_MAX_BUF>target_bytes?LV_DISP_ROT_MAX_BUF:target_bytes;
         s_rotation_dma=(lv_color_t *)heap_caps_malloc(s_rotation_bytes,
@@ -1400,6 +1520,10 @@ esp_err_t ws_lvgl_init(void)
         s_ready=true;return ESP_OK;
     }
 
+    s_3d_available=FIDO_V1_GUI_3D && ws_gui_3d_init();
+    if(s_3d_available)ws_gui_3d_configure_tiles();
+    ESP_LOGI(TAG,"Jet 3D: %s, PSRAM sources/scratch %u bytes",
+             s_3d_available?"ready":"classic fallback",(unsigned)ws_gui_3d_stats().psram_bytes);
     /* USB.begin() runs after ws_lvgl_init(). A static tinfl_decompressor used
      * to consume 11 KB of internal BSS before TinyUSB could allocate its
      * endpoint/task state, which can make Windows reject the first descriptor. */
@@ -1585,7 +1709,7 @@ static void update_screensaver_motion(const ws_ui_snapshot_t *v,uint32_t accent)
     const uint16_t phase=v->screensaver_phase;
     /* Both layers are projected from the same plane. The crystal's own
      * 72-frame vertical rotation is already composed into each 24 ms pair. */
-    (void)decode_unified_logo(phase,accent);
+    if(!s_3d_available)(void)decode_unified_logo(phase,accent);
     const uint8_t breathe=premium_wave((uint8_t)(phase>>1));
     const uint8_t drift_x=premium_wave((uint8_t)((phase>>2)+7U));
     const uint8_t drift_y=premium_wave((uint8_t)((phase>>2)+23U));
@@ -1662,6 +1786,14 @@ static void update_screensaver_motion(const ws_ui_snapshot_t *v,uint32_t accent)
         lv_obj_set_y(ui.screensaver_glitch_scan,98+(int)step*5);
     }
 
+    if(s_3d_available) {
+        update_3d_image(WS_3D_SAVER,phase,accent,0);
+        lv_obj_set_pos(s_3d_objects[WS_3D_SAVER],
+                       SAVER_LOGO_BASE+((int)logo_wave*28)/255-14,
+                       SAVER_LOGO_BASE+((int)drift_y*20)/255-10);
+        hidden(ui.screensaver_logo_ghost,true);hidden(ui.screensaver_glitch_scan,true);
+        for(unsigned i=0;i<2U;i++){hidden(ui.screensaver_glitch_cover[i],true);hidden(ui.screensaver_glitch_slice[i],true);}
+    }
     /* R25: typography never changes x/y. Fade all three lines in lockstep and
      * update only while opacity is changing. The exact 5.000 s bright and 2.000 s
      * dark plateaus therefore generate no text redraw traffic at all. */
@@ -1693,23 +1825,26 @@ static void update_screensaver_motion(const ws_ui_snapshot_t *v,uint32_t accent)
 
 static void update_premium_motion(const ws_ui_snapshot_t *v,hero_icon_id_t hero,uint32_t rgb)
 {
+    // The status symbol is static; update_main refreshes it on state/theme
+    // changes. Animate only the surrounding halo, without invalidating Jet.
     const uint8_t wave=premium_wave(v->animation_phase);
     const int rotation=((int)(v->animation_phase&63U)*360)/64;
     lv_arc_set_rotation(ui.hero_orbit,(int16_t)rotation);
-    lv_arc_set_rotation(ui.hero_glint,(int16_t)((360-rotation/2)%360));
+    lv_arc_set_rotation(ui.hero_glint,(int16_t)((360-rotation)%360));
     lv_obj_set_style_arc_color(ui.hero_orbit,color(rgb),LV_PART_MAIN);
     lv_obj_set_style_arc_color(ui.hero_orbit,color(rgb),LV_PART_INDICATOR);
     lv_obj_set_style_arc_color(ui.hero_glint,color(rgb),LV_PART_INDICATOR);
-    lv_obj_set_style_arc_opa(ui.hero_orbit,(lv_opa_t)(86U+wave/3U),LV_PART_INDICATOR);
-    lv_obj_set_style_arc_opa(ui.hero_glint,(lv_opa_t)(34U+wave/5U),LV_PART_INDICATOR);
-    lv_obj_set_style_border_opa(ui.hero_outer,(lv_opa_t)(25U+wave/10U),0);
-    lv_obj_set_style_border_opa(ui.hero_mid,(lv_opa_t)(15U+wave/13U),0);
-    lv_obj_set_style_bg_opa(ui.hero_inner,(lv_opa_t)(7U+wave/24U),0);
-    lv_obj_set_style_opa(ui.icons[hero].root,(lv_opa_t)(236U+wave/14U),0);
+    lv_obj_set_style_arc_opa(ui.hero_orbit,(lv_opa_t)(86U+wave/8U),LV_PART_INDICATOR);
+    lv_obj_set_style_arc_opa(ui.hero_glint,(lv_opa_t)(34U+wave/12U),LV_PART_INDICATOR);
+    lv_obj_set_style_border_opa(ui.hero_outer,(lv_opa_t)(25U+wave/24U),0);
+    lv_obj_set_style_border_opa(ui.hero_mid,(lv_opa_t)(15U+wave/32U),0);
+    lv_obj_set_style_bg_opa(ui.hero_inner,(lv_opa_t)(7U+wave/48U),0);
+    lv_obj_set_style_opa(ui.icons[hero].root,LV_OPA_COVER,0);
 
     if(hero==HERO_SPINNER) {
         for(unsigned i=0;i<3;++i) {
-            unsigned age=(i+3U-((v->animation_phase/5U)%3U))%3U;
+            // Three complete dot cycles per halo loop, including its wrap.
+            unsigned age=(i+3U-(((v->animation_phase*9U)/64U)%3U))%3U;
             lv_obj_set_style_bg_color(ui.progress_dot[i],color(rgb),0);
             lv_obj_set_style_bg_opa(ui.progress_dot[i],(lv_opa_t)(age==0U?235U:age==1U?105U:38U),0);
         }
@@ -1718,13 +1853,13 @@ static void update_premium_motion(const ws_ui_snapshot_t *v,hero_icon_id_t hero,
 
 static void update_spinner(uint8_t phase,uint32_t rgb)
 {
-    const int rotation=((int)(phase&63U)*360)/64;
+    const int rotation=((int)(phase&63U)*720)/64;
     lv_obj_set_style_arc_color(ui.spinner_arc_a,color(rgb),LV_PART_INDICATOR);
     lv_obj_set_style_arc_color(ui.spinner_arc_a,color(rgb),LV_PART_MAIN);
     lv_obj_set_style_arc_color(ui.spinner_arc_b,color(rgb),LV_PART_INDICATOR);
     lv_obj_set_style_arc_color(ui.spinner_arc_b,color(rgb),LV_PART_MAIN);
-    lv_arc_set_rotation(ui.spinner_arc_a,(int16_t)rotation);
-    lv_arc_set_rotation(ui.spinner_arc_b,(int16_t)((360-(rotation*3)/4)%360));
+    lv_arc_set_rotation(ui.spinner_arc_a,(int16_t)(rotation%360));
+    lv_arc_set_rotation(ui.spinner_arc_b,(int16_t)((720-rotation)%360));
 }
 
 static void set_title_font(const lv_font_t *font)
@@ -1816,76 +1951,25 @@ static const char *settings_default_subtitle(uint8_t page)
     }
 }
 
-static void update_landing_rings(lv_obj_t *glow,lv_obj_t *outer,lv_obj_t *inner,
-    lv_obj_t *glint,lv_obj_t **sparks,uint8_t phase,bool animated,uint32_t accent)
-{
-    lv_obj_set_style_border_color(glow,color(accent),0);
-    lv_obj_set_style_bg_color(glow,color(accent),0);
-    lv_obj_set_style_bg_opa(glow,LV_OPA_TRANSP,0);
-    lv_obj_t *const arcs[]={outer,inner,glint};
-    for(unsigned i=0;i<3U;++i)
-        lv_obj_set_style_arc_color(arcs[i],color(accent),LV_PART_INDICATOR);
-    for(unsigned i=0;i<4U;++i)
-        lv_obj_set_style_bg_color(sparks[i],color(accent),0);
-    if(!animated) {
-        lv_obj_set_style_border_opa(glow,34,0);
-        lv_obj_set_style_arc_opa(outer,88,LV_PART_INDICATOR);
-        lv_obj_set_style_arc_opa(inner,62,LV_PART_INDICATOR);
-        lv_obj_set_style_arc_opa(glint,116,LV_PART_INDICATOR);
-        lv_arc_set_rotation(outer,0);
-        lv_arc_set_rotation(inner,180);
-        lv_arc_set_rotation(glint,32);
-        for(unsigned i=0;i<4U;++i)
-            lv_obj_set_style_bg_opa(sparks[i],LV_OPA_50,0);
-        return;
-    }
-    /* premium_wave() is a 64-step closed curve. Divide the 256-step Settings
-     * phase by four so ambient luminance breathes exactly once per full loop. */
-    const uint8_t wave=premium_wave((uint8_t)(phase>>2));
-    const uint8_t phase_quarter=(uint8_t)(phase+64U);
-    const uint8_t wave2=premium_wave((uint8_t)(phase_quarter>>2));
-    const int rotation=((int)phase*360)/256;
-    const int inner_rotation=(180+360-rotation)%360;
-    const int glint_rotation=(32+rotation*2)%360;
-
-    /* One deterministic closed composition. The gear is the visual anchor;
-     * the outer and inner strokes each complete one whole turn in opposite
-     * directions over the same 6.144 s period, while the glint completes two.
-     * At phase 255 -> 0 every object advances only by its normal angular step. */
-    lv_obj_set_style_border_opa(glow,(lv_opa_t)(22U+wave/16U),0);
-    lv_obj_set_style_bg_opa(glow,LV_OPA_TRANSP,0);
-
-    lv_obj_set_style_arc_color(outer,color(accent),LV_PART_INDICATOR);
-    lv_obj_set_style_arc_color(inner,color(accent),LV_PART_INDICATOR);
-    lv_obj_set_style_arc_color(glint,color(accent),LV_PART_INDICATOR);
-    lv_obj_set_style_arc_opa(outer,(lv_opa_t)(82U+wave/16U),LV_PART_INDICATOR);
-    lv_obj_set_style_arc_opa(inner,(lv_opa_t)(58U+wave2/18U),LV_PART_INDICATOR);
-    lv_obj_set_style_arc_opa(glint,(lv_opa_t)(108U+wave/12U),LV_PART_INDICATOR);
-
-    lv_arc_set_rotation(outer,(int16_t)rotation);
-    lv_arc_set_rotation(inner,(int16_t)inner_rotation);
-    lv_arc_set_rotation(glint,(int16_t)glint_rotation);
-
-    /* Icons stay anchored; only the surrounding decoration moves. */
-
-    /* Four fixed pinpricks remain visible throughout the loop. Opposite pairs
-     * share the same slow breath; there are no independent blink envelopes. */
-    static const uint8_t spark_base[4]={42U,48U,46U,52U};
-    for(unsigned i=0;i<4U;++i) {
-        const uint8_t sw=(i&1U)?wave2:wave;
-        lv_obj_set_style_bg_opa(sparks[i],(lv_opa_t)(spark_base[i]+sw/20U),0);
-    }
-}
-
 static void update_settings(const ws_ui_snapshot_t *v,uint32_t accent)
 {
     uint8_t page=v->settings_page<WS_SETTINGS_PAGE_COUNT?v->settings_page:WS_SETTINGS_PAGE_HOME;
     const bool home=page==WS_SETTINGS_PAGE_HOME;
 
     icon_tint(&ui.settings_gear,accent);
-    update_landing_rings(ui.settings_glow,ui.settings_orbit,ui.settings_orbit_inner,
-        ui.settings_glint,ui.settings_spark,v->settings_motion_phase,
-        v->settings_animation,accent);
+    lv_obj_set_style_border_color(ui.settings_glow,color(accent),0);
+    lv_obj_set_style_bg_color(ui.settings_glow,color(accent),0);
+    lv_obj_set_style_border_opa(ui.settings_glow,34,0);
+    lv_obj_set_style_bg_opa(ui.settings_glow,LV_OPA_TRANSP,0);
+    lv_obj_t *const settings_arcs[]={ui.settings_orbit,ui.settings_orbit_inner,ui.settings_glint};
+    for(unsigned i=0;i<sizeof(settings_arcs)/sizeof(settings_arcs[0]);++i)
+        lv_obj_set_style_arc_color(settings_arcs[i],color(accent),LV_PART_INDICATOR);
+    lv_obj_set_style_arc_opa(ui.settings_orbit,88,LV_PART_INDICATOR);
+    lv_obj_set_style_arc_opa(ui.settings_orbit_inner,62,LV_PART_INDICATOR);
+    lv_obj_set_style_arc_opa(ui.settings_glint,116,LV_PART_INDICATOR);
+    lv_arc_set_rotation(ui.settings_orbit,0);
+    lv_arc_set_rotation(ui.settings_orbit_inner,180);
+    lv_arc_set_rotation(ui.settings_glint,32);
     hidden(ui.settings_glow,!home);
     hidden(ui.settings_orbit,!home);
     hidden(ui.settings_orbit_inner,!home);
@@ -2074,11 +2158,12 @@ static void update_settings(const ws_ui_snapshot_t *v,uint32_t accent)
             snprintf(value,sizeof(value),"%u x %u  RGB565",s_pixels_b?2U:1U,rows);
             set_text(ui.diagnostics_value,value,accent);
             char memory[128];
-            snprintf(memory,sizeof(memory),"DMA free %u KB  /  max %u KB\nPSRAM free %u KB",
+            snprintf(memory,sizeof(memory),"DMA free %u KB  /  max %u KB\nPSRAM %u KB / %s",
                 (unsigned)(heap_caps_get_free_size(MALLOC_CAP_DMA|MALLOC_CAP_INTERNAL)/1024U),
                 (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_DMA|MALLOC_CAP_INTERNAL)/1024U),
-                (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)/1024U));
-            const unsigned section=(v->diagnostics_tick/3U)%3U;
+                (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)/1024U),
+                s_staging[0]?"DMA 2x16":"direct DMA");
+            const unsigned section=(v->diagnostics_tick/3U)%4U;
             if(section==1U) {
                 snprintf(value,sizeof(value),"%u apps / %u headers",v->apps_count,
                          (unsigned)v->apps_headers_read);
@@ -2088,10 +2173,24 @@ static void update_settings(const ws_ui_snapshot_t *v,uint32_t accent)
                 set_text(ui.diagnostics_title,"APPS CATALOG",COL_MUTED);
             } else if(section==2U) {
                 lv_mem_monitor_t pool;lv_mem_monitor(&pool);
+                ws_gui_3d_presentation_stats_t ps=ws_gui_3d_presentation_stats();
                 snprintf(value,sizeof(value),"Poll max %u ms",(unsigned)v->ui_poll_gap_ms);
-                snprintf(memory,sizeof(memory),"Render max %u ms\nLVGL free %u KB",
-                    (unsigned)v->ui_render_ms,(unsigned)(pool.free_size/1024U));
+                snprintf(memory,sizeof(memory),"CPU %u ms / pool %u KB\nFrame P95 %u / wait %u ms\n%u flush / %u KB",
+                    (unsigned)v->ui_render_ms,(unsigned)(pool.free_size/1024U),
+                    (unsigned)(ps.p95_us/1000U),(unsigned)(ps.panel_wait_us/1000U),
+                    (unsigned)ps.flushes,(unsigned)(ps.bytes/1024U));
                 set_text(ui.diagnostics_title,"UI LATENCY",COL_MUTED);
+            } else if(section==3U) {
+                ws_gui_3d_stats_t jet=ws_gui_3d_stats();
+                const unsigned channel=(v->diagnostics_tick/12U)%WS_3D_CHANNELS;
+                static const char *names[]={"Saver","Settings","Status","Apps"};
+                ws_gui_3d_channel_stats_t cs=ws_gui_3d_channel_stats(channel);
+                snprintf(value,sizeof(value),"%s: %s",names[channel],jet.ready?"Jet ON":"FALLBACK");
+                snprintf(memory,sizeof(memory),"P50 %u / P95 %u ms\nG %u / R %u / C %u us\n%u tris / samples %u %s",
+                         (unsigned)(cs.p50_us/1000U),(unsigned)(cs.p95_us/1000U),
+                         (unsigned)cs.geometry_us,(unsigned)cs.raster_us,(unsigned)cs.convert_us,
+                         (unsigned)cs.triangles,(unsigned)cs.detail_samples,v->diagnostics_enabled?"live":"1/8");
+                set_text(ui.diagnostics_title,"3D RENDERER",COL_MUTED);
             } else set_text(ui.diagnostics_title,"DRAW BUFFER",COL_MUTED);
             set_text(ui.diagnostics_value,value,accent);
             set_text(ui.diagnostics_memory,memory,COL_MUTED);
@@ -2119,12 +2218,57 @@ static void update_settings(const ws_ui_snapshot_t *v,uint32_t accent)
     }
 }
 
+static void update_landing_halo(lv_obj_t *glow,lv_obj_t *orbit,lv_obj_t *orbit_inner,
+                                lv_obj_t *glint,lv_obj_t **spark,uint8_t phase,
+                                bool animated,uint32_t accent)
+{
+    if(!animated)phase=0;
+    /* premium_wave() is a 64-step closed curve. Divide the 256-step Settings
+     * phase by four so ambient luminance breathes exactly once per full loop. */
+    const uint8_t wave=animated?premium_wave((uint8_t)(phase>>2)):0U;
+    const uint8_t phase_quarter=(uint8_t)(phase+64U);
+    const uint8_t wave2=animated?premium_wave((uint8_t)(phase_quarter>>2)):0U;
+    const int rotation=((int)phase*360)/256;
+    const int inner_rotation=(180+360-rotation)%360;
+    const int glint_rotation=(32+rotation*2)%360;
+
+    /* One deterministic closed composition. The gear is the visual anchor;
+     * the outer and inner strokes each complete one whole turn in opposite
+     * directions over the same 6.144 s period, while the glint completes two.
+     * At phase 255 -> 0 every object advances only by its normal angular step. */
+    halo_cache_t *cache=&s_halo_cache[glow==ui.settings_glow?0:1];
+    const bool changed=!cache->valid || cache->glow!=glow || cache->accent!=accent;
+    const uint8_t opacity[8]={animated?22U+wave/16U:34U,animated?82U+wave/16U:88U,
+        animated?58U+wave2/18U:62U,animated?108U+wave/12U:116U,
+        42U+wave/20U,48U+wave2/20U,46U+wave/20U,52U+wave2/20U};
+    const int rotations[3]={rotation,inner_rotation,glint_rotation};
+    if(changed){
+        lv_obj_set_style_border_color(glow,color(accent),0);
+        lv_obj_set_style_bg_color(glow,color(accent),0);
+        lv_obj_set_style_bg_opa(glow,LV_OPA_TRANSP,0);
+        lv_obj_set_style_arc_color(orbit,color(accent),LV_PART_INDICATOR);
+        lv_obj_set_style_arc_color(orbit_inner,color(accent),LV_PART_INDICATOR);
+        lv_obj_set_style_arc_color(glint,color(accent),LV_PART_INDICATOR);
+        for(unsigned i=0;i<4U;++i)lv_obj_set_style_bg_color(spark[i],color(accent),0);
+    }
+    if(changed || cache->opacity[0]!=opacity[0])lv_obj_set_style_border_opa(glow,opacity[0],0);
+    lv_obj_t *arcs[3]={orbit,orbit_inner,glint};
+    for(unsigned i=0;i<3U;++i){
+        if(changed || cache->opacity[i+1]!=opacity[i+1])lv_obj_set_style_arc_opa(arcs[i],opacity[i+1],LV_PART_INDICATOR);
+        if(changed || cache->rotation[i]!=rotations[i])lv_arc_set_rotation(arcs[i],(int16_t)rotations[i]);
+    }
+    for(unsigned i=0;i<4U;++i)if(changed || cache->opacity[i+4]!=opacity[i+4])lv_obj_set_style_bg_opa(spark[i],opacity[i+4],0);
+    cache->glow=glow;cache->accent=accent;cache->valid=true;
+    memcpy(cache->opacity,opacity,sizeof opacity);memcpy(cache->rotation,rotations,sizeof rotations);
+
+}
+
 static void update_settings_motion(const ws_ui_snapshot_t *v,uint32_t accent)
 {
-    if(v->settings_page!=WS_SETTINGS_PAGE_HOME) return;
-    update_landing_rings(ui.settings_glow,ui.settings_orbit,ui.settings_orbit_inner,
-        ui.settings_glint,ui.settings_spark,v->settings_motion_phase,
-        v->settings_animation,accent);
+    if(v->settings_page!=WS_SETTINGS_PAGE_HOME)return;
+    update_3d_image(WS_3D_GEAR,v->settings_animation?v->settings_motion_phase:0,accent,0);
+    update_landing_halo(ui.settings_glow,ui.settings_orbit,ui.settings_orbit_inner,
+        ui.settings_glint,ui.settings_spark,v->settings_motion_phase,v->settings_animation,accent);
 }
 
 static void main_state(const ws_ui_snapshot_t *v,uint32_t accent)
@@ -2187,6 +2331,8 @@ static void main_state(const ws_ui_snapshot_t *v,uint32_t accent)
     icon_tint(&ui.brand_key,accent);
     set_hero_colour(hero_col);
     icon_show_only(hero);
+    if(s_3d_available){update_3d_image(WS_3D_HERO,0,hero_col,hero);
+        for(unsigned i=0;i<ICON_COUNT;i++)hidden(ui.icons[i].root,true);}
     if(!v->settings_animation) {
         lv_arc_set_rotation(ui.hero_orbit,0);
         lv_arc_set_rotation(ui.hero_glint,0);
@@ -2626,11 +2772,12 @@ static void update_launcher(const ws_ui_snapshot_t *v,uint32_t accent)
 static void update_launcher_motion(const ws_ui_snapshot_t *v,uint32_t accent)
 {
     if(v->launcher_page!=0) return;
-    update_landing_rings(ui.launcher_glow,ui.launcher_orbit,ui.launcher_orbit_inner,
-        ui.launcher_glint,ui.launcher_spark,v->settings_motion_phase,
-        v->settings_animation,accent);
-    uint8_t wave=premium_wave((uint8_t)((v->settings_animation?v->settings_motion_phase:0)>>2));
-    for(unsigned i=0;i<9;++i) {
+    unsigned phase=v->settings_animation?v->settings_motion_phase:0;
+    update_3d_image(WS_3D_APPS,(uint16_t)phase,accent,0);
+    uint8_t wave=premium_wave((uint8_t)(phase>>2));
+    update_landing_halo(ui.launcher_glow,ui.launcher_orbit,ui.launcher_orbit_inner,
+        ui.launcher_glint,ui.launcher_spark,(uint8_t)phase,v->settings_animation,accent);
+    for(unsigned i=0;!s_3d_available && i<9;++i) {
         bool bright=i==0 || i==4 || i==8;
         set_card_flat(ui.launcher_tiles[i],bright?accent:COL_PANEL2,accent,1);
         lv_obj_set_style_border_opa(ui.launcher_tiles[i],(lv_opa_t)(100U+wave/3U),0);
@@ -2640,14 +2787,23 @@ static void update_launcher_motion(const ws_ui_snapshot_t *v,uint32_t accent)
 esp_err_t ws_lvgl_render(const ws_ui_snapshot_t *v)
 {
     if(!s_ready || !v) return ESP_ERR_INVALID_STATE;
+    s_render_tick=(uint32_t)esp_timer_get_time();
+    s_frame_id=ws_gui_3d_frame_begin(s_render_tick);
+    ws_gui_3d_profile(v->diagnostics_enabled);
     if(pf_control_mode()==PF_CONTROL_BLE_PAD) {
         ws_gamepad_view_render(v);
-        s_flush_error=ESP_OK;lv_refr_now(NULL);return s_flush_error;
+        s_flush_error=ESP_OK;lv_refr_now(NULL);
+        ws_gui_3d_frame_end(s_frame_id,(uint32_t)esp_timer_get_time(),ws_gui_3d_take_panel_wait(),s_flush_error==ESP_OK);
+        return s_flush_error;
     }
     const uint32_t accent=v->accent_rgb?v->accent_rgb:RGB24_DEFAULT;
     const bool pin=v->state==WS_UI_PIN;
     const bool first=!s_last_view_valid;
     const bool was_pin=s_last_view_valid && s_last_view.state==WS_UI_PIN;
+    s_3d_force_frame=first || was_pin || (s_last_view_valid && s_last_view.settings_animation!=v->settings_animation) ||
+        (s_last_view_valid && ((s_last_view.settings_transition!=v->settings_transition && (v->settings_transition==0 || v->settings_transition==255)) ||
+        (s_last_view.screensaver_transition!=v->screensaver_transition && (v->screensaver_transition==0 || v->screensaver_transition==255)) ||
+        (s_last_view.launcher_transition!=v->launcher_transition && (v->launcher_transition==0 || v->launcher_transition==255))));
 
     const bool app_visible=v->apps_running && ws_ui_settings_allowed(v->state) &&
         v->launcher_transition==255U;
@@ -2743,6 +2899,10 @@ esp_err_t ws_lvgl_render(const ws_ui_snapshot_t *v)
         const uint8_t settings_t=v->settings_transition;
         const uint8_t saver_t=v->screensaver_transition;
         const uint8_t launcher_t=v->launcher_transition;
+        unsigned transition=settings_t>0U&&settings_t<255U?settings_t:
+            saver_t>0U&&saver_t<255U?saver_t:launcher_t;
+        int depth=transition>0U&&transition<255U?(int)(transition*(255U-transition)*160U/16256U):0;
+        ws_gui_3d_transition(saver_t>0U?-depth:depth);
         const bool apps_settings_slide=settings_t!=0U && launcher_t!=0U;
         const bool main_visible=!apps_settings_slide &&
             settings_t!=255U && saver_t!=255U && launcher_t!=255U;
@@ -2770,6 +2930,10 @@ esp_err_t ws_lvgl_render(const ws_ui_snapshot_t *v)
                 s_last_view.launcher_page!=v->launcher_page ||
                 s_last_view.settings_motion_phase!=v->settings_motion_phase ||
                 s_last_view.settings_animation!=v->settings_animation ||
+                (v->settings_animation && jet_image_due(WS_3D_APPS)) ||
+                (s_3d_available && (s_last_view.settings_transition!=settings_t ||
+                    s_last_view.launcher_transition!=launcher_t ||
+                    s_last_view.screensaver_transition!=saver_t)) ||
                 s_last_view.accent_rgb!=v->accent_rgb)
                 update_launcher_motion(v,accent);
         }
@@ -2812,19 +2976,22 @@ esp_err_t ws_lvgl_render(const ws_ui_snapshot_t *v)
             lv_obj_set_y(ui.settings_content,(int)v->settings_page_offset);
 
         if(v->settings_animation && main_visible &&
-           (first || was_pin || s_last_view.animation_phase!=v->animation_phase)) {
+           (first || was_pin || s_last_view.animation_phase!=v->animation_phase ||
+            s_last_view.settings_transition!=settings_t || s_last_view.screensaver_transition!=saver_t)) {
             update_premium_motion(v,s_active_hero,s_active_hero_colour);
             if(v->usb_tool_enabled && ws_ui_settings_allowed(v->state)) update_tool_leds(v);
             if(s_active_hero==HERO_SPINNER) update_spinner(v->animation_phase,s_active_hero_colour);
             if(v->state==WS_UI_CONFIRMED || v->state==WS_UI_CANCELLED || v->state==WS_UI_TIMEOUT ||
                v->state==WS_UI_PIN_BAD || v->state==WS_UI_PIN_BLOCKED || v->state==WS_UI_INPUT_ERROR)
-                lv_obj_set_style_bg_opa(ui.result_flare,(lv_opa_t)(126U+premium_wave(v->animation_phase)/3U),0);
+                lv_obj_set_style_bg_opa(ui.result_flare,(lv_opa_t)(126U+premium_wave(v->animation_phase)/12U),0);
         }
-        if(v->settings_animation && settings_visible &&
+        if(settings_visible &&
            (first || was_pin || s_last_view.settings_motion_phase!=v->settings_motion_phase ||
-            s_last_view.settings_page!=v->settings_page || s_last_view.accent_rgb!=v->accent_rgb))
+            (v->settings_page==WS_SETTINGS_PAGE_HOME && v->settings_animation && jet_image_due(WS_3D_GEAR)) ||
+            s_last_view.settings_animation!=v->settings_animation ||
+            s_last_view.settings_page!=v->settings_page || s_last_view.accent_rgb!=v->accent_rgb || s_last_view.settings_transition!=settings_t))
             update_settings_motion(v,accent);
-        if(saver_visible && (first || was_pin ||
+        if(saver_visible && (first || was_pin || jet_image_due(WS_3D_SAVER) ||
            s_last_view.screensaver_phase!=v->screensaver_phase ||
            s_last_view.screensaver_transition!=saver_t))
             update_screensaver_motion(v,accent);
@@ -2837,5 +3004,6 @@ esp_err_t ws_lvgl_render(const ws_ui_snapshot_t *v)
      * invalidation is used; the faster transport path only changes how those
      * dirty areas are buffered and transferred. */
     lv_refr_now(NULL);
+    ws_gui_3d_frame_end(s_frame_id,(uint32_t)esp_timer_get_time(),ws_gui_3d_take_panel_wait(),s_flush_error==ESP_OK);
     return s_flush_error;
 }

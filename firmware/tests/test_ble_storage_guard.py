@@ -51,11 +51,9 @@ class Preservation(unittest.TestCase):
         for token in ('erase_flash', 'erase-flash', 'erase-region', '--erase-all'):
             with self.assertRaises(RuntimeError):guard.validate_command(['esptool', token])
 
-    @unittest.skipUnless((ROOT/'.ble-libraries/NimBLE-Arduino/src/NimBLEDevice.cpp').is_file(),'Build first to prepare pinned BLE libraries')
     def test_prepared_ble(self):
         self.assertTrue(check.verify())
 
-    @unittest.skipUnless((ROOT/'.ble-libraries/NimBLE-Arduino/src/NimBLEDevice.cpp').is_file(),'Build first to prepare pinned BLE libraries')
     def test_tampering_rejected(self):
         path=ROOT/'.ble-libraries/NimBLE-Arduino/src/NimBLEDevice.cpp'
         original=path.read_bytes()

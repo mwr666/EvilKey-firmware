@@ -192,6 +192,10 @@ def main() -> int:
         "--list-only", action="store_true",
         help="Only display detected COM ports; never build or upload.",
     )
+    parser.add_argument(
+        "--use-verified-build", action="store_true",
+        help="Use an existing image only if its source, ELF, BIN and partition manifest checks pass; fail closed if stale.",
+    )
     args = parser.parse_args()
     cli = shutil.which("arduino-cli")
     if not cli:
@@ -221,11 +225,14 @@ def main() -> int:
         print("Cancelled. No build or upload was performed.")
         return 0
 
-    print("\n[1/2] Building fresh firmware...")
-    build = subprocess.run([sys.executable, str(BUILD_SCRIPT)])
-    if build.returncode:
-        print("ERROR: build failed. Upload was not started.", file=sys.stderr)
-        return build.returncode
+    if args.use_verified_build:
+        print("\n[1/2] Verifying the existing compiled image against current sources...")
+    else:
+        print("\n[1/2] Building fresh firmware...")
+        build = subprocess.run([sys.executable, str(BUILD_SCRIPT)])
+        if build.returncode:
+            print("ERROR: build failed. Upload was not started.", file=sys.stderr)
+            return build.returncode
     try:
         info = load_verified_build_info()
         esptool = resolve_esptool(cli, str(info["fqbn"]))

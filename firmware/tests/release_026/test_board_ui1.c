@@ -12,6 +12,18 @@ static EkAppsState fake_apps;
 static unsigned fake_apps_launches;
 static unsigned fake_app_contacts;
 static bool fake_app_modal;
+/* This adapter test exercises NORMAL mode; BLE controls have a native suite. */
+PfControlMode pf_control_mode(void){return PF_CONTROL_NORMAL;}
+void pf_control_restart(PfControlMode mode){(void)mode;}
+void pf_controls_preferences(WsControlPrefs *out){ws_controls_defaults(out);}
+bool pf_controls_save(const WsControlPrefs *prefs){return ws_controls_valid(prefs);}
+bool pf_ble_connected(void){return false;}
+bool pf_ble_ready(void){return false;}
+bool pf_ble_failed(void){return false;}
+bool pf_ble_pad_report(const WsPadReport *report){(void)report;return false;}
+void pf_ble_release(void){}
+void pf_ble_pair(void){}
+void pf_ble_forget(void){}
 int ek_apps_start(void){return 1;}
 void ek_apps_set_visible(bool visible){if(!visible)fake_apps.running=false;}
 void ek_apps_set_modal(bool visible){fake_app_modal=visible;}
@@ -129,7 +141,10 @@ esp_err_t i2c_driver_install(int a,int b,int c,int d,int e){(void)a;(void)b;(voi
 esp_err_t i2c_master_write_to_device(int a,uint8_t b,const uint8_t*c,size_t d,unsigned e){(void)a;(void)b;(void)c;(void)d;(void)e;return 0;}
 esp_err_t i2c_master_write_read_device(int a,uint8_t b,const uint8_t*c,size_t d,uint8_t*o,size_t n,unsigned e){
  (void)a;(void)c;(void)d;(void)e;assert(critical_depth==0);
- if(b!=WS_TOUCH_ADDR)return -1;assert(n==5 || n==11);memset(o,0,n);
+ if(b!=WS_TOUCH_ADDR)return -1;
+ /* This NORMAL-mode fixture has no diagnostic register model. */
+ if(n==1)return -1;
+ assert(n==5 || n==11);memset(o,0,n);
  if(!io_ok)return -1;o[0]=fake_points;o[1]=fake_x>>8;o[2]=fake_x;o[3]=fake_y>>8;o[4]=fake_y;return 0;
 }
 void vTaskDelete(void*p){(void)p;}
@@ -161,7 +176,11 @@ static void reset(void){
  fake_tool_enabled=false;fake_tool_ok=true;fake_tool_media=true;fake_tool_running=false;fake_tool_layout=WS_USB_LAYOUT_US;snprintf(fake_tool_language,sizeof(fake_tool_language),"us");fake_tool_language_index=0;fake_tool_count=3;fake_tool_selected=0;fake_tool_run_calls=fake_tool_stop_calls=fake_tool_select_calls=0;
  fake_supplied_calls=fake_drive_ro_writes=fake_drive_applies=fake_restarts=0;fake_supplied_len=0;memset(fake_supplied_pin,0,sizeof(fake_supplied_pin));
  delay_calls=renders=brightness_calls=enable_calls=0;operation_n=0;operations[0]=0;fake_mode=MODE_MOUNTED;
- ws_board_init();tick(20);
+ ws_board_init();ws_board_start_display();
+ /* Synthetic resets share one host process: the real one-time startup
+  * latch remains set, so reinitialize the mocked panel for each fixture. */
+ s_panel_ok=ws_panel_init()==ESP_OK && ws_lvgl_init()==ESP_OK;
+ tick(20);
 }
 static void sample(unsigned points,unsigned x,unsigned y,unsigned ms){fake_points=points;fake_x=x;fake_y=y;tick(ms);}
 static void tap(unsigned x,unsigned y){sample(0,0,0,20);sample(0,0,0,80);sample(1,x,y,20);sample(1,x,y,60);sample(0,0,0,20);sample(0,0,0,80);}
@@ -256,6 +275,8 @@ static void test_launcher(void){
  puts("PASS launcher: root gestures, cyclic intro/grid navigation (1/2 grids), finger-direction wrap, last-page gaps, swipe/tap exclusion, 56px corner, Yes/No return, security eviction");
 }
 int main(void){
+ /* Board submits changed snapshots; the real LVGL suite separately checks
+  * cache/deadline behavior and anchored Home/status icons. */
  reset();unsigned r=renders,b=brightness_calls;tick(1000);tick(1000);assert(renders>r && brightness_calls==b);
     fake_settings.animation=false;tick(20);r=renders;b=brightness_calls;tick(1000);tick(1000);assert(renders==r && brightness_calls==b);
     fake_settings.animation=true;tick(20);
@@ -267,7 +288,7 @@ int main(void){
  assert(strcmp(operations,"RNB")==0 && !s_touch.valid && s_screen.block_touch);
  tick(5000);assert(!s_view.dim && s_screen.block_touch);
  sample(0,0,0,20);sample(0,0,0,60);assert(!s_screen.block_touch);
- puts("PASS board: premium idle animation redraws only while enabled; USB suspend independent; exact dim/off; off has no traffic; touch wake R->ON->brightness");
+ puts("PASS board: animated snapshots submitted only while enabled; USB suspend independent; exact dim/off; off has no traffic; touch wake R->ON->brightness");
  reset();tick(30000);assert(s_view.dim);sample(1,140,320,20);assert(!s_view.dim && !s_touch.valid);
  tick(1000);assert(!s_view.dim);sample(0,0,0,20);sample(0,0,0,80);
  puts("PASS board: dimmed touch restores brightness without redimming");
@@ -353,6 +374,7 @@ reset();assert(s_view.state==WS_UI_READY && s_view.settings_transition==0);
  assert(fake_settings.dim_seconds>old_dim && fake_settings.revision==rev+1);
  page_up();assert(s_view.settings_page==WS_SETTINGS_PAGE_AUTH);
  page_up();assert(s_view.settings_page==WS_SETTINGS_PAGE_DIAGNOSTICS);
+ page_up();assert(s_view.settings_page==WS_SETTINGS_PAGE_GAMEPAD);
  page_up();assert(s_view.settings_page==WS_SETTINGS_PAGE_AIR_MOUSE);
  page_up();assert(s_view.settings_page==WS_SETTINGS_PAGE_USB);
  page_up();assert(s_view.settings_page==WS_SETTINGS_PAGE_USB_TOOL);
@@ -360,7 +382,7 @@ reset();assert(s_view.state==WS_UI_READY && s_view.settings_transition==0);
  swipe_down_settings();tick(WS_SETTINGS_PAGE_TRANSITION_MS);assert(s_view.settings_page==WS_SETTINGS_PAGE_USB_TOOL);
  swipe_prev_root();tick(WS_SETTINGS_TRANSITION_MS);
  assert(!s_settings_open && s_view.settings_transition==0);
- puts("PASS board: nine Settings pages cycle up/down and persist values");
+ puts("PASS board: ten Settings pages cycle up/down and persist values");
  reset();fake_mode=MODE_SUSPENDED;tick(20);swipe_next_root();tick(WS_SETTINGS_TRANSITION_MS);
  assert(s_view.state==WS_UI_SUSPENDED && s_view.settings_transition==255);
  puts("PASS board R15: STANDBY exposes the same swipe-only Settings surface");

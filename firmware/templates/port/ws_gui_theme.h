@@ -8,9 +8,15 @@
 #ifndef FIDO_V1_GUI_ANIMATION
 #define FIDO_V1_GUI_ANIMATION 1
 #endif
+#ifndef FIDO_V1_GUI_3D
+#define FIDO_V1_GUI_3D 1
+#endif
 #if FIDO_V1_GUI_ACCENT_RGB < 0 || FIDO_V1_GUI_ACCENT_RGB > 0xFFFFFFUL
 #error "FIDO_V1_GUI_ACCENT_RGB must be a 24-bit RGB value"
 #endif
 #if FIDO_V1_GUI_ANIMATION != 0 && FIDO_V1_GUI_ANIMATION != 1
 #error "FIDO_V1_GUI_ANIMATION must be 0 or 1"
+#endif
+#if FIDO_V1_GUI_3D != 0 && FIDO_V1_GUI_3D != 1
+#error "FIDO_V1_GUI_3D must be 0 or 1"
 #endif

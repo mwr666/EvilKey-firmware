@@ -1,40 +1,19 @@
-# Release checks
+# Validation — firmware 0.7.4
 
-## 0.6.1 acceptance
+[Release notes](RELEASE_0.7.4.md) identify the exact accepted image and the
+software checks completed before release. [RELEASE_CURRENT.json](../RELEASE_CURRENT.json)
+records its size, SHA-256, ABI versions, compiler profile and hardware scope.
 
-The owner accepted the exact 0.6.1 BIN on 2026-10-06 after a verified COM5
-installation. Application readback matched and protected NVS, wsdev, part0
-and otadata hashes remained unchanged; no partition migration was required.
-The changed Apps/Settings rings passed 1024 host pixel comparisons.
-App ABI remains v4 and package revision remains 5. Long-duration endurance
-was not measured. [Release notes](RELEASE_0.6.1.md) identify the accepted BIN.
+The 2026-10-08 installation verified application readback and unchanged protected
+storage. The owner confirmed correct GUI, Apps and FIDO/PIN behavior on PCB V1.0.
+This is acceptance of the published BIN, not automatic acceptance of rebuilt images.
 
-## 0.6.0 baseline checks
+The public source export is checked for generated-file/SDK integrity, UTF-8,
+documentation links, release checksums and component/license separation.
+No new full Arduino build from this split public checkout is claimed.
 
-Firmware **0.6.0** was flashed through `EvilKey.cmd` and accepted by the owner
-on the PCB V1 device. The confirmation covers Gamepad appearance/controls,
-Center and settings feedback, Rotate 180, AirMouse, return to USB/FIDO with
-existing keys, and games/save-resume. The BIN identity is recorded once in
-[RELEASE_CURRENT.json](../RELEASE_CURRENT.json).
+PCB V1.1, battery/Wi-Fi operation, sustained concurrent CTAP load, long-duration
+endurance and production security hardening remain unqualified. Native 3D app
+performance requires its own [app qualification](ABI5_QUALIFICATION.md).
 
-Application readback passed. Before/after device digests matched for `nvs`,
-`otadata`, `part0` and `wsdev`; protected credential bytes were not copied to
-the host. The final installation required no partition migration.
-
-Software checks cover native control logic, storage guards and migration,
-production LVGL rendering in both Gamepad orientations, USB/BLE AirMouse,
-launcher/PIN regressions, firmware version and linked build safety checks.
-Windows measurements established both BLE HID Gamepad profiles and mouse
-input; final touch/style changes additionally passed owner device tests.
-Android handset, console/XInput compatibility and long-duration endurance
-have not been established.
-
-## Before a new release
-
-1. Run **EvilKey.cmd → 6** and checks relevant to the changed firmware module.
-2. Build with **7**; flash with **11** and check protected-storage verification.
-3. Test the changed controls, FIDO return and app saves on the device.
-4. Bind the accepted BIN hash in `RELEASE_CURRENT.json`, then package with **8**.
-
-Local build/flash receipts remain in ignored working directories. They are
-not user documentation or release payloads.
+[0.6.1 historical release notes](RELEASE_0.6.1.md) describe the earlier artifact.

@@ -12,13 +12,15 @@ App loading and saves do not access NVS or FIDO credentials.
 
 ## Format and SDK
 
-The current contract is **ABI v4**, package revision **5**:
+Firmware **0.7.4** supports **ABI v4 and v5**, package revision **5**.
+ABI v4 provides the base contract:
 Wasm without imports, touch coordinates, accelerometer samples, drawing
 commands, RGB565 assets and save requests. Packages require a UTF-8 name,
 64×64 icon and `corner-exit-v1`. Older package revisions are rejected.
 Firmware validates bounds and SHA-256 before launch.
 
-- [Complete ABI specification](ABI_V4.md)
+- [Base ABI v4 specification](ABI_V4.md)
+- [ABI v5 native Scene3D extension](ABI_V5.md)
 - [MIT SDK and packaging](sdk/README.md)
 - [Mandatory UI profile](sdk/UI_PROFILE.md)
 
