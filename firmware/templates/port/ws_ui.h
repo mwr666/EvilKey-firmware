@@ -65,7 +65,8 @@ typedef enum {
     WS_SETTINGS_ACTION_AIR_MOUSE_START,
     WS_SETTINGS_ACTION_AIR_MOUSE_TRANSPORT,
     WS_SETTINGS_ACTION_GAMEPAD_PROFILE,
-    WS_SETTINGS_ACTION_GAMEPAD_START
+    WS_SETTINGS_ACTION_GAMEPAD_START,
+    WS_SETTINGS_ACTION_DIAGNOSTICS_SAVE
 } ws_settings_action_t;
 
 typedef enum {
@@ -136,6 +137,9 @@ typedef struct {
     /* Display-only diagnostics. Enabled in RAM, never saved to NVS. */
     bool diagnostics_enabled;
     uint32_t diagnostics_tick;
+    uint32_t diagnostics_export_request;
+    uint8_t diagnostics_export_status;
+    char diagnostics_export_message[80];
     uint32_t apps_mount_ms,apps_scan_ms,apps_icon_ms,apps_headers_read;
     uint32_t ui_poll_gap_ms,ui_render_ms;
     bool air_mouse_available;

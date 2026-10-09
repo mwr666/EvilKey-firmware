@@ -68,6 +68,9 @@ ws_settings_action_t ws_ui_settings_hit_test(uint8_t page,uint16_t x,uint16_t y)
 {
     if(page>=WS_SETTINGS_PAGE_COUNT || page==WS_SETTINGS_PAGE_HOME)
         return WS_SETTINGS_ACTION_NONE;
+    if(page==WS_SETTINGS_PAGE_DIAGNOSTICS && x>=WS_DIAGNOSTICS_SAVE_X &&
+       x<WS_DIAGNOSTICS_SAVE_X+WS_DIAGNOSTICS_SAVE_W && y>=WS_DIAGNOSTICS_SAVE_Y &&
+       y<WS_DIAGNOSTICS_SAVE_Y+WS_DIAGNOSTICS_SAVE_H)return WS_SETTINGS_ACTION_DIAGNOSTICS_SAVE;
     int row=row_index(x,y);
     if(row<0 || !in_control_band(y,row)) return WS_SETTINGS_ACTION_NONE;
 

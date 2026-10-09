@@ -92,6 +92,56 @@ extern "C" void ek_storage_end(void) {
     SD.end();s_spi.end();s_mounted=false;
 }
 extern "C" const char *ek_storage_error(void) {return s_error;}
+extern "C" int ek_storage_diagnostics_write(const uint8_t *data,size_t size,
+                                           char *filename,size_t capacity) {
+    if(filename&&capacity)filename[0]=0;
+    if(!data||!size||size>8192||!filename||capacity<32)return fail("Invalid report");
+    if(!pf_apps_storage_role_allowed())return fail("USB owns microSD");
+    if(!s_mounted)return fail("microSD not mounted");
+    const char *directory="/evilkey/diagnostics";
+    if((!SD.exists("/evilkey")&&!SD.mkdir("/evilkey"))||
+       (!SD.exists(directory)&&!SD.mkdir(directory)))return fail("SD directory failed");
+    static uint32_t sequence;
+    char base[32],temporary[80],target[80];bool available=false;
+    uint32_t stamp=millis();
+    for(unsigned attempt=0;attempt<64;++attempt){
+        snprintf(base,sizeof(base),"diag-%08X-%04u.txt",(unsigned)stamp,(unsigned)(sequence++%10000));
+        snprintf(target,sizeof(target),"%s/%s",directory,base);
+        snprintf(temporary,sizeof(temporary),"%s/%s.tmp",directory,base);
+        if(!SD.exists(target)&&!SD.exists(temporary)){available=true;break;}
+    }
+    if(!available)return fail("SD names exhausted");
+    if(!pf_apps_storage_role_allowed())return fail("USB owns microSD");
+    File file=SD.open(temporary,FILE_WRITE);
+    if(!file)return fail("SD report open failed");
+    const char *error=nullptr;
+    for(size_t offset=0;offset<size&&!error;){
+        size_t count=size-offset;if(count>512)count=512;
+        if(!pf_apps_storage_role_allowed())error="USB owns microSD";
+        else if(file.write(data+offset,count)!=count)error="SD report write failed";
+        offset+=count;
+    }
+    if(!error)file.flush();
+    file.close();
+    if(!error){
+        file=SD.open(temporary,FILE_READ);
+        if(!file||file.size()!=size)error="SD report verify failed";
+        uint8_t block[512];
+        for(size_t offset=0;offset<size&&!error;){
+            size_t count=size-offset;if(count>sizeof(block))count=sizeof(block);
+            if(!pf_apps_storage_role_allowed())error="USB owns microSD";
+            else if(file.read(block,count)!=count||memcmp(block,data+offset,count))error="SD report verify failed";
+            offset+=count;
+        }
+        file.close();
+    }
+    if(!error){
+        if(!pf_apps_storage_role_allowed())error="USB owns microSD";
+        else if(SD.exists(target)||!SD.rename(temporary,target))error="SD report rename failed";
+    }
+    if(error){SD.remove(temporary);return fail(error);}
+    snprintf(filename,capacity,"%s",base);s_error[0]=0;return 1;
+}
 extern "C" int ek_storage_scan_begin(void) {
     ek_storage_scan_end();
     if (!s_mounted) return -1;

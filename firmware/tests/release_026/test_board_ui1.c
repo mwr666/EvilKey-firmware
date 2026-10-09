@@ -12,8 +12,20 @@ static EkAppsState fake_apps;
 static unsigned fake_apps_launches;
 static unsigned fake_app_contacts;
 static bool fake_app_modal;
+static EkDiagnosticsExport fake_export;
+static unsigned fake_export_calls;
+static int critical_depth;
+static unsigned admission_depth,admission_begins,admission_ends;
+bool ek_render_frame_begin(unsigned client){assert(client==EK_RENDER_FRAME_DISPLAY&&!admission_depth&&critical_depth==0);++admission_begins;++admission_depth;return true;}
+void ek_render_frame_end(bool owned){assert(owned&&admission_depth==1&&critical_depth==0);--admission_depth;++admission_ends;}
+int ek_apps_diagnostics_export_request(void){
+ ++fake_export_calls;if(fake_export.status==EK_DIAGNOSTICS_EXPORT_BUSY)return 0;
+ ++fake_export.request;fake_export.status=EK_DIAGNOSTICS_EXPORT_BUSY;return 1;
+}
+void ek_apps_diagnostics_export_snapshot(EkDiagnosticsExport *out){*out=fake_export;}
 /* This adapter test exercises NORMAL mode; BLE controls have a native suite. */
-PfControlMode pf_control_mode(void){return PF_CONTROL_NORMAL;}
+static PfControlMode fake_control_mode=PF_CONTROL_NORMAL;
+PfControlMode pf_control_mode(void){return fake_control_mode;}
 void pf_control_restart(PfControlMode mode){(void)mode;}
 void pf_controls_preferences(WsControlPrefs *out){ws_controls_defaults(out);}
 bool pf_controls_save(const WsControlPrefs *prefs){return ws_controls_valid(prefs);}
@@ -59,6 +71,8 @@ static uint16_t fake_tool_count=3,fake_tool_selected;
 static unsigned fake_tool_run_calls,fake_tool_stop_calls,fake_tool_select_calls;
 static bool fake_uv_ready=true;
 static int fake_uv_retries=8,fake_supplied_result=0;
+static bool fake_eject;static unsigned fake_drive_writes;
+bool pf_manager_drive_take_eject(void){bool event=fake_eject;fake_eject=false;return event;}
 static unsigned fake_supplied_calls,fake_drive_ro_writes,fake_drive_applies,fake_restarts;
 static char fake_supplied_pin[WS_PIN_MAX_BYTES+1U];
 static size_t fake_supplied_len;
@@ -66,7 +80,7 @@ void ws_manager_drive_state_init(void){}
 bool ws_manager_drive_enabled(void){return fake_drive_enabled;}
 bool ws_manager_drive_read_only(void){return fake_drive_ro;}
 bool ws_manager_drive_storage_ok(void){return fake_drive_ok;}
-bool ws_manager_drive_set_enabled(bool enabled){if(!fake_drive_ok)return false;fake_drive_enabled=enabled;return true;}
+bool ws_manager_drive_set_enabled(bool enabled){++fake_drive_writes;if(!fake_drive_ok)return false;fake_drive_enabled=enabled;return true;}
 bool ws_manager_drive_set_read_only(bool ro){fake_drive_ro_writes++;if(!fake_drive_ok)return false;fake_drive_ro=ro;return true;}
 bool pf_manager_drive_media_ready(void){return fake_media_ready;}
 void pf_manager_drive_apply_read_only(bool ro){fake_drive_applies++;assert(ro==fake_drive_ro);}
@@ -115,7 +129,6 @@ uint32_t ws_settings_uv_timeout_ms(void){return (uint32_t)fake_settings.uv_secon
 uint32_t ws_settings_presence_timeout_ms(void){return (uint32_t)fake_settings.presence_seconds*1000U;}
 
 static uint32_t clock_ms, fake_mode;
-static int critical_depth;
 static unsigned fake_points, renders, brightness_calls, enable_calls;
 static uint16_t fake_x,fake_y;
 static bool io_ok=true,render_ok=true,hold_boot,abort_now,display_running;
@@ -133,9 +146,9 @@ int gpio_get_level(int pin){(void)pin;return hold_boot?0:1;}
 uint32_t led_get_mode(void){return fake_mode;}
 esp_err_t ws_panel_init(void){physical_on=true;physical_brightness=0;return 0;}
 esp_err_t ws_lvgl_init(void){return 0;}
-esp_err_t ws_lvgl_render(const ws_ui_snapshot_t *v){assert(!v->screen_off);op('R');++renders;return render_ok?0:-1;}
-esp_err_t ws_panel_brightness(uint8_t n){op(n==0?'0':n==8?'D':'B');physical_brightness=n;++brightness_calls;return 0;}
-esp_err_t ws_panel_set_enabled(bool b){op(b?'N':'F');physical_on=b;++enable_calls;return 0;}
+esp_err_t ws_lvgl_render(const ws_ui_snapshot_t *v){assert(!v->screen_off&&admission_depth==1);op('R');++renders;return render_ok?0:-1;}
+esp_err_t ws_panel_brightness(uint8_t n){assert(!admission_depth);op(n==0?'0':n==8?'D':'B');physical_brightness=n;++brightness_calls;return 0;}
+esp_err_t ws_panel_set_enabled(bool b){assert(!admission_depth);op(b?'N':'F');physical_on=b;++enable_calls;return 0;}
 esp_err_t i2c_param_config(int n,const i2c_config_t *c){(void)n;(void)c;return 0;}
 esp_err_t i2c_driver_install(int a,int b,int c,int d,int e){(void)a;(void)b;(void)c;(void)d;(void)e;return 0;}
 esp_err_t i2c_master_write_to_device(int a,uint8_t b,const uint8_t*c,size_t d,unsigned e){(void)a;(void)b;(void)c;(void)d;(void)e;return 0;}
@@ -171,7 +184,7 @@ static void reset(void){
  s_manager_restart_pending=false;s_usb_tool_restart_pending=false;s_usb_role_restart_at=0;
  memset(&s_touch,0,sizeof(s_touch));memset(&s_pinpad,0,sizeof(s_pinpad));memset(&s_presence,0,sizeof(s_presence));
  memset(&display_cache,0,sizeof(display_cache));
- clock_ms=100;fake_points=0;io_ok=render_ok=display_running=true;hold_boot=abort_now=cancel_button=false;
+ clock_ms=100;fake_points=0;fake_eject=false;io_ok=render_ok=display_running=true;hold_boot=abort_now=cancel_button=false;
  fake_drive_enabled=true;fake_drive_ro=true;fake_drive_ok=true;fake_media_ready=true;fake_uv_ready=true;fake_uv_retries=8;fake_supplied_result=0;
  fake_tool_enabled=false;fake_tool_ok=true;fake_tool_media=true;fake_tool_running=false;fake_tool_layout=WS_USB_LAYOUT_US;snprintf(fake_tool_language,sizeof(fake_tool_language),"us");fake_tool_language_index=0;fake_tool_count=3;fake_tool_selected=0;fake_tool_run_calls=fake_tool_stop_calls=fake_tool_select_calls=0;
  fake_supplied_calls=fake_drive_ro_writes=fake_drive_applies=fake_restarts=0;fake_supplied_len=0;memset(fake_supplied_pin,0,sizeof(fake_supplied_pin));
@@ -275,6 +288,20 @@ static void test_launcher(void){
  puts("PASS launcher: root gestures, cyclic intro/grid navigation (1/2 grids), finger-direction wrap, last-page gaps, swipe/tap exclusion, 56px corner, Yes/No return, security eviction");
 }
 int main(void){
+ reset();fake_eject=true;unsigned writes=fake_drive_writes;bool ro=fake_drive_ro;tick(20);
+ assert(!fake_drive_enabled&&s_manager_restart_pending&&!fake_restarts&&fake_drive_writes==writes+1&&fake_drive_ro==ro);
+ fake_eject=true;tick(20);assert(fake_drive_writes==writes+1&&!fake_restarts);
+ tick(679);assert(!fake_restarts);tick(1);assert(fake_restarts==1);
+ reset();fake_drive_ok=false;fake_eject=true;writes=fake_drive_writes;tick(20);
+ assert(fake_drive_enabled&&!s_manager_restart_pending&&!fake_restarts&&fake_drive_writes==writes+1);
+ assert(s_settings_feedback==WS_SETTINGS_FEEDBACK_ERROR);tick(1000);assert(!fake_restarts&&fake_drive_writes==writes+1);
+ puts("PASS completed host eject: one persistence, 700ms deferred restart, read-only unchanged, duplicate/error behavior");
+ reset();ws_board_presence_begin(30000);fake_eject=true;tick(20);
+ assert(cancel_button&&ws_board_presence_poll()==BUTTON_EV_CANCELLED);
+ reset();begin_pin();fake_eject=true;tick(20);assert(!ws_board_pin_pending()&&s_pinpad.status==WS_PIN_CANCELLED);
+ puts("PASS eject aborts pending presence and PIN without UP/UV approval");
+
+
  /* Board submits changed snapshots; the real LVGL suite separately checks
   * cache/deadline behavior and anchored Home/status icons. */
  reset();unsigned r=renders,b=brightness_calls;tick(1000);tick(1000);assert(renders>r && brightness_calls==b);
@@ -374,6 +401,17 @@ reset();assert(s_view.state==WS_UI_READY && s_view.settings_transition==0);
  assert(fake_settings.dim_seconds>old_dim && fake_settings.revision==rev+1);
  page_up();assert(s_view.settings_page==WS_SETTINGS_PAGE_AUTH);
  page_up();assert(s_view.settings_page==WS_SETTINGS_PAGE_DIAGNOSTICS);
+ rev=fake_settings.revision;unsigned pin_calls=fake_supplied_calls,ro_writes=fake_drive_ro_writes;
+ bool live=s_diagnostics_enabled;tap(80,400);
+ assert(fake_export_calls==1&&fake_export.request==1&&s_view.diagnostics_export_status==EK_DIAGNOSTICS_EXPORT_BUSY);
+ tap(80,400);assert(fake_export_calls==2&&fake_export.request==1);
+ tap(200,400);assert(fake_export_calls==3&&fake_export.request==1); /* Full-width Save; busy worker rejects duplicate. */
+ assert(fake_settings.revision==rev&&fake_supplied_calls==pin_calls&&fake_drive_ro_writes==ro_writes&&s_diagnostics_enabled==live);
+ fake_export.status=EK_DIAGNOSTICS_EXPORT_SAVED;strcpy(fake_export.filename,"diag-00000001-0001.txt");tick(20);
+ assert(!strcmp(s_view.diagnostics_export_message,fake_export.filename));
+ fake_export.status=EK_DIAGNOSTICS_EXPORT_ERROR;strcpy(fake_export.error,"SD report verify failed");tick(20);
+ assert(!strcmp(s_view.diagnostics_export_message,fake_export.error));
+ puts("PASS Diagnostics export: release tap queues once, busy tap ignored, feedback propagated, live status/settings/PIN/USB policy preserved");
  page_up();assert(s_view.settings_page==WS_SETTINGS_PAGE_GAMEPAD);
  page_up();assert(s_view.settings_page==WS_SETTINGS_PAGE_AIR_MOUSE);
  page_up();assert(s_view.settings_page==WS_SETTINGS_PAGE_USB);

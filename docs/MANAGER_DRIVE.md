@@ -13,6 +13,18 @@ so files can be copied without a separate reader.
 From Home, swipe left to Apps, then left to Settings; when Apps is empty,
 Home opens Settings directly. Manager Drive and USB Tool are mutually exclusive.
 
+## Host eject (0.7.5)
+
+After file transfers finish, choose **Eject** for Manager Drive in the host OS
+(for example Windows Eject D:). The key marks the medium absent, saves MSC OFF
+and briefly restarts the device, reconnecting without MSC. Apps can then use the card locally.
+The read-only preference is unchanged; exposing the card again requires enabling
+MSC in Settings. USB Tool has its own existing storage lifecycle.
+
+If the setting cannot be saved, the device shows a Settings storage error and
+keeps the medium absent without restarting. Retry disabling MSC in Settings.
+Physical removal and unplugging USB are not interpreted as a host eject command.
+
 ## Read-only protection
 
 | Transition | Authorization |

@@ -1,6 +1,6 @@
 # Native Jet GUI architecture
 
-This describes the GUI shipped in **EvilKey 0.7.4**, compiled with **Os**.
+This describes the GUI shipped in **EvilKey 0.7.5**, compiled with **Os**.
 [Graphics and interface](../../GRAPHICS_AND_UI.md) describes its appearance;
 [release validation](../../VALIDATION.md) identifies the accepted artifact.
 
@@ -47,14 +47,15 @@ in screen coordinates for dark gradients; flat fills and moving arcs do not
 receive that treatment. Unlike app Scene3D, this GUI path has no cooperative
 wall-clock deadline; fixed scenes and per-scene telemetry define its workload.
 
-Optional O2, active-face and SRAM cache experiments remain disabled in the
-accepted Os configuration. No acceleration claim is made from a host build alone.
+Static helper workers render disjoint bands and join before buffers are reused.
+The production configuration uses Os, bitset traversal and a bounded internal
+tile fallback. Host exact-pixel checks protect geometry, clipping and shading.
 
 ## Display transfer
 
 Normal mode requests two 64-row RGB565 buffers. When internal DMA allocation
-cannot accommodate them, two PSRAM draw buffers use two 16-row internal DMA
-staging buffers. Smaller fallbacks are supported. BLE mode reduces buffer
+cannot accommodate them, the next choice is two direct 16-row internal DMA
+buffers. PSRAM draw buffers with internal DMA staging remain a fallback. BLE mode reduces buffer
 allocation to retain radio memory. Startup reserves USB/BLE resources before
 large display allocations.
 
@@ -68,6 +69,14 @@ all screens, not only the screensaver.
 Diagnostics distinguishes GUI scenes and reports P50/P95 times, geometry/
 raster/composition timings, submitted triangles, allocation and sampling state.
 Display telemetry reports frame/transfer timing, waits, flushes and buffers.
+The seven Diagnostics cards include native rendering, copy and worker telemetry.
+Save report exports all cards to `/evilkey/diagnostics/` through the storage worker.
+It verifies the completed file before publishing it and reports missing SD or
+MSC ownership as an error.
+The seven Diagnostics cards include native rendering, copy and worker telemetry.
+Save report exports all cards to `/evilkey/diagnostics/` through the storage worker.
+It verifies the completed file before publishing it and reports missing SD or
+MSC ownership as an error.
 Compare the same workload and configuration when evaluating an optimization.
 
 Host checks cover clipping, depth, reconstruction, geometry/cache bounds and
@@ -76,5 +85,5 @@ both accents and animation ON/OFF. Rendering never authorizes FIDO presence,
 PIN success or a CTAP response; those come from authenticator state.
 Host images do not measure ESP32-S3 speed or panel quality.
 
-The owner accepted the exact 0.7.4 release on PCB V1.0. See
-[release evidence](../../RELEASE_0.7.4.md) for software and installation results.
+The owner accepted the exact 0.7.5 release on PCB V1.0. See
+[release evidence](../../RELEASE_0.7.5.md) for software and installation results.

@@ -8,3 +8,4 @@
  * owner/task; the snapshot contains no PIN plaintext. */
 esp_err_t ws_lvgl_init(void);
 esp_err_t ws_lvgl_render(const ws_ui_snapshot_t *view);
+/* Display-owner only: advance a reserved diagnostic without new input. */

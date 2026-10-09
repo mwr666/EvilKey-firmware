@@ -18,7 +18,7 @@ int main(void){
     unsigned h=hash(dst),ink=0;for(unsigned i=64*280;i<352*280;i++)ink+=dst[i]!=s.background;assert(ink>100);
     for(unsigned i=0;i<64*280;i++)assert(dst[i]==0xabcd);for(unsigned i=352*280;i<456*280;i++)assert(dst[i]==0xabcd);
     uint64_t time=0;stats=ek_scene3d_render(r,(const uint8_t*)&s,dst,280,0,64,280,288,clock_tick,&time);assert(stats.status==2 && hash(dst)==h);
-    s.object_count=96;for(unsigned i=1;i<96;i++)s.objects[i]=s.objects[0];
+    s.object_count=96;for(unsigned i=0;i<96;i++){s.objects[i]=s.objects[0];s.objects[i].scale[0]=s.objects[i].scale[1]=s.objects[i].scale[2]=2048;}
     stats=ek_scene3d_render(r,(const uint8_t*)&s,dst,280,0,64,280,288,NULL,NULL);assert(stats.status==3 && hash(dst)==h);
     s.object_count=1;memset(s.objects+1,0,95*sizeof(s.objects[0]));
     /* Perspective, near-plane intersections, entirely behind eye, extreme

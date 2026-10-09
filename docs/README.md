@@ -15,9 +15,12 @@
   [MIT SDK](../apps/sdk/README.md), [UI profile](../apps/sdk/UI_PROFILE.md).
 - [Source provenance](../firmware/docs/SOURCES.md),
   [installation information](../firmware/INSTALLATION_INFORMATION.md).
-- [0.7.4 release](RELEASE_0.7.4.md), [validation scope](VALIDATION.md),
+- [0.7.5 release](RELEASE_0.7.5.md), [validation scope](VALIDATION.md),
   [native app qualification](ABI5_QUALIFICATION.md).
 
-## Earlier release
+## Earlier releases
+
+[0.7.4 notes](RELEASE_0.7.4.md) describe the previous release.
+
 
 [0.6.1 notes](RELEASE_0.6.1.md) are retained as history, not the current feature contract.

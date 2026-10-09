@@ -8,13 +8,47 @@
 #include <cmath>
 #include <limits>
 #include "../third_party/jet/OpaqueUI.hpp"
+#include "../EvilKeyV1/src/apps/ek_render_parallel.h"
+#include <vector>
+
+static void parallel_frames() {
+    ek_render_workers_start();assert(ek_render_workers_ready());
+    ws_gui_3d_frame_t frame{};unsigned cases=0;
+    EkRenderWorkerStats before{},after{};ek_render_worker_stats(&before);
+    for(unsigned channel=0;channel<WS_3D_CHANNELS;++channel)
+    for(int tilt:{-160,0,160})for(unsigned icon=0;icon<(channel==WS_3D_HERO?10U:1U);++icon)
+    for(unsigned phase:{0U,1U,31U,62U,63U,69U,70U,127U,190U,197U,198U,255U}) {
+        ws_gui_3d_transition(tilt);ek_render_parallel_enable(false);
+        assert(ws_gui_3d_reference(channel,icon,0x4DE3C1,&frame)); // invalidate cached frame
+        assert(ws_gui_3d_render(channel,phase,0x4DE3C1,icon,&frame));
+        std::vector<uint8_t> serial(frame.pixels,frame.pixels+frame.width*frame.height*3);
+        const auto samples=ws_gui_3d_channel_stats(channel).converted_samples;
+        const auto generation=frame.generation;
+        ek_render_parallel_enable(true);
+        assert(ws_gui_3d_reference(channel,icon,0x4DE3C1,&frame));
+        assert(ws_gui_3d_render(channel,phase,0x4DE3C1,icon,&frame));
+        assert(frame.generation==generation+1);
+        assert(memcmp(serial.data(),frame.pixels,serial.size())==0);
+        assert(ws_gui_3d_channel_stats(channel).converted_samples==samples);
+        const auto completed=frame.generation;ek_render_worker_stats(&after);
+        assert(ws_gui_3d_render(channel,phase,0x4DE3C1,icon,&frame));assert(frame.generation==completed);
+        EkRenderWorkerStats cached{};ek_render_worker_stats(&cached);
+        assert(cached.jobs[0]+cached.jobs[1]==after.jobs[0]+after.jobs[1]);++cases;
+    }
+    ek_render_worker_stats(&after);
+    const bool allocation_failed=getenv("EVILKEY_TEST_3D_PARALLEL_ALLOC_FAIL")!=nullptr;
+    if(allocation_failed)assert(after.jobs[0]+after.jobs[1]==before.jobs[0]+before.jobs[1]);
+    else assert(after.jobs[0]+after.jobs[1]>before.jobs[0]+before.jobs[1]);
+    ws_gui_3d_transition(0);
+    printf("PASS: %u serial/threaded exact GUI images, generation/cache and converted counters (%s)\n",cases,allocation_failed?"optional allocation fallback":"helper jobs observed");
+}
 
 static void raster_contract() {
     using namespace Renderer;
     // Exhaustive oracle on small triangles: odd endpoints, shared edges,
     // thin faces and clipping. Edge coverage/depth come from direct int64
     // barycentrics, independent of the optimized scanline range/recurrence.
-    constexpr int W=32;uint16_t colors[W*W],depth[W*W];
+    constexpr int W=32;uint16_t colors[W*W],depth[W*W],split_colors[W*W],split_depth[W*W];
     unsigned cases=0;
     for(int bx=-3;bx<36;bx+=3)for(int by=-3;by<36;by+=3) {
         OpaqueUIFace t{};t.v[0]={1,1,19001};t.v[1]={int16_t(bx),3,20003};t.v[2]={7,int16_t(by),21007};t.color=0x5ff0;
@@ -70,6 +104,15 @@ static void raster_contract() {
         if(!prepareOpaqueUI(t))continue;
         memset(depth,255,sizeof depth);OpaqueUICursor cursor{};
         for(int band=0;band<W;band+=4)drawOpaqueUIContinued(t,cursor,colors+band*W,depth+band*W,W,4,band);
+        memset(split_depth,255,sizeof split_depth);memset(split_colors,0,sizeof split_colors);
+        // A fresh lower-band cursor must replay the recurrence from min_y;
+        // restarting at the split would lose edge/depth quotient residuals.
+        for(int first:{0,16}){OpaqueUICursor local{};
+            for(int band=first;band<first+16;band+=4)
+                drawOpaqueUIContinued(t,local,split_colors+band*W,split_depth+band*W,W,4,band);
+        }
+        assert(memcmp(depth,split_depth,sizeof depth)==0);
+        for(int i=0;i<W*W;++i)if(depth[i]!=65535)assert(colors[i]==split_colors[i]);
         fast_cases+=cursor.fast;
         for(int y=0;y<W;++y)for(int x=0;x<W;++x){auto a=t.v[0],b=t.v[1],c=t.v[2];
             int64_t w0=int64_t(b.y-c.y)*(x-c.x)+int64_t(c.x-b.x)*(y-c.y);
@@ -100,7 +143,9 @@ int main() {
     }
     puts("PASS: exact projection rounding at 720006 positive/negative half and adjacent float boundaries");
     assert(ws_gui_3d_init());assert(ws_gui_3d_init());
-    assert(ws_gui_3d_stats().psram_bytes==238400+1536*(sizeof(Renderer::OpaqueUIFace)+sizeof(Renderer::OpaqueUICursor)+sizeof(uint16_t))+1024*sizeof(Renderer::UIVertex)+512*2*sizeof(float)+512*2*sizeof(uint16_t)+4*200*4+65*3*sizeof(float));
+    const size_t baseline_bytes=238400+1536*(sizeof(Renderer::OpaqueUIFace)+sizeof(Renderer::OpaqueUICursor)+sizeof(uint16_t))+1024*sizeof(Renderer::UIVertex)+512*2*sizeof(float)+512*2*sizeof(uint16_t)+4*200*4+65*3*sizeof(float);
+    const size_t parallel_bytes=getenv("EVILKEY_TEST_3D_PARALLEL_ALLOC_FAIL")?0:400*8*4+1536*(sizeof(Renderer::OpaqueUICursor));
+    assert(parallel_bytes<=256*1024);assert(ws_gui_3d_stats().psram_bytes==baseline_bytes+parallel_bytes);
     if(getenv("EVILKEY_TEST_3D_LOW_INTERNAL") || getenv("EVILKEY_TEST_3D_ALLOC_FAIL")){
         auto before=ws_gui_3d_stats().psram_bytes;ws_gui_3d_configure_tiles();
         assert(!ws_gui_3d_presentation_stats().internal_tiles);
@@ -155,6 +200,7 @@ int main() {
     // Exercise SRAM tiles after the full PSRAM sweep. Same sparse/full oracle
     // verifies both band sizes, including stale pixels after a glitch frame.
     ws_gui_3d_configure_tiles();assert(ws_gui_3d_presentation_stats().internal_tiles);
+    parallel_frames(); // repeat exact comparisons with 4-row owner SRAM tiles
     for(unsigned channel=0;channel<WS_3D_CHANNELS;channel++)for(unsigned phase:{0U,63U,70U,127U,192U,198U,255U})
         assert(ws_gui_3d_render(channel,phase,0x4DE3C1,0,&frame));
     ws_gui_3d_record_panel_wait(37);assert(ws_gui_3d_take_panel_wait()==37);assert(ws_gui_3d_take_panel_wait()==0);

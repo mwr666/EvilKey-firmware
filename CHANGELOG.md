@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.5 — 2026-10-09
+
+- Rendering across both ESP32-S3 cores; triangle spans, geometry reuse and PSRAM access improvements.
+- Seven Diagnostics cards and complete report export to SD.
+- Host Eject disables Manager Drive and restores local SD access after restart.
+- Rendering/display coordination, memory fallbacks and production cleanup.
+- ABI v4/v5 and Manager 1.1.6 compatibility retained.
+
+[Release details](docs/RELEASE_0.7.5.md).
+
 ## 0.7.4 — 2026-10-08
 
 - Native Jet GUI, original icon designs, matching Apps/Settings rings and visible icon depth.

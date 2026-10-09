@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "evilkey_app_abi.h"
+#include "ek_scene3d.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -41,10 +42,32 @@ void ek_apps_input(const EvilKeyAppTouch *touch, uint32_t count,
                    bool accel_valid, int32_t ax_mg, int32_t ay_mg,
                    int32_t az_mg);
 void ek_apps_snapshot(EkAppsState *out);
+/* Last native scene profile, retained after exit; copied under worker guard. */
+void ek_apps_scene_profile(EkSceneProfile *out);
+enum {EK_DIAGNOSTICS_EXPORT_IDLE,EK_DIAGNOSTICS_EXPORT_BUSY,
+      EK_DIAGNOSTICS_EXPORT_SAVED,EK_DIAGNOSTICS_EXPORT_ERROR,
+      EK_DIAGNOSTICS_REPORT_CAPACITY=8192};
+typedef struct {uint32_t status,request;char filename[32],error[80];} EkDiagnosticsExport;
+/* Reserve one export; the display owner captures it on its next snapshot. */
+int ek_apps_diagnostics_export_request(void);
+/* On success the worker owns/frees data; failure leaves ownership with caller. */
+int ek_apps_diagnostics_export(char *data,size_t size);
+void ek_apps_diagnostics_export_failed(const char *reason);
+void ek_apps_diagnostics_export_snapshot(EkDiagnosticsExport *out);
 typedef struct { uint16_t x,y,width,height; } EkAppsDirty;
 int ek_apps_copy_frame(uint16_t *pixels,size_t count,uint32_t *generation,
                        EkAppsDirty *dirty);
-
+/* Private display path: same consumption contract, destination in panel order. */
+int ek_apps_copy_frame_panel(uint16_t *pixels,size_t count,uint32_t *generation,
+                             EkAppsDirty *dirty);
+typedef struct {
+    uint32_t copies,last_bytes,last_us,peak_us;
+    uint16_t last_width,last_height;
+    uint32_t panel_order;
+    uint32_t method;
+} EkAppsCopyStats;
+enum {EK_APPS_COPY_NATIVE=0,EK_APPS_COPY_FUSED=1,EK_APPS_COPY_ROW_SWAP=2};
+void ek_apps_copy_stats(EkAppsCopyStats *out);
 #ifdef __cplusplus
 }
 #endif

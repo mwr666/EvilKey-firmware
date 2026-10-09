@@ -31,6 +31,7 @@
 #include "ws_ui_layout.h"
 #include "ws_gui_theme.h"
 #include "../../EvilKeyV1/src/apps/ek_service.h"
+#include "../../EvilKeyV1/src/apps/ek_render_parallel.h"
 #include "../../EvilKeyV1/src/apps/ek_exit_dialog.h"
 #include "esp_err.h"
 #include "esp_heap_caps.h"
@@ -38,6 +39,7 @@
 #include "esp_log.h"
 #include "miniz.h"
 #include <stdio.h>
+#include <stdarg.h>
 #include <string.h>
 #include "../lvgl/lvgl.h"
 #include "ws_logo_assets.h"
@@ -349,6 +351,8 @@ typedef struct {
     lv_obj_t *diagnostics_title;
     lv_obj_t *diagnostics_value;
     lv_obj_t *diagnostics_memory;
+    lv_obj_t *diagnostics_save;
+    lv_obj_t *diagnostics_save_label;
     lv_obj_t *air_mouse_info_card;
     lv_obj_t *air_mouse_info_label;
     lv_obj_t *settings_footer;
@@ -625,6 +629,16 @@ static void icon_show_only(hero_icon_id_t id)
     for(unsigned i=0;i<ICON_COUNT;++i) hidden(ui.icons[i].root,i!=(unsigned)id);
 }
 
+static void flush_wait(lv_disp_drv_t *drv)
+{
+    
+    uint32_t start=(uint32_t)esp_timer_get_time();
+    /* Same active wait as LVGL8.4's default; measure it once without changing
+     * DMA ownership, scheduling or the existing completion/error policy. */
+    while(drv->draw_buf->flushing) {}
+    ws_gui_3d_record_lvgl_wait((uint32_t)esp_timer_get_time()-start);
+    
+}
 static void flush_done(void *ctx)
 {
     /* esp_lcd invokes this from the color-DMA completion callback. LVGL 8.4
@@ -1094,11 +1108,15 @@ static void build_settings(void)
     ui.diagnostics_value=label(ui.diagnostics_card,"OFF",&lv_font_montserrat_20,
                                12,29,236,30);
     ui.diagnostics_memory=label(ui.diagnostics_card,"Enable to show memory status",
-                                &lv_font_montserrat_14,12,61,236,46);
+                                &lv_font_montserrat_14,12,61,236,48);
     lv_obj_set_style_text_align(ui.diagnostics_title,LV_TEXT_ALIGN_LEFT,0);
     lv_obj_set_style_text_align(ui.diagnostics_value,LV_TEXT_ALIGN_LEFT,0);
     lv_obj_set_style_text_align(ui.diagnostics_memory,LV_TEXT_ALIGN_LEFT,0);
     hidden(ui.diagnostics_card,true);
+    ui.diagnostics_save=card(ui.settings_content,WS_DIAGNOSTICS_SAVE_X,WS_DIAGNOSTICS_SAVE_Y,
+        WS_DIAGNOSTICS_SAVE_W,WS_DIAGNOSTICS_SAVE_H,12);
+    ui.diagnostics_save_label=label(ui.diagnostics_save,"Save report",&lv_font_montserrat_14,4,9,232,28);
+    hidden(ui.diagnostics_save,true);
 
     ui.air_mouse_info_card=card(ui.settings_content,WS_SETTINGS_ROW_X,
                                  WS_SETTINGS_ROW_Y+WS_SETTINGS_ROW_DY,
@@ -1116,6 +1134,7 @@ static void build_settings(void)
     for(unsigned i=0;i<SETTINGS_DOTS;++i)
         ui.settings_dot[i]=circle(ui.settings_content,61+(int)i*17,436,6,COL_FAINT,
                                   LV_OPA_COVER,COL_FAINT,0,LV_OPA_TRANSP);
+
 }
 
 static void build_apps(void)
@@ -1459,6 +1478,13 @@ esp_err_t ws_lvgl_init(void)
         s_pixels_a=NULL;s_pixels_b=NULL;
     }
     if(!s_pixels_a && !ble_role && FIDO_V1_GUI_3D) {
+        const uint32_t small_pixels=DRAW_PIXELS(STAGING_ROWS);
+        s_pixels_a=(lv_color_t*)heap_caps_malloc(small_pixels*sizeof(lv_color_t),MALLOC_CAP_DMA|MALLOC_CAP_INTERNAL);
+        s_pixels_b=(lv_color_t*)heap_caps_malloc(small_pixels*sizeof(lv_color_t),MALLOC_CAP_DMA|MALLOC_CAP_INTERNAL);
+        if(s_pixels_a&&s_pixels_b){s_draw_pixels=small_pixels;selected_rows=STAGING_ROWS;}
+        else {heap_caps_free(s_pixels_a);heap_caps_free(s_pixels_b);s_pixels_a=s_pixels_b=NULL;}
+    }
+    if(!s_pixels_a && !ble_role && FIDO_V1_GUI_3D) {
         s_pixels_a=(lv_color_t *)heap_caps_malloc(target_bytes,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
         s_pixels_b=(lv_color_t *)heap_caps_malloc(target_bytes,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
         for(unsigned i=0;i<2;i++)s_staging[i]=(lv_color_t *)heap_caps_malloc(
@@ -1496,6 +1522,7 @@ esp_err_t ws_lvgl_init(void)
     s_disp_drv.hor_res=WS_LCD_WIDTH;
     s_disp_drv.ver_res=WS_LCD_HEIGHT;
     s_disp_drv.flush_cb=flush_cb;
+    s_disp_drv.wait_cb=flush_wait;
     s_disp_drv.draw_buf=&s_draw_buf;
     s_disp_drv.sw_rotate=pf_control_mode()==PF_CONTROL_BLE_PAD;
     /* Every V1 panel window must start even/end odd, including animated
@@ -1985,6 +2012,9 @@ static void update_settings(const ws_ui_snapshot_t *v,uint32_t accent)
     }
     hidden(ui.settings_swatch,true);
     hidden(ui.diagnostics_card,page!=WS_SETTINGS_PAGE_DIAGNOSTICS);
+    hidden(ui.diagnostics_save,page!=WS_SETTINGS_PAGE_DIAGNOSTICS);
+    hidden(ui.settings_return,page==WS_SETTINGS_PAGE_DIAGNOSTICS);
+    hidden(ui.settings_footer,page==WS_SETTINGS_PAGE_DIAGNOSTICS);
     hidden(ui.air_mouse_info_card,true);
 
     const char *title="SETTINGS";
@@ -2013,6 +2043,12 @@ static void update_settings(const ws_ui_snapshot_t *v,uint32_t accent)
     else if(v->settings_feedback==WS_SETTINGS_FEEDBACK_PIN_CANCELLED) { sub="Write access cancelled";sub_col=COL_MUTED; }
     else if(v->settings_feedback==WS_SETTINGS_FEEDBACK_PIN_TIMEOUT) { sub="PIN timeout - still READ ONLY";sub_col=COL_WARN; }
     else if(v->settings_feedback==WS_SETTINGS_FEEDBACK_ERROR) { sub="Could not save";sub_col=COL_BAD; }
+    if(page==WS_SETTINGS_PAGE_DIAGNOSTICS){
+        sub=v->diagnostics_export_status==EK_DIAGNOSTICS_EXPORT_BUSY?"Saving report...":
+            v->diagnostics_export_message[0]?v->diagnostics_export_message:"/evilkey/diagnostics";
+        sub_col=v->diagnostics_export_status==EK_DIAGNOSTICS_EXPORT_ERROR?COL_BAD:
+            v->diagnostics_export_status==EK_DIAGNOSTICS_EXPORT_SAVED?accent:COL_MUTED;
+    }
 
     set_text(ui.settings_title,title,COL_TEXT);
     set_text(ui.settings_subtitle,sub,sub_col);
@@ -2147,6 +2183,11 @@ static void update_settings(const ws_ui_snapshot_t *v,uint32_t accent)
         break;
     }
     case WS_SETTINGS_PAGE_DIAGNOSTICS: {
+        bool saving=v->diagnostics_export_status==EK_DIAGNOSTICS_EXPORT_BUSY;
+        bool pressed=settings_pressed(v,WS_SETTINGS_ACTION_DIAGNOSTICS_SAVE);
+        set_card_flat(ui.diagnostics_save,pressed&&!saving?accent:COL_PANEL2,
+            saving?COL_FAINT:accent,1);
+        set_text(ui.diagnostics_save_label,v->diagnostics_export_status==EK_DIAGNOSTICS_EXPORT_BUSY?"Saving...":"Save report",saving?COL_FAINT:pressed?COL_INK:accent);
         settings_row_set(&ui.settings_row[0],"Show live status",
             v->diagnostics_enabled?"ON":"OFF",true,false,false,
             settings_pressed(v,WS_SETTINGS_ACTION_DIAGNOSTICS_TOGGLE),accent);
@@ -2162,7 +2203,7 @@ static void update_settings(const ws_ui_snapshot_t *v,uint32_t accent)
                 (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_DMA|MALLOC_CAP_INTERNAL)/1024U),
                 (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)/1024U),
                 s_staging[0]?"DMA 2x16":"direct DMA");
-            const unsigned section=(v->diagnostics_tick/3U)%4U;
+            const unsigned section=(v->diagnostics_tick/3U)%7U;
             if(section==1U) {
                 snprintf(value,sizeof(value),"%u apps / %u headers",v->apps_count,
                          (unsigned)v->apps_headers_read);
@@ -2190,6 +2231,34 @@ static void update_settings(const ws_ui_snapshot_t *v,uint32_t accent)
                          (unsigned)cs.geometry_us,(unsigned)cs.raster_us,(unsigned)cs.convert_us,
                          (unsigned)cs.triangles,(unsigned)cs.detail_samples,v->diagnostics_enabled?"live":"1/8");
                 set_text(ui.diagnostics_title,"3D RENDERER",COL_MUTED);
+            } else if(section==6U) {
+                EkRenderWorkerStats cores;ek_render_worker_stats(&cores);
+                set_text(ui.diagnostics_title,"RENDER CORES",COL_MUTED);
+                snprintf(value,sizeof(value),"%s",cores.ready&&cores.enabled?"Dual core":"Serial fallback");
+                snprintf(memory,sizeof(memory),"C0 %u / C1 %u\nStack %u / %u B",
+                    (unsigned)cores.jobs[0],(unsigned)cores.jobs[1],
+                    (unsigned)cores.stack_free[0],(unsigned)cores.stack_free[1]);
+            } else if(section>=4U) {
+                EkSceneProfile native;ek_apps_scene_profile(&native);
+                set_text(ui.diagnostics_title,section==4U?"NATIVE SCENE3D":"SCENE COPY / CLOCK",COL_MUTED);
+                if(native.stats.status) {
+                    if(section==4U) {
+                        const char *status=native.stats.status==EVILKEY_3D_OK?"OK":
+                            native.stats.status==EVILKEY_3D_TIMEOUT?"Timeout":"Error";
+                        snprintf(value,sizeof(value),"%s / %u us",status,(unsigned)native.stats.elapsed_us);
+                        snprintf(memory,sizeof(memory),"Clr %u / cam %u us\nGeom %u (raster %u)",
+                                 (unsigned)native.clear_us,(unsigned)native.setup_us,
+                                 (unsigned)native.geometry_us,(unsigned)native.raster_us);
+                    } else {
+                        snprintf(value,sizeof(value),"Copy %u us",(unsigned)native.reconstruct_us);
+                        snprintf(memory,sizeof(memory),"Gap %u us / %u clocks\n%u tris / %u pixels",
+                                 (unsigned)native.max_clock_gap_us,(unsigned)native.clock_calls,
+                                 (unsigned)native.stats.triangles,(unsigned)native.stats.pixel_tests);
+                    }
+                } else {
+                    snprintf(value,sizeof(value),"No scene sample");
+                    snprintf(memory,sizeof(memory),"Run a 3D app, then exit\nWall us / geom includes raster");
+                }
             } else set_text(ui.diagnostics_title,"DRAW BUFFER",COL_MUTED);
             set_text(ui.diagnostics_value,value,accent);
             set_text(ui.diagnostics_memory,memory,COL_MUTED);
@@ -2604,6 +2673,9 @@ static bool settings_content_changed(const ws_ui_snapshot_t *a,const ws_ui_snaps
         a->settings_feedback!=b->settings_feedback || a->settings_storage_ok!=b->settings_storage_ok ||
         a->settings_animation!=b->settings_animation || a->settings_dim_seconds!=b->settings_dim_seconds ||
         a->diagnostics_enabled!=b->diagnostics_enabled || a->diagnostics_tick!=b->diagnostics_tick ||
+        a->diagnostics_export_request!=b->diagnostics_export_request ||
+        a->diagnostics_export_status!=b->diagnostics_export_status ||
+        strcmp(a->diagnostics_export_message,b->diagnostics_export_message)!=0 ||
         a->settings_off_seconds!=b->settings_off_seconds ||
         a->settings_presence_seconds!=b->settings_presence_seconds ||
         a->settings_uv_seconds!=b->settings_uv_seconds || a->brightness!=b->brightness ||
@@ -2783,15 +2855,116 @@ static void update_launcher_motion(const ws_ui_snapshot_t *v,uint32_t accent)
     }
 }
 
+static bool diagnostics_append(char *text,size_t capacity,size_t *used,const char *format,...)
+{
+    if(*used>=capacity)return false;
+    va_list args;va_start(args,format);
+    int count=vsnprintf(text+*used,capacity-*used,format,args);va_end(args);
+    if(count<0||(size_t)count>=capacity-*used){*used=capacity;return false;}
+    *used+=(size_t)count;return true;
+}
+static void diagnostics_profile(char *text,size_t capacity,size_t *used,const EkSceneProfile *p)
+{
+    diagnostics_append(text,capacity,used,
+        "status=%u\nelapsed_us=%u\ntriangles=%u\npixel_tests=%u\nclear_us=%u\n"
+        "camera_us=%u\ngeometry_us=%u\nraster_us=%u\ncopy_us=%u\nclock_calls=%u\nmax_clock_gap_us=%u\n",
+        (unsigned)p->stats.status,(unsigned)p->stats.elapsed_us,(unsigned)p->stats.triangles,
+        (unsigned)p->stats.pixel_tests,(unsigned)p->clear_us,(unsigned)p->setup_us,
+        (unsigned)p->geometry_us,(unsigned)p->raster_us,(unsigned)p->reconstruct_us,
+        (unsigned)p->clock_calls,(unsigned)p->max_clock_gap_us);
+}
+/* Explicit-request capture on the display owner. Heap ownership transfers to
+ * the Apps worker only on successful submission; no SD work occurs here. */
+static __attribute__((noinline)) void diagnostics_report(const ws_ui_snapshot_t *v)
+{
+    char *text=heap_caps_malloc(EK_DIAGNOSTICS_REPORT_CAPACITY,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    if(!text){ek_apps_diagnostics_export_failed("Report memory unavailable");return;}
+    size_t used=0;const size_t capacity=EK_DIAGNOSTICS_REPORT_CAPACITY;
+#define REPORT(...) diagnostics_append(text,capacity,&used,__VA_ARGS__)
+    REPORT("EvilKey Diagnostics\nformat_version=1\nfirmware=%s\nspec_revision=22\n"
+        "captured_monotonic_us=%llu\nwidth=280\nheight=456\nlive_status=%u\n"
+        "timing_unit=us unless key ends in _ms\n"
+        "snapshot_note=component snapshots collected at request; no continuous history\n"
+        "native_status=0 empty,1 OK,2 TIMEOUT,other native fault\n"
+        "admission_note=queue wait precedes unchanged native compute budget; end-to-end latency is not bounded to20ms\n"
+        "native_limits=20000us pre-copy,300000 pixel candidates\n",
+        PF_FIRMWARE_VERSION_STRING,(unsigned long long)esp_timer_get_time(),v->diagnostics_enabled?1U:0U);
+    lv_mem_monitor_t pool;lv_mem_monitor(&pool);
+    REPORT("\n[draw_buffer]\nbuffers=%u\nrows=%u\nrgb565=1\nstaging=%s\n"
+        "dma_free_bytes=%u\ndma_largest_bytes=%u\npsram_free_bytes=%u\nlvgl_pool_free_bytes=%u\n",
+        s_pixels_b?2U:1U,(unsigned)(s_draw_pixels/WS_LCD_WIDTH),s_staging[0]?"2x16":"direct",
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA|MALLOC_CAP_INTERNAL),
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA|MALLOC_CAP_INTERNAL),
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT),(unsigned)pool.free_size);
+    REPORT("\n[apps_catalog]\napps=%u\nheaders=%u\nmount_ms=%u\nscan_ms=%u\nicons_ms=%u\npage=%u\n"
+        "\n[ui_latency]\npoll_max_ms=%u\nrender_max_ms=%u\n",
+        (unsigned)v->apps_count,(unsigned)v->apps_headers_read,(unsigned)v->apps_mount_ms,
+        (unsigned)v->apps_scan_ms,(unsigned)v->apps_icon_ms,(unsigned)v->launcher_page+1,
+        (unsigned)v->ui_poll_gap_ms,(unsigned)v->ui_render_ms);
+    ws_gui_3d_presentation_stats_t ps=ws_gui_3d_presentation_stats();
+    REPORT("compose_us=%u\npanel_wait_us=%u\npeak_compose_us=%u\npeak_panel_wait_us=%u\n"
+        "frame_p50_us=%u\nframe_p95_us=%u\nframe_us=%u\npeak_frame_us=%u\nframes=%u\n"
+        "flushes=%u\nbytes=%u\nfailed_frames=%u\ntile_rows=%u\nface_cache_bytes=%u\ninternal_tiles=%u\n",
+        (unsigned)ps.compose_us,(unsigned)ps.panel_wait_us,(unsigned)ps.peak_compose_us,
+        (unsigned)ps.peak_panel_wait_us,(unsigned)ps.p50_us,(unsigned)ps.p95_us,(unsigned)ps.frame_us,
+        (unsigned)ps.peak_frame_us,(unsigned)ps.frames,(unsigned)ps.flushes,(unsigned)ps.bytes,
+        (unsigned)ps.failed_frames,(unsigned)ps.tile_rows,(unsigned)ps.face_cache_bytes,ps.internal_tiles?1U:0U);
+    ws_gui_3d_stats_t jet=ws_gui_3d_stats();
+    REPORT("lvgl_wait_us=%u\npeak_lvgl_wait_us=%u\nwait_note=panel_wait includes LVGL active wait and panel semaphore; subsets of compose wall\n",
+        (unsigned)ps.lvgl_wait_us,(unsigned)ps.peak_lvgl_wait_us);
+    EkAppsCopyStats copy;ek_apps_copy_stats(&copy);
+    REPORT("\n[app_frame_copy]\ncopies=%u\nlast_bytes=%u\nlast_us=%u\npeak_us=%u\nwidth=%u\nheight=%u\npanel_order=%u\n"
+        "copy_note=copy/conversion inside Apps guard; excludes guard queue; bytes are destination bytes\n",
+        (unsigned)copy.copies,(unsigned)copy.last_bytes,(unsigned)copy.last_us,(unsigned)copy.peak_us,
+        (unsigned)copy.last_width,(unsigned)copy.last_height,(unsigned)copy.panel_order);
+    REPORT("method=%u\nmethod_meaning=0 native memcpy,1 fused,2 full row memcpy+scalar swap\n",(unsigned)copy.method);
+    REPORT("\n[gui_renderer]\nready=%u\npsram_bytes=%u\nframes=%u\nlast_us=%u\npeak_us=%u\ntriangles=%u\n",
+        jet.ready?1U:0U,(unsigned)jet.psram_bytes,(unsigned)jet.frames,(unsigned)jet.last_us,
+        (unsigned)jet.peak_us,(unsigned)jet.triangles);
+    static const char *names[]={"Saver","Settings","Status","Apps"};
+    for(unsigned i=0;i<WS_3D_CHANNELS;i++){
+        ws_gui_3d_channel_stats_t c=ws_gui_3d_channel_stats(i);
+        REPORT("\n[gui.%s]\nframes=%u\ncache_hits=%u\ngeometry_us=%u\nraster_us=%u\nconvert_us=%u\n"
+            "last_us=%u\npeak_us=%u\np50_us=%u\np95_us=%u\ntriangles=%u\nconverted_samples=%u\n"
+            "detail_samples=%u\ndetail_sample=%u\n",names[i],(unsigned)c.frames,(unsigned)c.cache_hits,
+            (unsigned)c.geometry_us,(unsigned)c.raster_us,(unsigned)c.convert_us,(unsigned)c.last_us,
+            (unsigned)c.peak_us,(unsigned)c.p50_us,(unsigned)c.p95_us,(unsigned)c.triangles,
+            (unsigned)c.converted_samples,(unsigned)c.detail_samples,c.detail_sample?1U:0U);
+    }
+    EkSceneProfile native;ek_apps_scene_profile(&native);
+    REPORT("\n[native.last]\n");diagnostics_profile(text,capacity,&used,&native);
+    EkRenderWorkerStats cores;ek_render_worker_stats(&cores);
+    REPORT("\n[render_cores]\nready=%u\nenabled=%u\ncore0_jobs=%u\ncore1_jobs=%u\ncore0_stack_free_bytes=%u\ncore1_stack_free_bytes=%u\n",
+        (unsigned)cores.ready,(unsigned)cores.enabled,(unsigned)cores.jobs[0],(unsigned)cores.jobs[1],
+        (unsigned)cores.stack_free[0],(unsigned)cores.stack_free[1]);
+    EkRenderFrameStats admission;ek_render_frame_stats(&admission);
+    REPORT("\n[graphics_admission]\nready=%u\nowner=%u\nowner_meaning=0 idle,1 native compute,2 display\n"
+        "native_acquisitions=%u\nnative_contentions=%u\nnative_wait_last_us=%u\nnative_wait_peak_us=%u\n"
+        "display_acquisitions=%u\ndisplay_contentions=%u\ndisplay_wait_last_us=%u\ndisplay_wait_peak_us=%u\n",
+        (unsigned)admission.ready,(unsigned)admission.owner,(unsigned)admission.acquisitions[0],
+        (unsigned)admission.contentions[0],(unsigned)admission.wait_last_us[0],(unsigned)admission.wait_peak_us[0],
+        (unsigned)admission.acquisitions[1],(unsigned)admission.contentions[1],
+        (unsigned)admission.wait_last_us[1],(unsigned)admission.wait_peak_us[1]);
+    REPORT("\nreport_end=complete\n");
+#undef REPORT
+    if(used>=capacity){free(text);ek_apps_diagnostics_export_failed("Report too large");}
+    else if(!ek_apps_diagnostics_export(text,used)){free(text);ek_apps_diagnostics_export_failed("Report worker unavailable");}
+}
 esp_err_t ws_lvgl_render(const ws_ui_snapshot_t *v)
 {
     if(!s_ready || !v) return ESP_ERR_INVALID_STATE;
+    static uint32_t captured_request;
+    if(v->diagnostics_export_status==EK_DIAGNOSTICS_EXPORT_BUSY &&
+       v->diagnostics_export_request && captured_request!=v->diagnostics_export_request){
+        captured_request=v->diagnostics_export_request;diagnostics_report(v);
+    }
     s_render_tick=(uint32_t)esp_timer_get_time();
     s_frame_id=ws_gui_3d_frame_begin(s_render_tick);
     ws_gui_3d_profile(v->diagnostics_enabled);
     if(pf_control_mode()==PF_CONTROL_BLE_PAD) {
         ws_gamepad_view_render(v);
-        s_flush_error=ESP_OK;lv_refr_now(NULL);
+    
+    s_flush_error=ESP_OK;lv_refr_now(NULL);
         ws_gui_3d_frame_end(s_frame_id,(uint32_t)esp_timer_get_time(),ws_gui_3d_take_panel_wait(),s_flush_error==ESP_OK);
         return s_flush_error;
     }
@@ -2844,13 +3017,7 @@ esp_err_t ws_lvgl_render(const ws_ui_snapshot_t *v)
         hidden(ui.screensaver_group,true);
         EkAppsDirty dirty={0};
         if(s_apps_pixels && ui.apps_image &&
-           ek_apps_copy_frame(s_apps_pixels,EK_APPS_PIXELS,&s_apps_frame,&dirty)) {
-            for(uint32_t row=dirty.y;row<dirty.y+dirty.height;++row)
-                for(uint32_t col=dirty.x;col<dirty.x+dirty.width;++col) {
-                    size_t i=(size_t)row*EK_APPS_WIDTH+col;
-                    uint16_t c=s_apps_pixels[i];
-                    s_apps_pixels[i]=(uint16_t)((c<<8)|(c>>8));
-                }
+           ek_apps_copy_frame_panel(s_apps_pixels,EK_APPS_PIXELS,&s_apps_frame,&dirty)) {
             lv_img_cache_invalidate_src(&s_apps_img);
             lv_area_t area;
             lv_obj_get_coords(ui.apps_image,&area);
@@ -3002,6 +3169,7 @@ esp_err_t ws_lvgl_render(const ws_ui_snapshot_t *v)
     /* R22 retains R19/R21 dirty-rectangle rendering. No explicit full-screen
      * invalidation is used; the faster transport path only changes how those
      * dirty areas are buffered and transferred. */
+    
     lv_refr_now(NULL);
     ws_gui_3d_frame_end(s_frame_id,(uint32_t)esp_timer_get_time(),ws_gui_3d_take_panel_wait(),s_flush_error==ESP_OK);
     return s_flush_error;

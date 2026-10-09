@@ -40,6 +40,11 @@
 #define WS_SETTINGS_PLUS_W 58
 #define WS_SETTINGS_WIDE_X 20
 #define WS_SETTINGS_WIDE_W 240
+/* Diagnostics export occupies the space above page dots. */
+#define WS_DIAGNOSTICS_SAVE_X 20
+#define WS_DIAGNOSTICS_SAVE_Y 378
+#define WS_DIAGNOSTICS_SAVE_W 240
+#define WS_DIAGNOSTICS_SAVE_H 46
 
 /* Gesture thresholds are deliberately larger than tap jitter. */
 #define WS_SETTINGS_SWIPE_X 62

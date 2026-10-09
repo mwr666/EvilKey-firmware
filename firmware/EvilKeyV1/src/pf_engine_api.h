@@ -13,6 +13,7 @@ bool pf_air_mouse_role(void);
 bool pf_air_mouse_report(uint8_t buttons,int8_t x,int8_t y,int8_t wheel);
 void pf_air_mouse_restart_into(void);
 void pf_air_mouse_exit(void);
+bool pf_manager_drive_take_eject(void); /* completed host eject; consume once */
 bool pf_manager_drive_media_ready(void); /* microSD MSC media state */
 void pf_manager_drive_apply_read_only(bool read_only); /* authenticated runtime write protection */
 /* USB Tool runtime. These calls are inert unless the persistent boot role is USB Tool. */

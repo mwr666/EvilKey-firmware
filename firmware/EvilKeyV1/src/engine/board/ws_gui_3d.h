@@ -19,6 +19,7 @@ typedef struct {
     uint32_t compose_us,panel_wait_us,peak_compose_us,peak_panel_wait_us,p50_us,p95_us;
     uint32_t frame_us,peak_frame_us,frames,flushes,bytes,failed_frames;
     uint16_t tile_rows,face_cache_bytes; bool internal_tiles;
+    uint32_t lvgl_wait_us,peak_lvgl_wait_us;
 } ws_gui_3d_presentation_stats_t;
 bool ws_gui_3d_init(void);
 void ws_gui_3d_profile(bool enabled);
@@ -37,6 +38,8 @@ void ws_gui_3d_frame_complete(uint32_t id,uint32_t end_us);
 void ws_gui_3d_frame_end(uint32_t id,uint32_t end_us,uint32_t wait_us,bool success);
 void ws_gui_3d_record_panel_wait(uint32_t wait_us);
 uint32_t ws_gui_3d_take_panel_wait(void);
+void ws_gui_3d_record_lvgl_wait(uint32_t wait_us);
+uint32_t ws_gui_3d_take_lvgl_wait(void);
 /* Call after LVGL/DMA allocations. Never consumes the reserved USB margin. */
 void ws_gui_3d_configure_tiles(void);
 /* Decorative perspective only; zero at either end of a navigation transition. */

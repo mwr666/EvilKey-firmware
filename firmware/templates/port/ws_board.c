@@ -7,6 +7,7 @@
 #include "pf_engine_api.h"
 #include "esp_system.h"
 #include "esp_heap_caps.h"
+#include "../../EvilKeyV1/src/apps/ek_render_parallel.h"
 #ifndef FIDO_V1_MANAGER_DRIVE
 #define FIDO_V1_MANAGER_DRIVE 0
 #endif
@@ -542,6 +543,10 @@ static bool settings_apply_action(ws_settings_action_t action,ws_settings_t *set
         s_poll_gap_max=0;
         portENTER_CRITICAL(&s_lock);s_render_ms_max=0;portEXIT_CRITICAL(&s_lock);
         v->diagnostics_enabled=s_diagnostics_enabled;
+        ws_screen_power_wake(&s_screen,now);
+        return false;
+    case WS_SETTINGS_ACTION_DIAGNOSTICS_SAVE:
+        ek_apps_diagnostics_export_request();
         ws_screen_power_wake(&s_screen,now);
         return false;
     case WS_SETTINGS_ACTION_AIR_MOUSE_TRANSPORT:
@@ -1183,6 +1188,9 @@ static bool view_content_changed(const ws_ui_snapshot_t *a,const ws_ui_snapshot_
         a->settings_feedback!=b->settings_feedback || a->settings_open!=b->settings_open ||
         a->diagnostics_enabled!=b->diagnostics_enabled ||
         a->diagnostics_tick!=b->diagnostics_tick ||
+        a->diagnostics_export_request!=b->diagnostics_export_request ||
+        a->diagnostics_export_status!=b->diagnostics_export_status ||
+        strcmp(a->diagnostics_export_message,b->diagnostics_export_message)!=0 ||
         a->air_mouse_available!=b->air_mouse_available ||
         a->air_mouse_active!=b->air_mouse_active ||
         a->air_mouse_sensor_ok!=b->air_mouse_sensor_ok ||
@@ -1236,7 +1244,7 @@ static bool ws_display_step(ws_display_cache_t *cache)
     view=s_view;
     bool usable=s_panel_ok;
     portEXIT_CRITICAL(&s_lock);
-    if(!usable) return false;
+    if(!usable)return false;
     esp_err_t err=ESP_OK;
     if(view.screen_off) {
         if(!cache->valid || !cache->off) {
@@ -1250,7 +1258,12 @@ static bool ws_display_step(ws_display_cache_t *cache)
          * before enabling the display, so an old approval/PIN screen never flashes. */
         if(redraw) {
             uint32_t started=now_ms();
+            
+            bool admitted=ek_render_frame_begin(EK_RENDER_FRAME_DISPLAY);
+            
             err=ws_lvgl_render(&view);
+            
+            ek_render_frame_end(admitted);
             uint32_t duration=now_ms()-started;
             portENTER_CRITICAL(&s_lock);
             if(duration>s_render_ms_max)s_render_ms_max=duration;
@@ -1274,6 +1287,7 @@ static bool ws_display_step(ws_display_cache_t *cache)
         s_panel_ok=false;s_display_bright=false;s_displayed_epoch=0;
     }
     portEXIT_CRITICAL(&s_lock);
+    
     if(err!=ESP_OK) {
         ESP_LOGE(TAG,"AMOLED failed: %s; touch/PIN approval disabled",esp_err_to_name(err));
         return false;
@@ -1383,6 +1397,20 @@ void ws_board_poll(void)
 {
     if(!s_initialized) return;
     uint32_t now=now_ms();
+#if FIDO_V1_MANAGER_DRIVE
+    if(pf_manager_drive_take_eject() && !s_manager_restart_pending &&
+       !s_usb_tool_restart_pending && !s_air_mouse_role && !s_gamepad_role) {
+        if(ws_manager_drive_set_enabled(false)) {
+            cancel_button=true;
+            ws_board_pin_abort();
+            s_manager_restart_pending=true;
+            s_usb_role_restart_at=now;
+            settings_feedback(WS_SETTINGS_FEEDBACK_SAVED,now);
+            ws_screen_power_wake(&s_screen,now);
+        } else settings_feedback(WS_SETTINGS_FEEDBACK_ERROR,now);
+    }
+#endif
+
     if(s_poll_at && s_diagnostics_enabled && now-s_poll_at>s_poll_gap_max)
         s_poll_gap_max=now-s_poll_at;
     s_poll_at=now;
@@ -1876,6 +1904,10 @@ void ws_board_poll(void)
         !ws_usb_tool_enabled() && !ws_manager_drive_enabled();
     v.air_mouse_restarting=s_air_mouse_restart_pending;
     v.diagnostics_enabled=s_diagnostics_enabled;
+    EkDiagnosticsExport report;ek_apps_diagnostics_export_snapshot(&report);
+    v.diagnostics_export_request=report.request;v.diagnostics_export_status=(uint8_t)report.status;
+    snprintf(v.diagnostics_export_message,sizeof(v.diagnostics_export_message),"%s",
+        report.status==EK_DIAGNOSTICS_EXPORT_SAVED?report.filename:report.error);
     v.diagnostics_tick=s_diagnostics_enabled && s_settings_page==WS_SETTINGS_PAGE_DIAGNOSTICS &&
         s_settings_transition==255U?now/1000U:0U;
 #if FIDO_V1_MANAGER_DRIVE

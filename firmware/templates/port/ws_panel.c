@@ -35,6 +35,7 @@ static bool color_done(esp_lcd_panel_io_handle_t io,
                        esp_lcd_panel_io_event_data_t *event, void *ctx)
 {
     (void)io; (void)event; (void)ctx;
+    
     ws_panel_flush_done_cb_t done=s_flush_done;
     void *done_ctx=s_flush_ctx;
     s_flush_done=NULL;
@@ -47,6 +48,7 @@ static bool color_done(esp_lcd_panel_io_handle_t io,
      * display owner can otherwise recycle that context while ISR still reads it. */
     s_pending=false;
     xSemaphoreGiveFromISR(s_done,&awakened);
+    
     return awakened==pdTRUE;
 }
 
@@ -184,8 +186,10 @@ esp_err_t ws_panel_flush_async(uint16_t x1,uint16_t y1,uint16_t x2,uint16_t y2,
         s_flush_done=done;
         s_flush_ctx=done_ctx;
         s_pending=true;
+        
         /* pixels already have panel byte order because LV_COLOR_16_SWAP=1. */
         err=esp_lcd_panel_io_tx_color(s_io,0x32002C00,pixels,needed*2U);
+        
         if(err!=ESP_OK) {
             s_pending=false;
             s_flush_done=NULL;

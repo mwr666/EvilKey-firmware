@@ -1,5 +1,6 @@
 /* Arduino startup replaces app_main and the ESP-IDF TinyUSB driver install. */
 #include "../../board/ws_controls.h"
+#include "../../../apps/ek_render_parallel.h"
 #include "nvs_flash.h"
 TaskHandle_t hcore0 = NULL, hcore1 = NULL;
 static portMUX_TYPE pf_event_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -50,6 +51,7 @@ int pf_engine_start(void) {
         }
         if(!pf_ble_start()){pf_control_restart(PF_CONTROL_NORMAL);return -6;}
         ws_board_start_display();
+        ek_render_workers_start();
         return 0;
     }
     serial_init();
@@ -87,5 +89,6 @@ int pf_engine_start(void) {
     // Board/PIN state and the FIDO worker are already initialized; UI stays
     // fail-closed until the display owner commits a visible authorization frame.
     ws_board_start_display();
+    ek_render_workers_start();
     return 0;
 }

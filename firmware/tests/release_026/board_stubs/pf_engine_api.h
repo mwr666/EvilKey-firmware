@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+bool pf_manager_drive_take_eject(void); /* completed host eject; consume once */
 bool pf_manager_drive_media_ready(void);
 void pf_manager_drive_apply_read_only(bool read_only);
 

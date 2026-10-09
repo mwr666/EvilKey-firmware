@@ -1,7 +1,12 @@
 # PF_FIRMWARE_VERSION_FIX_R2
 #!/usr/bin/env python3
 from pathlib import Path
-import re,sys
+import re,sys,argparse
+p=argparse.ArgumentParser();p.add_argument("--expected-version",default="0.7.5");args=p.parse_args()
+match=re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(-dev)?",args.expected_version)
+if not match:p.error("expected version must be major.minor.patch or major.minor.patch-dev")
+expected=dict(zip(("MAJOR","MINOR","PATCH"),map(int,match.group(1,2,3))));expected["BUILD"]=0
+suffix=match.group(4) or ""
 root=Path.cwd().resolve()
 if not (root/'firmware/tools/touch_patch.py').is_file():
     print('FAIL: run from the EvilKey firmware project root')
@@ -18,8 +23,8 @@ if vh.is_file():
     for key in ('MAJOR','MINOR','PATCH','BUILD'):
         m=re.search(r'^#define\s+PF_FIRMWARE_VERSION_'+key+r'\s+(\d+)\s*$',text,re.M)
         if m: vals[key]=int(m.group(1))
-    check(vals=={'MAJOR':0,'MINOR':7,'PATCH':4,'BUILD':0},'version header encodes 0.7.4 build 0')
-    check('#define PF_FIRMWARE_VERSION_SUFFIX ""' in text,'0.7.4 release has no development suffix')
+    check(vals==expected,'version header encodes '+args.expected_version+' build 0')
+    check('#define PF_FIRMWARE_VERSION_SUFFIX "'+suffix+'"' in text,'canonical suffix matches expected version')
 build=(root/'firmware/EvilKeyV1/src/pf_build_config.h').read_text(encoding='utf-8')
 check('#include "pf_firmware_version.h"' in build,'pf_build_config includes canonical version header')
 m1=(root/'firmware/templates/port/ws_manager_config.h').read_text(encoding='utf-8')

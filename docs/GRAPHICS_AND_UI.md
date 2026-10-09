@@ -7,7 +7,7 @@ crystal and rounded controls. Changing the accent affects the body, not the
 white crystal. LVGL owns readable text, PIN keypad layout, swipe navigation
 and touch zones; these are not transformed into a 3D scene.
 
-## Animation in 0.7.4
+## Animation in 0.7.5
 
 The **Ghost Signal** screensaver uses native Jet rendering. Its 200×200 mark
 moves on the established closed path; the body tilts and the crystal also

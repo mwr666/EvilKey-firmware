@@ -1,10 +1,10 @@
-# Validation — firmware 0.7.4
+# Validation — firmware 0.7.5
 
-[Release notes](RELEASE_0.7.4.md) identify the exact accepted image and the
+[Release notes](RELEASE_0.7.5.md) identify the exact accepted image and the
 software checks completed before release. [RELEASE_CURRENT.json](../RELEASE_CURRENT.json)
 records its size, SHA-256, ABI versions, compiler profile and hardware scope.
 
-The 2026-10-08 installation verified application readback and unchanged protected
+The 2026-10-09 installation verified application readback and unchanged protected
 storage. The owner confirmed correct GUI, Apps and FIDO/PIN behavior on PCB V1.0.
 This is acceptance of the published BIN, not automatic acceptance of rebuilt images.
 

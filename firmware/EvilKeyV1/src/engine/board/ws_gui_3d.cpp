@@ -3,15 +3,12 @@
  * Jet software triangles + bounded, native-resolution LVGL image sources.
  * Flat face lighting and 2x spatial sampling; no temporal reconstruction.
  */
-// 0.7.4-dev: default to global -Os; local O2 remains an opt-in experiment.
-#ifndef WS_GUI_3D_LOCAL_O2
-#define WS_GUI_3D_LOCAL_O2 0
-#endif
 #include "ws_gui_3d.h"
 #include "ws_gui_3d_geometry.h"
 #include "ws_gui_3d_meshes.h"
 #include "../jet/Renderer.hpp"
 #include "../jet/OpaqueUI.hpp"
+#include "../../apps/ek_render_parallel.h"
 #include "esp_heap_caps.h"
 #ifndef WS_3D_HOST
 #include "esp_timer.h"
@@ -38,23 +35,17 @@ const int sizes[WS_3D_CHANNELS]={200,120,80,120};
 uint16_t *color_buffer, *depth_buffer;
 using ProjectedTriangle=Renderer::OpaqueUIFace;
 ProjectedTriangle *triangles;
-uint16_t *band_next,*active_indices;
+uint16_t *band_next;
 Renderer::OpaqueUICursor *scan_states;
 constexpr unsigned MAX_SHADES=512,MAX_NORMALS=512;
 float *normal_light;
 uint16_t *shade_colors;
-#ifndef WS_GUI_3D_ACTIVE_LIST
-#define WS_GUI_3D_ACTIVE_LIST 0
-#endif
-#ifndef WS_GUI_3D_FACE_CACHE
-#define WS_GUI_3D_FACE_CACHE 0
-#endif
-struct CachedFace { ProjectedTriangle face; Renderer::OpaqueUICursor scan; };
-CachedFace *face_cache;
-constexpr unsigned FACE_CACHE_COUNT=6;
-#if WS_GUI_3D_LOCAL_O2 && defined(__GNUC__)
-#pragma GCC optimize ("O2")
-#endif
+struct ParallelStorage {
+    uint16_t colors[STRIDE*TILE_ROWS],depths[STRIDE*TILE_ROWS];
+    Renderer::OpaqueUICursor cursors[MAX_TRIANGLES];
+};
+static_assert(sizeof(ParallelStorage)<=256*1024,"GUI parallel PSRAM budget");
+ParallelStorage *parallel_storage;
 bool detail_profile;
 bool frame_detail;
 struct RowRange { int16_t first,last; };
@@ -66,8 +57,8 @@ ws_gui_3d_channel_stats_t channel_stats[WS_3D_CHANNELS]{};
 ws_gui_3d_presentation_stats_t presentation_stats{};
 uint32_t timings[WS_3D_CHANNELS][32]{},presentation_timings[32]{};
 uint32_t generations[WS_3D_CHANNELS]{};
-uint32_t panel_wait_accumulated,presentation_count;
-struct FrameStamp { uint32_t id,start,end,compose,wait,flushes,bytes; bool closed,complete,success; };
+uint32_t panel_wait_accumulated,lvgl_wait_accumulated,presentation_count;
+struct FrameStamp { uint32_t id,start,end,compose,wait,flushes,bytes,lvgl_wait; bool closed,complete,success; };
 FrameStamp frame_stamps[4]{};
 uint32_t next_frame_id;
 #ifndef WS_3D_HOST
@@ -358,13 +349,26 @@ void convert(int side,int rows,uint8_t *out,const uint16_t *colors=color_buffer,
         out[k]=uint8_t(c>>8);out[k+1]=uint8_t(c);out[k+2]=uint8_t((n*255+2)/4);
     }
 }
-bool rasterize(int side,uint8_t *out) {
-    if(triangle_overflow)return false;
+struct RasterBand {
+    int side,first,end,rows;
+    uint8_t *out;
+    RowRange *old_rows;
+    uint16_t *colors,*depths;
+    Renderer::OpaqueUICursor *cursors;
+    const uint16_t *starts;
+    bool detail;
+    uint32_t raster_us=0,convert_us=0,converted_samples=0;
+};
+void rasterize_band(void *opaque) {
+    auto &cs=*static_cast<RasterBand*>(opaque);
+    const int side=cs.side,tile_rows=cs.rows;
+    auto *out=cs.out;auto *old_rows=cs.old_rows;
+    auto *color_buffer=cs.colors,*depth_buffer=cs.depths;
+    auto *scan_states=cs.cursors;
+    const auto *starts=cs.starts;const bool frame_detail=cs.detail;
     const int wide=side*SAMPLE;
-    auto &cs=channel_stats[rendering_channel];if(frame_detail)cs.raster_us=cs.convert_us=0;cs.converted_samples=0;
     // Conversion overwrites every pixel in its current row span. Only old
     // pixels outside that span need a separate PSRAM write.
-    auto *old_rows=previous_rows+rendering_channel*MAX_SIDE;
     auto clear_old=[&](int y,int first,int last){
         auto old=old_rows[y];
         if(old.last>=old.first){
@@ -375,24 +379,19 @@ bool rasterize(int side,uint8_t *out) {
         }
         old_rows[y]={int16_t(first),int16_t(last)};
     };
-    Bounds current;
-    uint16_t starts[MAX_BANDS];std::fill_n(starts,MAX_BANDS,UINT16_MAX);
     uint32_t active[(MAX_TRIANGLES+31)/32]{};
     for(unsigned i=0;i<triangle_count;i++){
         scan_states[i].initialized=false;
         const auto &t=triangles[i];
         if(t.max_y<0 || t.min_y>=wide || t.max_x<0 || t.min_x>=wide)continue;
-        const int first=std::max(0,int(t.min_y))/tile_rows;
-        band_next[i]=starts[first];starts[first]=uint16_t(i);
-        current.x0=std::min(current.x0,std::max(0,int(t.min_x))/SAMPLE);
-        current.x1=std::max(current.x1,std::min(wide-1,int(t.max_x))/SAMPLE);
-        current.y0=std::min(current.y0,std::max(0,int(t.min_y))/SAMPLE);
-        current.y1=std::max(current.y1,std::min(wide-1,int(t.max_y))/SAMPLE);
+        // Faces beginning above this band are already active. A fresh cursor
+        // replays the integer recurrence from min_y to its first owned tile;
+        // assigning cursor.y=first would discard edge/depth residuals.
+        if(std::max(0,int(t.min_y))/tile_rows<cs.first/tile_rows && t.max_y>=cs.first)
+            active[i/32]|=uint32_t(1)<<(i%32);
     }
-    previous_bounds[rendering_channel]=current;
-    for(int top=0;top<wide;top+=tile_rows) {
+    for(int top=cs.first;top<cs.end;top+=tile_rows) {
         const uint64_t raster_start=frame_detail?micros_now():0;
-        unsigned active_count=0;
         for(unsigned i=starts[top/tile_rows];i!=UINT16_MAX;i=band_next[i])
             active[i/32]|=uint32_t(1)<<(i%32);
         int left=wide,right=-1;
@@ -402,7 +401,6 @@ bool rasterize(int side,uint8_t *out) {
                 const unsigned bit=unsigned(__builtin_ctz(pending)),mask=uint32_t(1)<<bit;pending&=~mask;
                 const auto &t=triangles[word*32+bit];
                 if(t.max_y<top){active[word]&=~mask;continue;}
-                if(WS_GUI_3D_ACTIVE_LIST)active_indices[active_count++]=uint16_t(word*32+bit);
                 left=std::min(left,std::max(0,int(t.min_x)));right=std::max(right,std::min(wide-1,int(t.max_x)));
             }
         }
@@ -410,19 +408,7 @@ bool rasterize(int side,uint8_t *out) {
         for(int y=top/SAMPLE;y<(top+tile_rows)/SAMPLE;++y)clear_old(y,left/SAMPLE,right/SAMPLE);
         left=(left/SAMPLE)*SAMPLE;right=std::min(wide-1,(right/SAMPLE+1)*SAMPLE-1);
         for(int y=0;y<tile_rows;y++)memset(depth_buffer+y*wide+left,255,(right-left+1)*sizeof(uint16_t));
-        if(WS_GUI_3D_ACTIVE_LIST && face_cache){
-            for(unsigned k=0;k<active_count;k+=FACE_CACHE_COUNT){const unsigned count=std::min(FACE_CACHE_COUNT,active_count-k);
-                for(unsigned j=0;j<count;++j){const unsigned i=active_indices[k+j];face_cache[j].face=triangles[i];face_cache[j].scan=scan_states[i];}
-                for(unsigned j=0;j<count;++j){const unsigned i=active_indices[k+j];
-                    Renderer::drawOpaqueUIContinued(face_cache[j].face,face_cache[j].scan,color_buffer,depth_buffer,wide,tile_rows,top);
-                    scan_states[i]=face_cache[j].scan;
-                }
-            }
-        }else if(WS_GUI_3D_ACTIVE_LIST){
-            for(unsigned k=0;k<active_count;++k){const unsigned i=active_indices[k];
-                Renderer::drawOpaqueUIContinued(triangles[i],scan_states[i],color_buffer,depth_buffer,wide,tile_rows,top);
-            }
-        }else for(unsigned word=0;word<(triangle_count+31)/32;word++){
+        for(unsigned word=0;word<(triangle_count+31)/32;word++){
             uint32_t pending=active[word];
             while(pending){const unsigned bit=unsigned(__builtin_ctz(pending));pending&=~(uint32_t(1)<<bit);const unsigned i=word*32+bit;
                 Renderer::drawOpaqueUIContinued(triangles[i],scan_states[i],color_buffer,depth_buffer,wide,tile_rows,top);
@@ -433,7 +419,41 @@ bool rasterize(int side,uint8_t *out) {
         if(frame_detail)cs.convert_us+=uint32_t(micros_now()-convert_start);
         cs.converted_samples+=(right-left+1)*tile_rows;
     }
-    stats.triangles=triangle_count;
+}
+bool rasterize(int side,uint8_t *out) {
+    if(triangle_overflow)return false;
+    const int wide=side*SAMPLE;
+    Bounds current;
+    uint16_t starts[MAX_BANDS];std::fill_n(starts,MAX_BANDS,UINT16_MAX);
+    // The owner prepares immutable face membership once. Both jobs traverse
+    // faces in the original primitive order and write only their image rows.
+    for(unsigned i=0;i<triangle_count;++i){
+        const auto &t=triangles[i];
+        if(t.max_y<0 || t.min_y>=wide || t.max_x<0 || t.min_x>=wide)continue;
+        const int first=std::max(0,int(t.min_y))/tile_rows;
+        band_next[i]=starts[first];starts[first]=uint16_t(i);
+        current.x0=std::min(current.x0,std::max(0,int(t.min_x))/SAMPLE);
+        current.x1=std::max(current.x1,std::min(wide-1,int(t.max_x))/SAMPLE);
+        current.y0=std::min(current.y0,std::max(0,int(t.min_y))/SAMPLE);
+        current.y1=std::max(current.y1,std::min(wide-1,int(t.max_y))/SAMPLE);
+    }
+    RasterBand first{side,0,wide,tile_rows,out,previous_rows+rendering_channel*MAX_SIDE,
+        color_buffer,depth_buffer,scan_states,starts,frame_detail};
+    EkRenderWorkerStats pool{};ek_render_worker_stats(&pool);
+    RasterBand second{};
+    if(parallel_storage && pool.ready && pool.enabled){
+        first.end=((wide/tile_rows+1)/2)*tile_rows;
+        second={side,first.end,wide,tile_rows,out,first.old_rows,
+            parallel_storage->colors,parallel_storage->depths,
+            parallel_storage->cursors,starts,frame_detail};
+        ek_render_parallel(rasterize_band,&first,&second);
+    }else rasterize_band(&first);
+    // All jobs have joined before owner metadata, effects or publication.
+    previous_bounds[rendering_channel]=current;stats.triangles=triangle_count;
+    auto &cs=channel_stats[rendering_channel];
+    if(frame_detail){cs.raster_us=std::max(first.raster_us,second.raster_us);
+        cs.convert_us=std::max(first.convert_us,second.convert_us);}
+    cs.converted_samples=first.converted_samples+second.converted_samples;
 #ifdef WS_3D_HOST
     if(std::getenv("EVILKEY_VERIFY_TILED")) {
         // Host-only full-frame reference: same Jet kernel and projected faces.
@@ -451,15 +471,6 @@ bool rasterize(int side,uint8_t *out) {
     return true;
 }
 }
-static void configure_face_cache(){
-    if(!WS_GUI_3D_FACE_CACHE || !WS_GUI_3D_ACTIVE_LIST || face_cache)return;
-    const int caps=MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT;
-    constexpr size_t bytes=FACE_CACHE_COUNT*sizeof(CachedFace),reserve=40*1024,block=24*1024;
-    if(heap_caps_get_free_size(caps)<reserve+bytes || heap_caps_get_largest_free_block(caps)<block+bytes)return;
-    auto *candidate=(CachedFace*)heap_caps_malloc(bytes,caps);
-    if(!candidate || heap_caps_get_free_size(caps)<reserve || heap_caps_get_largest_free_block(caps)<block){heap_caps_free(candidate);return;}
-    face_cache=candidate;presentation_stats.face_cache_bytes=bytes;
-}
 extern "C" bool ws_gui_3d_init(void) {
     if(stats.ready)return true;
 #ifdef WS_3D_HOST
@@ -472,23 +483,26 @@ extern "C" bool ws_gui_3d_init(void) {
     band_next=(uint16_t*)heap_caps_malloc(MAX_TRIANGLES*sizeof(uint16_t),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     projected_vertices=(Renderer::UIVertex*)heap_caps_malloc(MAX_MESH_VERTICES*sizeof(Renderer::UIVertex),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     scan_states=(Renderer::OpaqueUICursor*)heap_caps_malloc(MAX_TRIANGLES*sizeof(Renderer::OpaqueUICursor),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
-    if(WS_GUI_3D_ACTIVE_LIST)active_indices=(uint16_t*)heap_caps_malloc(MAX_TRIANGLES*sizeof(uint16_t),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     normal_light=(float*)heap_caps_malloc(MAX_NORMALS*2*sizeof(float),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     shade_colors=(uint16_t*)heap_caps_malloc(MAX_SHADES*2*sizeof(uint16_t),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     transformed_tile=(V*)heap_caps_malloc(65*sizeof(V),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     previous_rows=(RowRange*)heap_caps_malloc(WS_3D_CHANNELS*MAX_SIDE*sizeof(RowRange),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     if(previous_rows)for(unsigned i=0;i<WS_3D_CHANNELS*MAX_SIDE;++i)previous_rows[i]={MAX_SIDE,-1};
-    bool ok=color_buffer&&depth_buffer&&triangles&&band_next&&projected_vertices&&scan_states&&(!WS_GUI_3D_ACTIVE_LIST || active_indices)&&normal_light&&shade_colors&&previous_rows&&transformed_tile;
+    bool ok=color_buffer&&depth_buffer&&triangles&&band_next&&projected_vertices&&scan_states&&normal_light&&shade_colors&&previous_rows&&transformed_tile;
     for(unsigned i=0;i<WS_3D_CHANNELS;i++){images[i]=(uint8_t*)heap_caps_malloc(sizes[i]*sizes[i]*3,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);ok=ok&&images[i];if(images[i])memset(images[i],0,sizes[i]*sizes[i]*3);}
-    if(!ok){heap_caps_free(transformed_tile);transformed_tile=nullptr;heap_caps_free(previous_rows);previous_rows=nullptr;heap_caps_free(scan_states);heap_caps_free(active_indices);heap_caps_free(normal_light);heap_caps_free(shade_colors);scan_states=nullptr;active_indices=nullptr;normal_light=nullptr;shade_colors=nullptr;heap_caps_free(projected_vertices);projected_vertices=nullptr;heap_caps_free(color_buffer);heap_caps_free(depth_buffer);heap_caps_free(triangles);heap_caps_free(band_next);color_buffer=depth_buffer=nullptr;triangles=nullptr;band_next=nullptr;
+    if(!ok){heap_caps_free(transformed_tile);transformed_tile=nullptr;heap_caps_free(previous_rows);previous_rows=nullptr;heap_caps_free(scan_states);heap_caps_free(normal_light);heap_caps_free(shade_colors);scan_states=nullptr;normal_light=nullptr;shade_colors=nullptr;heap_caps_free(projected_vertices);projected_vertices=nullptr;heap_caps_free(color_buffer);heap_caps_free(depth_buffer);heap_caps_free(triangles);heap_caps_free(band_next);color_buffer=depth_buffer=nullptr;triangles=nullptr;band_next=nullptr;
         for(auto &p:images){heap_caps_free(p);p=nullptr;}return false;}
     stats.psram_bytes=STRIDE*TILE_ROWS*4+MAX_TRIANGLES*(sizeof(ProjectedTriangle)+sizeof(uint16_t))+MAX_MESH_VERTICES*sizeof(Renderer::UIVertex);
-    stats.psram_bytes+=MAX_TRIANGLES*(sizeof(Renderer::OpaqueUICursor)+WS_GUI_3D_ACTIVE_LIST*sizeof(uint16_t))+MAX_NORMALS*2*sizeof(float)+MAX_SHADES*2*sizeof(uint16_t)+WS_3D_CHANNELS*MAX_SIDE*sizeof(RowRange)+65*sizeof(V);
+    stats.psram_bytes+=MAX_TRIANGLES*(sizeof(Renderer::OpaqueUICursor))+MAX_NORMALS*2*sizeof(float)+MAX_SHADES*2*sizeof(uint16_t)+WS_3D_CHANNELS*MAX_SIDE*sizeof(RowRange)+65*sizeof(V);
     for(int side:sizes)stats.psram_bytes+=side*side*3;
-    presentation_stats.tile_rows=tile_rows;stats.ready=true;
+    // One optional private helper set, allocated once. Failure keeps the
+    // original complete serial renderer and its existing allocation contract.
 #ifdef WS_3D_HOST
-    configure_face_cache();
+    if(!std::getenv("EVILKEY_TEST_3D_PARALLEL_ALLOC_FAIL"))
 #endif
+    parallel_storage=(ParallelStorage*)heap_caps_malloc(sizeof(ParallelStorage),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    if(parallel_storage)stats.psram_bytes+=sizeof(ParallelStorage);
+    presentation_stats.tile_rows=tile_rows;stats.ready=true;
     return true;
 }
 extern "C" bool ws_gui_3d_render(unsigned channel,uint16_t phase,uint32_t accent,unsigned icon,ws_gui_3d_frame_t *out) {
@@ -552,6 +566,8 @@ static void collect_frames(){
         // completed transfer's byte/flush counters with idle ticks.
         if(!finished.flushes)continue;
         presentation_stats.panel_wait_us=finished.wait;
+        presentation_stats.lvgl_wait_us=finished.lvgl_wait;
+        presentation_stats.peak_lvgl_wait_us=std::max(presentation_stats.peak_lvgl_wait_us,finished.lvgl_wait);
         presentation_stats.peak_panel_wait_us=std::max(presentation_stats.peak_panel_wait_us,finished.wait);
         presentation_stats.frame_us=finished.end-finished.start;
         presentation_stats.peak_frame_us=std::max(presentation_stats.peak_frame_us,presentation_stats.frame_us);
@@ -566,7 +582,8 @@ extern "C" ws_gui_3d_presentation_stats_t ws_gui_3d_presentation_stats(void){
 extern "C" uint32_t ws_gui_3d_frame_begin(uint32_t start){
     collect_frames();
     if(++next_frame_id==0)++next_frame_id;
-    FRAME_LOCK();frame_stamps[next_frame_id%4]={next_frame_id,start,0,0,0,0,0,false,false,true};FRAME_UNLOCK();
+    FRAME_LOCK();frame_stamps[next_frame_id%4]={next_frame_id,start,0,0,0,0,0,0,false,false,true};FRAME_UNLOCK();
+    (void)ws_gui_3d_take_lvgl_wait();
     (void)ws_gui_3d_take_panel_wait();return next_frame_id;
 }
 extern "C" void ws_gui_3d_frame_flush(uint32_t id,uint32_t bytes){
@@ -580,7 +597,7 @@ extern "C" void ws_gui_3d_frame_complete(uint32_t id,uint32_t end){
 extern "C" void ws_gui_3d_frame_end(uint32_t id,uint32_t end,uint32_t wait,bool success){
     if(!id)return;
     FRAME_LOCK();auto &f=frame_stamps[id%4];if(f.id==id){
-        f.compose=end-f.start;f.wait=wait;f.closed=true;f.success=success;
+        f.compose=end-f.start;f.wait=wait;f.lvgl_wait=ws_gui_3d_take_lvgl_wait();f.closed=true;f.success=success;
         if(!f.flushes || !success){f.complete=true;f.end=end;}
         // A synchronous completion can precede composition finishing.
         if(f.complete && uint32_t(f.end-f.start)<f.compose)f.end=end;
@@ -589,8 +606,9 @@ extern "C" void ws_gui_3d_frame_end(uint32_t id,uint32_t end,uint32_t wait,bool 
 }
 extern "C" void ws_gui_3d_record_panel_wait(uint32_t wait){panel_wait_accumulated+=wait;}
 extern "C" uint32_t ws_gui_3d_take_panel_wait(void){uint32_t result=panel_wait_accumulated;panel_wait_accumulated=0;return result;}
+extern "C" void ws_gui_3d_record_lvgl_wait(uint32_t wait){lvgl_wait_accumulated+=wait;ws_gui_3d_record_panel_wait(wait);}
+extern "C" uint32_t ws_gui_3d_take_lvgl_wait(void){uint32_t value=lvgl_wait_accumulated;lvgl_wait_accumulated=0;return value;}
 extern "C" void ws_gui_3d_configure_tiles(void){
-    if(stats.ready)configure_face_cache();
     if(!stats.ready || presentation_stats.internal_tiles)return;
     // Optional 4-row SRAM tiles; leave >=40KiB free and a >=24KiB block.
     constexpr size_t bytes=STRIDE*4*sizeof(uint16_t),reserve=40*1024,block=24*1024;

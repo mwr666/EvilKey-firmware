@@ -311,6 +311,7 @@ static uint16_t load_hid_descriptor(uint8_t *dst, uint8_t *itf) {
 static USBMSC *s_msc;
 static SPIClass s_manager_sd_spi(HSPI);
 static volatile bool s_manager_media_ready;
+static bool s_manager_eject_armed,s_manager_eject_pending;
 
 static bool manager_drive_prepare_sd(void) {
     if (!s_manager_sd_spi.begin(WS_SD_SCLK, WS_SD_MISO, WS_SD_MOSI, WS_SD_CS)) {
@@ -406,12 +407,22 @@ static int32_t manager_drive_write(uint32_t lba, uint32_t offset,
 }
 
 static bool manager_drive_start_stop(uint8_t, bool start, bool load_eject) {
+    s_manager_eject_armed = load_eject && !start;
     if (load_eject && !start) {
         s_manager_media_ready = false;
         if (s_msc) s_msc->mediaPresent(false);
         ESP_LOGI(TAG, "Manager Drive: host ejected media");
     }
     return true;
+}
+
+/* TinyUSB calls this after the command status transfer. No storage or reset
+ * is performed on its task; the board consumes the atomic mailbox once. */
+static void manager_drive_scsi_complete(const uint8_t *command) {
+    if (!command || command[0] != 0x1b || (command[4] & 3U) != 2U ||
+        !s_descriptor_manager_drive || !s_manager_eject_armed) return;
+    s_manager_eject_armed = false;
+    __atomic_store_n(&s_manager_eject_pending, true, __ATOMIC_RELEASE);
 }
 
 static bool manager_drive_register(void) {
@@ -424,6 +435,7 @@ static bool manager_drive_register(void) {
     s_msc->productID("MANAGER DRIVE");
     s_msc->productRevision("1.0");
     s_msc->onStartStop(manager_drive_start_stop);
+    s_msc->onScsiComplete(manager_drive_scsi_complete);
     s_msc->onRead(manager_drive_read);
     s_msc->onWrite(manager_drive_write);
     s_msc->isWritable(!ws_manager_drive_read_only());
@@ -717,6 +729,14 @@ extern "C" uint16_t pf_usb_tool_current_pid(void)
     return s_device_descriptor.idProduct;
 }
 #endif
+
+extern "C" bool pf_manager_drive_take_eject(void) {
+#if FIDO_V1_MANAGER_DRIVE
+    return __atomic_exchange_n(&s_manager_eject_pending, false, __ATOMIC_ACQ_REL);
+#else
+    return false;
+#endif
+}
 
 extern "C" bool pf_manager_drive_media_ready(void) {
 #if FIDO_V1_MANAGER_DRIVE

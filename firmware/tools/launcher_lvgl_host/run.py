@@ -3,11 +3,11 @@
 import argparse,subprocess,os
 from pathlib import Path
 p=argparse.ArgumentParser();compiler=p.add_mutually_exclusive_group(required=True)
-compiler.add_argument('--zig');compiler.add_argument('--gxx');p.add_argument('--rings-only',action='store_true');a=p.parse_args()
+compiler.add_argument('--zig');compiler.add_argument('--gxx');p.add_argument('--rings-only',action='store_true');p.add_argument('--scene-profile-only',action='store_true');a=p.parse_args()
 root=Path(__file__).resolve().parents[3];here=Path(__file__).parent
 renderer=root/'firmware/build/launcher-renderer.c'
 renderer.parent.mkdir(exist_ok=True)
-text=(root/'firmware/templates/port/ws_lvgl.c').read_text(encoding='utf-8').replace('../../EvilKeyV1/src/apps/','').replace('../lvgl/lvgl.h','lvgl.h')
+text=Path(os.getenv('EVILKEY_LVGL_SOURCE',str(root/'firmware/templates/port/ws_lvgl.c'))).read_text(encoding='utf-8').replace('../../EvilKeyV1/src/apps/','').replace('../lvgl/lvgl.h','lvgl.h')
 renderer.write_text(text,encoding='utf-8')
 for name in ['ws_gamepad_view.c','ws_gamepad_view.h']:
     text=(root/'firmware/templates/port'/name).read_text().replace('../lvgl/lvgl.h','lvgl.h')
@@ -24,6 +24,12 @@ rsp=root/'firmware/build/launcher-lvgl.rsp'
 rsp.write_text('\n'.join('"'+arg.replace('\\','/').replace('"','\\"')+'"' for arg in cmd[len(command):]),encoding='utf-8')
 r=subprocess.run([*command,'@'+str(rsp)],capture_output=True,text=True)
 if r.returncode:print(r.stderr);raise SystemExit(r.returncode)
+if os.getenv('EVILKEY_BUFFER_FRAMES'):
+    subprocess.run([str(out),'--buffer-frames'],check=True,timeout=90,cwd=root)
+    raise SystemExit(0)
+if a.scene_profile_only:
+    subprocess.run([str(out),'--scene-profile-only'],check=True,timeout=60,cwd=root)
+    raise SystemExit(0)
 if a.rings_only:
     subprocess.run([str(out),'--rings-only'],check=True,timeout=60,cwd=root)
     raise SystemExit(0)

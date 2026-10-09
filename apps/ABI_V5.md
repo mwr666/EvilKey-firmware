@@ -4,7 +4,7 @@
 ABI v5 extends [ABI v4](ABI_V4.md). Input stays 4160 bytes, commands stay 20
 bytes, and package revision stays 5 (320-byte header, icon, Wasm, assets).
 The runtime ABI field at header offset 12 is 5 for a native-scene app.
-Firmware 0.7.4 accepts ABI4 and ABI5. Existing ABI4 packages receive ABI4
+Firmware 0.7.5 accepts ABI4 and ABI5. Existing ABI4 packages receive ABI4
 mailboxes and cannot issue the new command. The SDK's legacy VERSION macro
 remains 4; LATEST is 5. Pass `abi=5` / `--abi 5` explicitly when packaging.
 

@@ -22,7 +22,7 @@ Output: `firmware/build-arduino/EvilKeyV1.ino.bin`. A rebuild is a new artifact;
 
 Option **8** operates on a Git checkout with all intended source changes staged
 and no unstaged changes. It requires the accepted
-`artifacts/firmware/EvilKey_0.7.4.bin` and verifies its SHA-256. Outputs are in
+`artifacts/firmware/EvilKey_0.7.5.bin` and verifies its SHA-256. Outputs are in
 ignored `release/`; game code/packages, flash receipts and NVS data are excluded.
 Source checkouts can build/flash without a release BIN. The published source ZIP
 already contains the accepted BIN and can be used for building; copy that BIN

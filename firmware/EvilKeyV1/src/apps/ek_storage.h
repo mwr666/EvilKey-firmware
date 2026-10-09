@@ -32,6 +32,9 @@ typedef void (*EkStorageSaveTrace)(void *user, unsigned phase);
 int ek_storage_save_write(const char *id, const uint8_t *data, size_t size,
                           EkStorageSaveTrace trace, void *trace_user);
 const char *ek_storage_error(void);
+/* One worker-owned, verified diagnostic text file; never overwrites a report. */
+int ek_storage_diagnostics_write(const uint8_t *data,size_t size,
+                                char *filename,size_t capacity);
 
 #ifdef __cplusplus
 }

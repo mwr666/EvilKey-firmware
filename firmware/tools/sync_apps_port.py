@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 TEMPLATES = ROOT / "templates" / "port"
 ENGINE = ROOT / "EvilKeyV1" / "src" / "engine" / "board"
 MANIFEST = ROOT / "EvilKeyV1" / "GENERATED_MANIFEST.json"
-FILES = ("ws_board.c", "ws_lvgl.c", "ws_ui.c", "ws_ui.h", "ws_settings_icon_asset.h")
+FILES = ("ws_board.c", "ws_panel.c", "ws_lvgl.c", "ws_lvgl.h", "ws_gui_3d.cpp", "ws_gui_3d.h", "ws_ui.c", "ws_ui.h", "ws_ui_layout.h", "ws_settings_icon_asset.h")
 
 
 def digest(data: bytes) -> str:
@@ -25,7 +25,8 @@ def digest(data: bytes) -> str:
 def generated(name: str) -> bytes:
     source = (TEMPLATES / name).read_text(encoding="utf-8")
     source = source.replace('../../EvilKeyV1/src/apps/', '../../apps/')
-    if name.endswith(".c"):
+    source = source.replace('../../third_party/jet/', '../jet/')
+    if name.endswith((".c", ".cpp")):
         source = '#include "../../pf_build_config.h"\n' + source
     if name == "ws_board.c":
         source = source.replace('#include "pf_engine_api.h"',
@@ -44,14 +45,14 @@ def main() -> None:
     for name in FILES:
         path = ENGINE / name
         key = f"board/{name}"
-        current = path.read_bytes()
+        current = path.read_bytes() if path.exists() else b""
         wanted = generated(name)
         clean = subprocess.run(
             ["git", "diff", "--quiet", "HEAD", "--",
              f"firmware/EvilKeyV1/src/engine/{key}"],
             cwd=ROOT.parent, check=False,
         ).returncode == 0
-        if digest(current) not in (manifest["generated_sha256"].get(key),
+        if path.exists() and digest(current) not in (manifest["generated_sha256"].get(key),
                                    digest(wanted)) and not clean:
             raise SystemExit(f"Refusing modified generated source: {path}")
         updates.append((path, key, wanted))

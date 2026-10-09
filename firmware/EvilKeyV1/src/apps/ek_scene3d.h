@@ -50,13 +50,23 @@ static inline int ek_scene3d_validate(const uint8_t *p,size_t size) {
     return faces<=EVILKEY_3D_MAX_TRIANGLES && ek3_zero(p+100+32*n,32*(96-n));
 }
 typedef struct EkScene3D EkScene3D;
+/* A supplied clock must be monotonic and safe to call concurrently from both
+ * cores. Firmware uses esp_timer_get_time; NULL disables time checks in tests. */
 typedef uint64_t (*EkSceneClock)(void *user);
 typedef struct {uint32_t status,elapsed_us,triangles,pixel_tests;} EkSceneStats;
+/* Native diagnostics only; never added to the guest ABI. Geometry includes
+ * raster, timings are wall microseconds including profiling/preemption. */
+typedef struct {
+    EkSceneStats stats;
+    uint32_t clear_us,setup_us,geometry_us,raster_us,reconstruct_us;
+    uint32_t clock_calls,max_clock_gap_us;
+} EkSceneProfile;
 enum { EK_SCENE_BUDGET_US=20000, EK_SCENE_MAX_PIXEL_TESTS=300000,
        EK_SCENE_SCRATCH_PIXELS=140*160 };
 /* Per app, PSRAM on ESP32. Never touches LVGL, DMA, SD, USB or GUI Jet. */
 EkScene3D *ek_scene3d_create(void);
 void ek_scene3d_destroy(EkScene3D *ctx);
+EkSceneProfile ek_scene3d_profile(const EkScene3D *ctx);
 /* Writes a complete frame or repeats the last completed viewport. No partial
  * frame on quota/clock abort. Budget is cooperative, checked per scanline. */
 EkSceneStats ek_scene3d_render(EkScene3D *ctx,const uint8_t *scene,

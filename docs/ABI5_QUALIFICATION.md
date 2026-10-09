@@ -1,6 +1,6 @@
 # ABI v5 qualification
 
-Firmware **0.7.4** supports ABI4 apps and ABI5 native scenes. Package revision
+Firmware **0.7.5** supports ABI4 apps and ABI5 native scenes. Package revision
 5 and the corner exit profile apply to both. Firmware release acceptance and
 qualification of an individual 3D app are separate results.
 
@@ -10,9 +10,10 @@ Release host checks cover ABI4 regression, native scene bounds, clipping/depth,
 cooperative time/work aborts with complete-frame preservation, atomic rejection
 of invalid scenes, ABI command gating, package/storage checks and allocation/
 cleanup. VM fixture execution is host evidence, not ESP32-S3 game acceptance.
-See [release evidence](RELEASE_0.7.4.md).
+See [release evidence](RELEASE_0.7.5.md).
 
-The exact 0.7.4 firmware has owner acceptance for GUI, Apps and FIDO/PIN.
+The exact 0.7.5 firmware has owner acceptance for GUI and Apps operation,
+host eject returning SD to local Apps, ordinary Diagnostics and FIDO/PIN.
 That does not establish sustained performance, IMU direction or concurrent
 FIDO operation of every native-scene game.
 

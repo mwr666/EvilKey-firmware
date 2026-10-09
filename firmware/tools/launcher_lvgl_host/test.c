@@ -2,24 +2,68 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
+#include <windows.h>
+#define EK_LVGL_TEST_CLOCK 1
+#include "ek_render_parallel.h"
+static bool override_core_stats;
+static EkRenderWorkerStats core_stats;
+static void ui_worker_stats(EkRenderWorkerStats *out){
+ if(override_core_stats)*out=core_stats;else ek_render_worker_stats(out);
+}
+#define ek_render_worker_stats ui_worker_stats
+static bool override_frame_stats;
+static EkRenderFrameStats admission_stats;
+static void ui_frame_stats(EkRenderFrameStats *out){if(override_frame_stats)*out=admission_stats;else ek_render_frame_stats(out);}
+#define ek_render_frame_stats ui_frame_stats
 #include "launcher-renderer.c"
+#undef ek_render_worker_stats
+#undef ek_render_frame_stats
 PfControlMode pf_control_mode(void){return getenv("EVILKEY_TEST_BLE_PAD")?PF_CONTROL_BLE_PAD:getenv("EVILKEY_TEST_BLE_MOUSE")?PF_CONTROL_BLE_MOUSE:getenv("EVILKEY_TEST_USB_MOUSE")?PF_CONTROL_USB_MOUSE:PF_CONTROL_NORMAL;}
 const char *pf_ble_last_status(void){return "";}
 void pf_controls_preferences(WsControlPrefs *p){ws_controls_defaults(p);}
 uint64_t host_time_us;
+static bool real_timer;static uint64_t real_timer_start;
+uint64_t host_test_time(void){return host_time_us+(real_timer?(GetTickCount64()-real_timer_start)*1000:0);}
 static uint16_t frame[280*456];
 static uint8_t icons[9*8192];
 static uint16_t app_pixels[280*456];
 static uint32_t app_generation=1;
+static EkSceneProfile native_profile;
+static char *submitted_report;static size_t submitted_report_size;
+static unsigned report_submissions;static bool report_accept=true;
+static char report_error[80];
+int ek_apps_diagnostics_export(char *data,size_t size){
+ if(!report_accept)return 0;
+ assert(!submitted_report&&size<EK_DIAGNOSTICS_REPORT_CAPACITY);submitted_report=data;submitted_report_size=size;
+ ++report_submissions;return 1;
+}
+void ek_apps_diagnostics_export_failed(const char *reason){snprintf(report_error,sizeof(report_error),"%s",reason);}
+void ek_apps_scene_profile(EkSceneProfile *p){*p=native_profile;}
 int ek_apps_copy_icons(uint8_t *p,size_t n,uint32_t *g){assert(n>=sizeof icons);if(*g==1)return 0;memcpy(p,icons,sizeof icons);*g=1;return 1;}
 int ek_apps_copy_frame(uint16_t *p,size_t n,uint32_t *g,EkAppsDirty *d){assert(n>=280*456);if(*g==app_generation)return 0;memcpy(p,app_pixels,sizeof(app_pixels));*g=app_generation;d->x=0;d->y=0;d->width=280;d->height=456;return 1;}
+int ek_apps_copy_frame_panel(uint16_t *p,size_t n,uint32_t *g,EkAppsDirty *d){
+ if(!ek_apps_copy_frame(p,n,g,d))return 0;
+ for(unsigned i=0;i<280*456;i++){uint16_t c=p[i];p[i]=(uint16_t)((c<<8)|(c>>8));}return 1;
+}
+static EkAppsCopyStats copy_stats;
+void ek_apps_copy_stats(EkAppsCopyStats *p){if(p)*p=copy_stats;}
 static const uint16_t *pending_dma;
-static uint16_t pending_copy[280*16];
+static uint16_t pending_copy[280*64];
 static size_t pending_pixels;
+static bool direct_async;
+static ws_panel_flush_done_cb_t pending_done;
+static void *pending_context;
+static bool panel_idle_fail,panel_submit_fail;
+static void ppm(const char *path);
 esp_err_t ws_panel_wait_idle(uint32_t t){(void)t;
- if(pending_dma){assert(memcmp(pending_dma,pending_copy,pending_pixels*2)==0);pending_dma=NULL;}
+ if(panel_idle_fail)return ESP_ERR_TIMEOUT;
+ if(pending_dma){assert(memcmp(pending_dma,pending_copy,pending_pixels*2)==0);pending_dma=NULL;
+  if(pending_done){ws_panel_flush_done_cb_t done=pending_done;void *ctx=pending_context;pending_done=NULL;done(ctx);
+  }
+ }
  return ESP_OK;}
 esp_err_t ws_panel_flush_async(uint16_t x,uint16_t y,uint16_t x2,uint16_t y2,const uint16_t *p,size_t n,ws_panel_flush_done_cb_t done,void *ctx){
+if(panel_submit_fail)return ESP_FAIL;
 assert(ws_panel_wait_idle(500)==ESP_OK);
 assert(x2<280 && y2<456);
 assert(!(x&1) && !(y&1) && (x2&1) && (y2&1));
@@ -39,7 +83,13 @@ if(pf_control_mode()==PF_CONTROL_BLE_PAD){
  if((x&1)||(y&1)||!(x2&1)||!(y2&1))fprintf(stderr,"Unaligned panel window: %u,%u..%u,%u\n",x,y,x2,y2);
  assert(!(x&1) && !(y&1) && (x2&1) && (y2&1));
 }
-assert(n==(size_t)(x2-x+1)*(y2-y+1));for(unsigned r=y;r<=y2;++r)memcpy(frame+r*280+x,p+(r-y)*(x2-x+1),(x2-x+1)*2);done(ctx);return ESP_OK;}
+assert(n==(size_t)(x2-x+1)*(y2-y+1));for(unsigned r=y;r<=y2;++r)memcpy(frame+r*280+x,p+(r-y)*(x2-x+1),(x2-x+1)*2);
+if(direct_async&&!s_staging[0]){
+ assert(p==(const uint16_t*)s_pixels_a||p==(const uint16_t*)s_pixels_b);
+ assert(!pending_dma&&n<=280*64);pending_dma=p;pending_pixels=n;memcpy(pending_copy,p,n*2);
+ pending_done=done;pending_context=ctx;
+}else done(ctx);return ESP_OK;}
+static void host_dma_wait(lv_disp_drv_t *drv){(void)drv;assert(ws_panel_wait_idle(500)==ESP_OK);}
 static void memory(const char *stage){lv_mem_monitor_t m;lv_mem_monitor(&m);printf("%s free=%u largest=%u used=%u%% peak=%u\n",stage,(unsigned)m.free_size,(unsigned)m.free_biggest_size,(unsigned)m.used_pct,(unsigned)m.max_used);fflush(stdout);}
 
 static void render(ws_ui_snapshot_t *v){host_time_us+=16000;assert(ws_lvgl_render(v)==ESP_OK);lv_mem_monitor_t m;lv_mem_monitor(&m);assert(m.free_size>20000);assert(m.total_size-m.max_used>20000);}
@@ -189,8 +239,106 @@ static int test_landing_rings(void){
  free(reference);memory("rings parity");
  puts("PASS: Apps/Settings ring pixels match at all 256 phases, 2 accents, animation ON/OFF; >20 KiB LVGL headroom");return 0;
 }
-int main(int argc,char **argv){if(argc==2 && strcmp(argv[1],"--rings-only")==0)return test_landing_rings();assert(argc==7);FILE *app=fopen(argv[6],"rb");assert(app);assert(fread(app_pixels,1,sizeof(app_pixels),app)==sizeof(app_pixels));fclose(app);assert(ws_lvgl_init()==ESP_OK);assert(pf_control_mode()==PF_CONTROL_BLE_PAD || s_3d_available==!getenv("EVILKEY_TEST_3D_FALLBACK"));memory("init");ws_ui_snapshot_t v={0};v.state=WS_UI_READY;v.settings_animation=true;v.accent_rgb=0x4de3c1;
-if(getenv("EVILKEY_TEST_STAGING")){assert(s_pixels_b && s_draw_pixels==280*64 && s_staging[0] && s_staging[1]);}
+static unsigned label_failures;
+static void label_fits(lv_obj_t *label){
+ lv_point_t sz;lv_txt_get_size(&sz,lv_label_get_text(label),lv_obj_get_style_text_font(label,0),
+   lv_obj_get_style_text_letter_space(label,0),lv_obj_get_style_text_line_space(label,0),
+   lv_obj_get_content_width(label),LV_TEXT_FLAG_NONE);
+ if(sz.y>lv_obj_get_content_height(label))fprintf(stderr,"Label exceeds height: %s (%d > %d)\n",lv_label_get_text(label),sz.y,lv_obj_get_content_height(label));
+ if(sz.y>lv_obj_get_content_height(label))++label_failures;
+}
+static int test_native_profile_card(void){
+ assert(ws_lvgl_init()==ESP_OK);
+ ws_ui_snapshot_t v={0};v.state=WS_UI_READY;v.accent_rgb=0x4de3c1;
+ v.settings_open=true;v.settings_transition=255;v.settings_page=WS_SETTINGS_PAGE_DIAGNOSTICS;v.diagnostics_enabled=true;
+ v.diagnostics_tick=12;render(&v);assert(!strcmp(lv_label_get_text(ui.diagnostics_value),"No scene sample"));
+ native_profile=(EkSceneProfile){{2,29874,132,20375},1200,300,20001,14500,8373,2400,1400};
+ v.diagnostics_tick=13;render(&v);assert(strstr(lv_label_get_text(ui.diagnostics_memory),"Geom 20001 (raster 14500)"));
+ for(unsigned card=0;card<7;card++){v.diagnostics_tick=card*3;render(&v);label_fits(ui.diagnostics_value);label_fits(ui.diagnostics_memory);}
+ v.diagnostics_tick=18;render(&v);assert(!strcmp(lv_label_get_text(ui.diagnostics_title),"RENDER CORES"));
+ override_core_stats=true;core_stats=(EkRenderWorkerStats){1,1,{UINT32_MAX,UINT32_MAX},{4096,4096}};
+ render(&v);label_fits(ui.diagnostics_value);label_fits(ui.diagnostics_memory);
+ native_profile=(EkSceneProfile){{2,UINT32_MAX,UINT32_MAX,UINT32_MAX},UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX};
+ copy_stats=(EkAppsCopyStats){UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT16_MAX,UINT16_MAX,1,2};
+ override_frame_stats=true;memset(&admission_stats,255,sizeof admission_stats);
+ v.diagnostics_export_status=EK_DIAGNOSTICS_EXPORT_BUSY;v.diagnostics_export_request=1;render(&v);
+ assert(submitted_report&&report_submissions==1&&submitted_report_size<8192);
+ const char *sections[]={"[draw_buffer]","[apps_catalog]","[ui_latency]","[app_frame_copy]","[gui_renderer]","[gui.Saver]","[gui.Settings]","[gui.Status]","[gui.Apps]","[native.last]","[render_cores]","[graphics_admission]"};
+ for(unsigned i=0;i<sizeof sections/sizeof sections[0];i++)assert(strstr(submitted_report,sections[i]));
+ const char *removed[]={"[previous_boot]","[copy_ab]","[display_ab]","[memory_probe]","[owner_task_probe]","[clock_probe]","[scene_comparison]","[native.first_timeout]"};
+ for(unsigned i=0;i<sizeof removed/sizeof removed[0];i++)assert(!strstr(submitted_report,removed[i]));
+ assert(strstr(submitted_report,"spec_revision=22")&&strstr(submitted_report,"report_end=complete")&&strstr(submitted_report,"native_wait_peak_us=4294967295"));
+ FILE *report=fopen("firmware/build/diagnostics-report-max.txt","wb");assert(report);assert(fwrite(submitted_report,1,submitted_report_size,report)==submitted_report_size);fclose(report);
+ free(submitted_report);submitted_report=NULL;render(&v);assert(report_submissions==1);
+ for(unsigned state=0;state<4;state++){
+  v.diagnostics_export_status=(uint8_t)state;v.diagnostics_enabled=state!=0;
+  snprintf(v.diagnostics_export_message,sizeof v.diagnostics_export_message,"%s",state==2?"diag-FFFFFFFF-9999.txt":state==3?"SD report verify failed":"");
+  render(&v);label_fits(ui.diagnostics_save_label);label_fits(ui.settings_subtitle);
+  assert(ws_ui_settings_hit_test(WS_SETTINGS_PAGE_DIAGNOSTICS,20,378)==WS_SETTINGS_ACTION_DIAGNOSTICS_SAVE);
+  assert(ws_ui_settings_hit_test(WS_SETTINGS_PAGE_DIAGNOSTICS,259,423)==WS_SETTINGS_ACTION_DIAGNOSTICS_SAVE);
+  assert(ws_ui_settings_hit_test(WS_SETTINGS_PAGE_DIAGNOSTICS,260,423)==WS_SETTINGS_ACTION_NONE);
+  char path[96];snprintf(path,sizeof path,"firmware/build/diagnostics-export-%u.ppm",state);ppm(path);
+ }
+ char tiny[8];size_t used=0;assert(!diagnostics_append(tiny,sizeof tiny,&used,"12345678")&&used==sizeof tiny);
+ putenv("EVILKEY_TEST_DIAGNOSTICS_ALLOC_FAIL=1");diagnostics_report(&v);assert(!strcmp(report_error,"Report memory unavailable")&&!submitted_report);
+ putenv("EVILKEY_TEST_DIAGNOSTICS_ALLOC_FAIL=");report_accept=false;diagnostics_report(&v);assert(!strcmp(report_error,"Report worker unavailable")&&!submitted_report);
+ assert(!label_failures);puts("PASS ordinary Diagnostics: seven cards, full-width Save, complete bounded report, duplicate/allocation/worker errors and captures");return 0;
+}
+static DWORD WINAPI finish_test_flush(void *p){(void)p;Sleep(10);lv_disp_flush_ready(&s_disp_drv);return 0;}
+static int wait_contract(){
+ assert(ws_lvgl_init()==ESP_OK);assert(s_disp_drv.wait_cb);
+ uint32_t id=ws_gui_3d_frame_begin((uint32_t)host_time_us);ws_gui_3d_frame_flush(id,2);
+ s_draw_buf.flushing=1;real_timer_start=GetTickCount64();real_timer=true;
+ HANDLE thread=CreateThread(NULL,0,finish_test_flush,NULL,0,NULL);assert(thread);
+ s_disp_drv.wait_cb(&s_disp_drv);assert(!s_draw_buf.flushing);assert(WaitForSingleObject(thread,1000)==WAIT_OBJECT_0);CloseHandle(thread);
+ uint32_t waited=ws_gui_3d_take_panel_wait();assert(waited>=5000);
+ ws_gui_3d_frame_complete(id,(uint32_t)host_test_time());ws_gui_3d_frame_end(id,(uint32_t)host_test_time(),waited,true);
+ ws_gui_3d_presentation_stats_t stats=ws_gui_3d_presentation_stats();assert(stats.lvgl_wait_us==waited&&stats.panel_wait_us==waited&&stats.peak_lvgl_wait_us==waited);
+ host_time_us=host_test_time();real_timer=false;
+ puts("PASS production LVGL wait callback: threaded completion, measured once, total/subset/peak attribution");return 0;
+}
+static int buffer_frames(){
+ const char *failure=getenv("EVILKEY_TEST_DIRECT_FAIL");unsigned fail=failure?(unsigned)atoi(failure):0;
+ esp_err_t init=ws_lvgl_init();
+ if(fail==5){assert(init==ESP_ERR_NO_MEM);puts("PASS no DMA memory failure");return 0;}
+ assert(init==ESP_OK);
+ if(fail>=1&&fail<=3)assert(s_pixels_b&&s_draw_pixels==280*64&&s_staging[0]&&s_staging[1]);
+ if(fail==4)assert(s_pixels_a&&!s_pixels_b&&!s_staging[0]&&s_draw_pixels==280*16);
+ direct_async=true;s_disp_drv.wait_cb=host_dma_wait;
+ if(getenv("EVILKEY_EXPECT_DIRECT16"))assert(s_pixels_b&&s_draw_pixels==280*16&&!s_staging[0]&&!s_staging[1]);
+ FILE *out=fopen(getenv("EVILKEY_BUFFER_FRAMES"),"wb");assert(out);
+ ws_ui_snapshot_t v={0};v.state=WS_UI_READY;v.accent_rgb=0x4de3c1;v.settings_animation=true;
+ unsigned frames=0;
+ for(unsigned sample=0;sample<100;sample++){
+  v.launcher_transition=v.settings_transition=v.screensaver_transition=0;
+  v.settings_open=v.screensaver_open=v.apps_running=v.apps_exit_dragging=v.apps_exit_confirm=false;
+  v.state=WS_UI_READY;v.settings_motion_phase=sample*13;v.animation_phase=sample;
+  if(sample<16){v.apps_running=true;v.launcher_transition=255;
+   for(unsigned i=0;i<280*456;i++)app_pixels[i]=(uint16_t)(i*13+sample*1709);++app_generation;
+   v.apps_exit_dragging=sample>=4&&sample<9;v.apps_exit_progress=(sample*19)%101;
+   v.apps_exit_confirm=sample>=9;v.apps_exit_pressed=sample%3;
+  }else if(sample<32){v.launcher_transition=255;v.apps_count=9;v.launcher_page=sample%2;v.apps_catalog_ready=true;}
+  else if(sample<60){v.settings_open=true;v.settings_transition=255;v.settings_page=sample%WS_SETTINGS_PAGE_COUNT;
+   if(v.settings_page==WS_SETTINGS_PAGE_DIAGNOSTICS)v.settings_page=WS_SETTINGS_PAGE_HOME;
+   v.settings_storage_ok=true;v.brightness=70;v.dim_brightness=8;
+  }else if(sample<80){v.screensaver_open=true;v.screensaver_transition=255;v.screensaver_phase=sample*3;v.screensaver_text_phase=sample;}
+  else if(sample<90){v.state=WS_UI_PIN;v.pin_length=sample%7;v.uv_retries=3;v.touch_enabled=v.touch_available=true;v.seconds_left=90;}
+  else {v.state=WS_UI_WAITING;v.seconds_left=30;v.touch_available=v.touch_enabled=true;}
+  render(&v);assert(ws_panel_wait_idle(500)==ESP_OK);assert(fwrite(frame,1,sizeof frame,out)==sizeof frame);++frames;
+  uint16_t reference[280*456];memcpy(reference,frame,sizeof frame);
+  /* Hold the clock fixed: a full refresh must compare the same animation
+     instant, including the production 33 ms Jet update gate. */
+  lv_obj_invalidate(ui.screen);assert(ws_lvgl_render(&v)==ESP_OK);assert(ws_panel_wait_idle(500)==ESP_OK);
+  if(memcmp(reference,frame,sizeof frame)){
+   unsigned differences=0,first=280*456;for(unsigned i=0;i<280*456;i++)if(reference[i]!=frame[i]){if(first==280*456)first=i;++differences;}
+   fprintf(stderr,"buffer parity sample=%u differences=%u first=%u,%u old=%04x new=%04x\n",sample,differences,first%280,first/280,reference[first],frame[first]);
+  }
+  assert(!memcmp(reference,frame,sizeof frame));
+ }
+ assert(!fclose(out));printf("PASS buffer assembled frames=%u, incremental/full identical\n",frames);return 0;
+}
+int main(int argc,char **argv){if(argc==2&&strcmp(argv[1],"--wait-contract")==0)return wait_contract();if(argc==2&&strcmp(argv[1],"--buffer-frames")==0)return buffer_frames();if(argc==2 && strcmp(argv[1],"--scene-profile-only")==0)return test_native_profile_card();if(argc==2 && strcmp(argv[1],"--rings-only")==0)return test_landing_rings();assert(argc==7);FILE *app=fopen(argv[6],"rb");assert(app);assert(fread(app_pixels,1,sizeof(app_pixels),app)==sizeof(app_pixels));fclose(app);assert(ws_lvgl_init()==ESP_OK);assert(pf_control_mode()==PF_CONTROL_BLE_PAD || s_3d_available==!getenv("EVILKEY_TEST_3D_FALLBACK"));memory("init");ws_ui_snapshot_t v={0};v.state=WS_UI_READY;v.settings_animation=true;v.accent_rgb=0x4de3c1;
+if(getenv("EVILKEY_TEST_STAGING")&&!getenv("EVILKEY_TEST_DIRECT_FAIL")){assert(s_pixels_b&&s_draw_pixels==280*16&&!s_staging[0]);}
 if(getenv("EVILKEY_EXPORT_CLASSIC_ICONS")){assert(!s_3d_available);export_classic_icons(&v);return 0;}
 if(pf_control_mode()==PF_CONTROL_BLE_PAD) {
  assert(!s_pixels_b && s_draw_pixels==280*16 && s_rotation_bytes==LV_DISP_ROT_MAX_BUF);

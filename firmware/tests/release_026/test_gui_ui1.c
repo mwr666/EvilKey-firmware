@@ -33,6 +33,8 @@ static ws_settings_action_t expected_settings(uint8_t page,unsigned x,unsigned y
 {
     if(page>=WS_SETTINGS_PAGE_COUNT || page==WS_SETTINGS_PAGE_HOME)
         return WS_SETTINGS_ACTION_NONE;
+    if(page==WS_SETTINGS_PAGE_DIAGNOSTICS && in(x,y,20,378,240,46))
+        return WS_SETTINGS_ACTION_DIAGNOSTICS_SAVE;
     if(!in(x,y,WS_SETTINGS_ROW_X,WS_SETTINGS_ROW_Y,WS_SETTINGS_ROW_W,
            WS_SETTINGS_ROW_H+WS_SETTINGS_ROW_DY)) return WS_SETTINGS_ACTION_NONE;
     int row=-1;

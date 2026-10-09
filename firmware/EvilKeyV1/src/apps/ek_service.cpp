@@ -1,10 +1,12 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later
  * Apps worker. Only this task touches microSD or executes Wasm. The FIDO
- * task and the display task never wait for app I/O or guest code.
+ * task never waits for app I/O or guest code. Display admission serializes
+ * only native pre-copy compute, independently of storage and guest execution.
  */
 #include "ek_service.h"
 #include "ek_storage.h"
 #include "ek_vm.h"
+#include "ek_render_parallel.h"
 #include <esp_timer.h>
 #include <Arduino.h>
 #include <esp_heap_caps.h>
@@ -38,6 +40,13 @@ static EkAssets s_assets;
 static char s_running_id[32];
 static EkVm s_vm;
 static EkScene3D *s_scene3d;
+static EkAppsCopyStats s_copy_stats;
+static_assert(sizeof(EkAppsCopyStats)==28,"bounded app copy snapshot");
+static EkSceneProfile s_scene_profile;
+static EkDiagnosticsExport s_diagnostics_export;
+static char *s_diagnostics_report;
+static size_t s_diagnostics_report_size;
+static_assert(sizeof(s_scene_profile)==44,"fixed native diagnostic snapshot");
 /* The 4 KiB save mailbox must not live on the 16 KiB Apps task stack or in
  * internal BSS needed by TinyUSB. Only the Apps worker uses this PSRAM copy. */
 static EvilKeyAppInput *s_input;
@@ -108,10 +117,14 @@ static void rect(void *,int32_t x,int32_t y,int32_t w,int32_t h,uint16_t colour)
 }
 static uint64_t scene_clock(void *) {return (uint64_t)esp_timer_get_time();}
 static EkSceneStats render_scene(void *,const uint8_t *scene,unsigned x,unsigned y,unsigned w,unsigned h) {
-    return ek_scene3d_render(s_scene3d,scene,s_back,EK_APPS_WIDTH,x,y,w,h,scene_clock,nullptr);
+    EkSceneStats stats=ek_scene3d_render(s_scene3d,scene,s_back,EK_APPS_WIDTH,x,y,w,h,scene_clock,nullptr);
+    EkSceneProfile profile=ek_scene3d_profile(s_scene3d);
+    xSemaphoreTake(s_guard,portMAX_DELAY);s_scene_profile=profile;xSemaphoreGive(s_guard);
+    return stats;
 }
 static void present(void *,int32_t x,int32_t y,int32_t w,int32_t h) {
     if (!s_back || !s_front) return;
+    
     xSemaphoreTake(s_guard,portMAX_DELAY);
     for (int32_t row=y;row<y+h;++row)
         memcpy(s_front+row*EK_APPS_WIDTH+x,s_back+row*EK_APPS_WIDTH+x,
@@ -129,6 +142,7 @@ static void present(void *,int32_t x,int32_t y,int32_t w,int32_t h) {
     }
     ++s_state.frame;
     xSemaphoreGive(s_guard);
+    
 }
 static void blit(void *,int32_t x,int32_t y,const EkAsset *asset) {
     if (!s_back || !asset) return;
@@ -360,7 +374,7 @@ static void run_selected(const char *id) {
     memset(back,0,frame_bytes);memset(front,0,frame_bytes);
     s_back=back;
     xSemaphoreTake(s_guard,portMAX_DELAY);
-    s_front=front;s_dirty={0,0,EK_APPS_WIDTH,EK_APPS_HEIGHT};++s_state.frame;
+    s_front=front;s_dirty={0,0,EK_APPS_WIDTH,EK_APPS_HEIGHT};s_copy_stats={};++s_state.frame;
     xSemaphoreGive(s_guard);
     s_payload=bytes;
     if (!ek_assets_parse(bytes+wasm_size,asset_size,&s_assets)) {
@@ -381,6 +395,7 @@ static void run_selected(const char *id) {
     host.blit_region=blit_region;
     host.abi_version=ek_storage_loaded_abi();
     if(host.abi_version==5) {
+        xSemaphoreTake(s_guard,portMAX_DELAY);s_scene_profile={};xSemaphoreGive(s_guard);
         s_scene3d=ek_scene3d_create();
         if(!s_scene3d){stop_vm();state_text("3D memory unavailable");return;}
         host.scene3d=render_scene;
@@ -409,6 +424,22 @@ static void run_selected(const char *id) {
     mark_stage(APP_RUNNING);
     log_memory("app running");
 }
+static __attribute__((noinline)) void export_diagnostics(void) {
+    xSemaphoreTake(s_guard,portMAX_DELAY);
+    char *data=s_diagnostics_report;size_t size=s_diagnostics_report_size;
+    xSemaphoreGive(s_guard);
+    if(!data)return;
+    char filename[32]={},error[80]={};
+    bool ok=ek_storage_diagnostics_write((const uint8_t *)data,size,filename,sizeof(filename));
+    if(!ok)snprintf(error,sizeof(error),"%s",ek_storage_error());
+    free(data);
+    xSemaphoreTake(s_guard,portMAX_DELAY);
+    s_diagnostics_report=nullptr;s_diagnostics_report_size=0;
+    s_diagnostics_export.status=ok?EK_DIAGNOSTICS_EXPORT_SAVED:EK_DIAGNOSTICS_EXPORT_ERROR;
+    snprintf(s_diagnostics_export.filename,sizeof(s_diagnostics_export.filename),"%s",filename);
+    snprintf(s_diagnostics_export.error,sizeof(s_diagnostics_export.error),"%s",error);
+    xSemaphoreGive(s_guard);
+}
 static void task(void *) {
     for (;;) {
         xSemaphoreTake(s_guard,portMAX_DELAY);
@@ -425,6 +456,7 @@ static void task(void *) {
             running=false;command=EK_APPS_NONE;
         }
         if (!pf_apps_storage_role_allowed()) {
+            export_diagnostics();
             if (running || s_vm_open) stop_vm();
             if (mounted) {
                 ek_storage_end();
@@ -438,7 +470,7 @@ static void task(void *) {
         }
         if (!mounted) {
             uint32_t started=millis();
-            if (!ek_storage_begin()) {state_text(ek_storage_error());vTaskDelay(pdMS_TO_TICKS(1000));continue;}
+            if (!ek_storage_begin()) {state_text(ek_storage_error());export_diagnostics();vTaskDelay(pdMS_TO_TICKS(1000));continue;}
             xSemaphoreTake(s_guard,portMAX_DELAY);
             s_state.mounted=true;s_state.mount_ms=millis()-started;
             xSemaphoreGive(s_guard);
@@ -446,6 +478,7 @@ static void task(void *) {
             /* Do not run a command selected against a previous catalog. */
             command=EK_APPS_NONE;id[0]=0;
         }
+        export_diagnostics();
         if (!running && (command==EK_APPS_REFRESH ||
             (!visible && (uint32_t)(millis()-s_last_scan_at)>=15000U))) {
             scan_catalog();command=EK_APPS_NONE;
@@ -463,10 +496,15 @@ static void task(void *) {
             }
             input_snapshot(s_input,s_app_time_ms);
             if (!modal) {
-                if (!ek_vm_step(&s_vm,s_input)) {
+                
+                
+                bool step_ok=ek_vm_step(&s_vm,s_input);
+                
+                if (!step_ok) {
                     char error[80];snprintf(error,sizeof(error),"%s",ek_vm_error(&s_vm));
                     stop_vm();state_text(error);
                 } else flush_save();
+                
             }
         } else if (command==EK_APPS_PREV || command==EK_APPS_NEXT) {
             xSemaphoreTake(s_guard,portMAX_DELAY);
@@ -481,6 +519,7 @@ static void task(void *) {
         } else if (command==EK_APPS_RUN) {
             state_text("Copy .ekapp to /evilkey/apps");
         }
+        
         vTaskDelay(pdMS_TO_TICKS(running?16:80));
     }
 }
@@ -587,20 +626,110 @@ extern "C" void ek_apps_snapshot(EkAppsState *out) {
     if (!s_guard) return;
     xSemaphoreTake(s_guard,portMAX_DELAY);*out=s_state;xSemaphoreGive(s_guard);
 }
-extern "C" int ek_apps_copy_frame(uint16_t *pixels,size_t count,
-                                    uint32_t *generation,EkAppsDirty *dirty) {
+extern "C" void ek_apps_scene_profile(EkSceneProfile *out) {
+    if(!out)return;
+    memset(out,0,sizeof(*out));if(!s_guard)return;
+    xSemaphoreTake(s_guard,portMAX_DELAY);*out=s_scene_profile;xSemaphoreGive(s_guard);
+}
+extern "C" int ek_apps_diagnostics_export(char *data,size_t size) {
+    if(!s_guard||!data||!size||size>EK_DIAGNOSTICS_REPORT_CAPACITY)return 0;
+    xSemaphoreTake(s_guard,portMAX_DELAY);
+    bool accepted=s_diagnostics_export.status==EK_DIAGNOSTICS_EXPORT_BUSY&&!s_diagnostics_report;
+    if(accepted){
+        s_diagnostics_report=data;s_diagnostics_report_size=size;
+    }
+    xSemaphoreGive(s_guard);return accepted;
+}
+extern "C" int ek_apps_diagnostics_export_request(void) {
+    if(!s_guard)return 0;
+    xSemaphoreTake(s_guard,portMAX_DELAY);
+    bool accepted=s_diagnostics_export.status!=EK_DIAGNOSTICS_EXPORT_BUSY;
+    if(accepted){
+        uint32_t request=s_diagnostics_export.request+1;if(!request)request=1;
+        s_diagnostics_export={};s_diagnostics_export.request=request;
+        s_diagnostics_export.status=EK_DIAGNOSTICS_EXPORT_BUSY;
+    }
+    xSemaphoreGive(s_guard);return accepted;
+}
+extern "C" void ek_apps_diagnostics_export_failed(const char *reason) {
+    if(!s_guard)return;
+    xSemaphoreTake(s_guard,portMAX_DELAY);
+    if(!s_diagnostics_report){
+        s_diagnostics_export.status=EK_DIAGNOSTICS_EXPORT_ERROR;
+        s_diagnostics_export.filename[0]=0;
+        snprintf(s_diagnostics_export.error,sizeof(s_diagnostics_export.error),"%s",reason?reason:"Report failed");
+    }
+    xSemaphoreGive(s_guard);
+}
+extern "C" void ek_apps_diagnostics_export_snapshot(EkDiagnosticsExport *out) {
+    if(!out)return;
+    if(!s_guard){
+        *out={};out->status=EK_DIAGNOSTICS_EXPORT_ERROR;
+        snprintf(out->error,sizeof(out->error),"Report worker unavailable");return;
+    }
+    xSemaphoreTake(s_guard,portMAX_DELAY);*out=s_diagnostics_export;xSemaphoreGive(s_guard);
+}
+typedef uint32_t __attribute__((__may_alias__)) CopyWord;
+static void copy_panel_row(uint16_t *destination,const uint16_t *source,unsigned width){
+    /* Pair stores only when both pointers can use aligned words. Otherwise
+     * retain uint16 alignment; never read/write beyond the dirty row. */
+    if((((uintptr_t)destination^(uintptr_t)source)&3u)==0){
+        if(width&&((uintptr_t)source&3u)){
+            uint16_t c=*source++;*destination++=(uint16_t)((c<<8)|(c>>8));--width;
+        }
+        while(width>=2){
+            uint32_t c=*(const CopyWord*)source;
+            *(CopyWord*)destination=((c&0x00ff00ffu)<<8)|((c>>8)&0x00ff00ffu);
+            source+=2;destination+=2;width-=2;
+        }
+    }
+    while(width--){uint16_t c=*source++;*destination++=(uint16_t)((c<<8)|(c>>8));}
+}
+
+static int copy_frame(uint16_t *pixels,size_t count,uint32_t *generation,EkAppsDirty *dirty,bool panel){
     if (!s_guard || !pixels || count<EK_APPS_PIXELS || !generation || !dirty) return 0;
+    
     xSemaphoreTake(s_guard,portMAX_DELAY);
     bool changed=s_front && s_state.frame!=*generation && s_dirty.width;
     if (changed) {
+        uint64_t start=scene_clock(nullptr);
         *dirty=s_dirty;
-        for (uint32_t row=dirty->y;row<dirty->y+dirty->height;++row)
-            memcpy(pixels+row*EK_APPS_WIDTH+dirty->x,
-                   s_front+row*EK_APPS_WIDTH+dirty->x,
-                   dirty->width*sizeof(uint16_t));
+        const bool full_panel=panel&&dirty->x==0&&dirty->y==0&&
+            dirty->width==EK_APPS_WIDTH&&dirty->height==EK_APPS_HEIGHT;
+        for (uint32_t row=dirty->y;row<dirty->y+dirty->height;++row){
+            uint16_t *target=pixels+row*EK_APPS_WIDTH+dirty->x;
+            const uint16_t *source=s_front+row*EK_APPS_WIDTH+dirty->x;
+            if(panel&&!full_panel)copy_panel_row(target,source,dirty->width);
+            else memcpy(target,source,dirty->width*sizeof(uint16_t));
+        }
+        /* Keep both passes under the same guard, before acknowledging the
+         * generation. Only complete dirty frames use the measured legacy path. */
+        if(full_panel)for(unsigned i=0;i<EK_APPS_PIXELS;i++){
+            uint16_t c=pixels[i];pixels[i]=(uint16_t)((c<<8)|(c>>8));
+        }
+        uint64_t elapsed=scene_clock(nullptr)-start;
+        s_copy_stats.last_us=(uint32_t)(elapsed>UINT32_MAX?UINT32_MAX:elapsed);
+        if(s_copy_stats.last_us>s_copy_stats.peak_us)s_copy_stats.peak_us=s_copy_stats.last_us;
+        ++s_copy_stats.copies;s_copy_stats.last_bytes=(uint32_t)dirty->width*dirty->height*2;
+        s_copy_stats.last_width=dirty->width;s_copy_stats.last_height=dirty->height;
+        s_copy_stats.panel_order=panel?1u:0u;
+        s_copy_stats.method=full_panel?EK_APPS_COPY_ROW_SWAP:
+            panel?EK_APPS_COPY_FUSED:EK_APPS_COPY_NATIVE;
         s_dirty={0,0,0,0};
         *generation=s_state.frame;
     }
     xSemaphoreGive(s_guard);
+    
     return changed?1:0;
+}
+extern "C" int ek_apps_copy_frame(uint16_t *pixels,size_t count,uint32_t *generation,EkAppsDirty *dirty){
+    return copy_frame(pixels,count,generation,dirty,false);
+}
+extern "C" int ek_apps_copy_frame_panel(uint16_t *pixels,size_t count,uint32_t *generation,EkAppsDirty *dirty){
+    return copy_frame(pixels,count,generation,dirty,true);
+}
+extern "C" void ek_apps_copy_stats(EkAppsCopyStats *out){
+    if(!out)return;
+    if(!s_guard){*out={};return;}
+    xSemaphoreTake(s_guard,portMAX_DELAY);*out=s_copy_stats;xSemaphoreGive(s_guard);
 }

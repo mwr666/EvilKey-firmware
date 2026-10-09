@@ -22,7 +22,7 @@ The Windows `hello_world.duck` example minimizes windows, opens Notepad,
 creates a document and types a harmless three-line message.
 [The real USB Tool Short](https://youtube.com/shorts/k0a0o6s1Ayg) shows this HID
 test, not file transfer or data collection. Examples are a
-[separate component](https://github.com/mwr666/EvilKey-examples).
+[separate component](https://github.com/mwr666/EvilKey-examples/blob/main/microSD_EVILKEY_EXAMPLES/README.md).
 
 The built-in layout selector offers `US`, `PL Programmer`, `DE`, `FR` and `ES`.
 It maps implemented printable characters; it is not general UTF-8 typing.
@@ -32,7 +32,7 @@ The language-code setting uses the pinned Hak5 language adapter separately.
 
 Captured values and feedback go to `loot.bin`. The adjacent `loot.idx` identifies
 segment kinds/offsets and a SHA-256 digest. Manager's **USB Tool data** tab
-reads these files offline and exports CSV; see [Manager](https://github.com/mwr666/EvilKey-Manager).
+reads these files offline and exports CSV; see [Manager](https://github.com/mwr666/EvilKey-Manager/blob/main/manager/README.md).
 
 ## Returning from storage to HID
 
