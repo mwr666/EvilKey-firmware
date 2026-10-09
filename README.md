@@ -47,6 +47,14 @@ protected storage unchanged. V1.1 remains an unverified compatibility target.
 
 The silent Short shows the real home-printed prototype and its AMOLED touch interface, ending with an animated EvilKey logo. The separate interface panels below are code-derived previews; this footage does not show live PIN verification, cursor movement or script execution.
 
+## Watch the 0.7.4 interface tour
+
+<p align="center"><a href="https://youtu.be/3SmAGgwEm9s"><img src="docs/github/evilkey-interface-tour-poster.jpg" alt="Watch the EvilKey 0.7.4 host-rendered interface tour" width="420"></a></p>
+
+[▶ Watch the EvilKey 0.7.4 Interface Tour](https://youtu.be/3SmAGgwEm9s)
+
+A longer look at the animated screensaver, PIN interaction, Ready and Settings, Air Mouse, BLE Gamepad, USB Tool and Apps, including EvilBundle gameplay. The device screens use the real firmware UI running on a desktop host; gameplay comes from the host app runtime. PIN and connection/status moments are illustrative. The Shorts on this page show the physical prototype. Separately licensed EvilBundle games are not included in this repository.
+
 ## Watch Air Mouse on the real device
 
 <p align="center"><a href="https://youtube.com/shorts/b0x_XzGABB8"><img src="docs/github/evilkey-air-mouse-short-poster.png" alt="Watch EvilKey Air Mouse steer a real computer cursor" width="420"></a></p>
