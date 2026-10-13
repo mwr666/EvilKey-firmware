@@ -6,6 +6,8 @@
 #include "../../templates/port/ws_panel.c"
 
 static bool bus_error;
+static bool reset_error;
+static unsigned reset_levels,reset_configs;
 static bool sem_token;
 static unsigned cmds,colors,delayed,last_cmd;
 static size_t last_size;
@@ -36,8 +38,8 @@ SemaphoreHandle_t xSemaphoreCreateBinary(void){sem_token=false;return (void*)1;}
 BaseType_t xSemaphoreGiveFromISR(SemaphoreHandle_t s,BaseType_t*a){(void)s;sem_token=true;*a=mock_awakened?pdTRUE:pdFALSE;return pdTRUE;}
 BaseType_t xSemaphoreTake(SemaphoreHandle_t s,unsigned timeout){(void)s;if(!sem_token&&timeout&&auto_complete&&model_pending){complete_color();mock_time+=mock_resume_delay;}if(!sem_token)return pdFALSE;sem_token=false;return pdTRUE;}
 void vTaskDelay(unsigned ms){delayed+=ms;}
-esp_err_t gpio_config(const gpio_config_t*p){assert(p->pin_bit_mask==(1ULL<<WS_LCD_RESET));return ESP_OK;}
-esp_err_t gpio_set_level(int p,int n){assert(p==WS_LCD_RESET);(void)n;return ESP_OK;}
+esp_err_t gpio_config(const gpio_config_t*p){assert(p->pin_bit_mask==(1ULL<<21));++reset_configs;return reset_error?ESP_ERR_TIMEOUT:ESP_OK;}
+esp_err_t gpio_set_level(int p,int n){assert(p==21);assert(n==(int)(reset_levels%2));++reset_levels;return ESP_OK;}
 esp_err_t spi_bus_initialize(int host,const spi_bus_config_t*b,int dma){
  assert(host==SPI2_HOST&&dma==SPI_DMA_CH_AUTO);
  assert(b->max_transfer_sz==280*64*2);return ESP_OK;
@@ -168,9 +170,21 @@ static void stream_tests(void){
 }
 
 int main(void){
+ reset_error=true;
+ assert(ws_panel_prepare_reset()==ESP_ERR_TIMEOUT&&!s_reset_ready&&!reset_levels&&!delayed);
+ reset_error=false;
+#if EVILKEY_BOARD_REVISION == 11
+ /* V1.1 resets shared touch/LCD before I2C. Panel initialization must not
+  * send a second pulse that discards the already configured touch state. */
+ assert(ws_panel_prepare_reset()==ESP_OK&&reset_levels==2&&delayed==160);
+ assert(ws_panel_prepare_reset()==ESP_OK&&reset_levels==2&&delayed==160);
+#endif
  static uint16_t px[280*64];for(unsigned i=0;i<280U*64U;++i)px[i]=(uint16_t)(0x1234U+i);
  assert(ws_panel_set_enabled(false)==ESP_ERR_INVALID_STATE);
  assert(ws_panel_init()==ESP_OK);assert(s_usable&&!s_pending);assert(last_cmd==0x29);
+ assert(reset_levels==2&&reset_configs==2&&delayed==260);
+ assert(config.cs_gpio_num==(EVILKEY_BOARD_REVISION==11?46:9));
+ assert(ws_panel_prepare_reset()==ESP_OK&&reset_levels==2&&delayed==260);
  assert(ws_panel_brightness(0)==ESP_OK);assert(last_cmd==0x51&&last_size==1&&last_byte==0);
  unsigned delay=delayed;assert(ws_panel_set_enabled(false)==ESP_OK);
  assert(last_cmd==0x28&&last_size==0&&delayed==delay+10);

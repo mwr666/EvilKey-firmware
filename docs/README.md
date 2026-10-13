@@ -15,10 +15,12 @@
   [MIT SDK](../apps/sdk/README.md), [SD models](../apps/sdk/MODEL_ASSETS.md), [UI profile](../apps/sdk/UI_PROFILE.md).
 - [Source provenance](../firmware/docs/SOURCES.md),
   [installation information](../firmware/INSTALLATION_INFORMATION.md).
-- [0.7.6 release](RELEASE_0.7.6.md), [validation scope](VALIDATION.md),
+- [0.8.0 release](RELEASE_0.8.0.md), [validation scope](VALIDATION.md),
   [native app qualification](ABI5_QUALIFICATION.md).
 
 ## Earlier releases
+
+[0.7.6 notes](RELEASE_0.7.6.md) retain the preceding rendering release.
 
 [0.7.5 notes](RELEASE_0.7.5.md) describe the preceding release.
 

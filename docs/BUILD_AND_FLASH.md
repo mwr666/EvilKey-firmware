@@ -1,29 +1,56 @@
 # Build, test and flash
 
-Open **EvilKey.cmd** in this repository on Windows. It is the firmware entry point:
+Open **EvilKey.cmd** in this repository on Windows:
 
 | Option | Action |
 | --- | --- |
-| 6 | Run firmware storage/uploader software checks without USB |
-| 7 | Build firmware BIN |
-| 8 | Package this public source and the accepted BIN |
-| 11 | Build and flash after choosing and confirming the COM port |
+| 6 | Run firmware storage, PCB, installer and packaging software checks without USB |
+| 7 | Select PCB V1 or V1.1 and build its BIN |
+| 8 | Package public source and both verified PCB image sets |
+| 11 | Select PCB, build and flash after choosing and confirming the COM port |
 | Q | Exit |
 
-Requirements: Python 3, Git, Arduino CLI, pinned Arduino-ESP32 **3.3.12** and the Waveshare ESP32-S3 Touch AMOLED 1.64 **PCB V1** board package. If generated sources are missing, run `firmware/prepare.cmd` once. BLE dependencies and the required USB hook are checked by the builder.
+Requirements: Python 3, Git, Arduino CLI and pinned Arduino-ESP32 **3.3.12**
+with the Waveshare ESP32-S3 Touch AMOLED 1.64 board package. Select the PCB
+silkscreen revision: **V1** at the top, **V1.1** near the right-hand headers.
+The programming COM port does not identify the PCB. Confirmed V1.1 firmware
+compatibility begins with 0.8.0; the printable V1 enclosure has its own scope.
 
-Option **6** prepares the pinned BLE dependencies locally before running the
-storage checks. Its first run needs network access; downloaded archives are
-checked against `firmware/BLE_LOCK.json`. The checks use mocks and do not open USB.
+If generated source is missing, run firmware/prepare.cmd once. For changed PCB
+templates in an existing engine, run python firmware/tools/sync_board_profiles.py.
+BLE dependencies and the required USB hook are checked by the builder. Option **6**
+prepares pinned BLE dependencies; its first run needs network access. Downloads
+are checked against firmware/BLE_LOCK.json. Tests use mocks and do not open USB.
 
-For flashing, hold BOOT, press/release RESET and release BOOT. Choose **11** and follow its COM selection and **Y** confirmation. The uploader uses `EraseFlash=none`, checks the linked storage guards and compares protected partition digests before/after upload. It accepts reviewed layouts; when migrating from an older layout, it writes the app at `0x500000` before the partition table while preserving credential/storage offsets. Do not use a full-flash erase on a device holding credentials.
+For installation, hold BOOT, press/release RESET and release BOOT. Choose **11**,
+select the matching PCB and COM port, and confirm **Y**. Normal EvilKey updates
+use EraseFlash=none, verify linked storage guards and compare protected digests
+before/after writes. A reviewed older layout installs the app at 0x500000 before
+updating the table, retaining credential/storage offsets.
 
-Output: `firmware/build-arduino/EvilKeyV1.ino.bin`. A rebuild is a new artifact; the accepted release hash applies only to the exact published BIN. Read [installation and rollback](../firmware/INSTALLATION_INFORMATION.md) and [validation](VALIDATION.md).
+A factory or blank module instead offers fresh initialization with exact
+**ERASE** confirmation: erase all internal flash, install the matching
+bootloader/table/application, and verify them. Credentials and internal data
+are discarded; microSD is unchanged. Empty input, N or Y cancels this flow.
+If existing internal data matters, cancel unsupported-layout initialization.
+After verification, press RESET without BOOT and check the functions you use.
 
-Option **8** operates on a Git checkout with all intended source changes staged
-and no unstaged changes. It requires the accepted
-`artifacts/firmware/EvilKey_0.7.6.bin` and verifies its SHA-256. Outputs are in
-ignored `release/`; game code/packages, flash receipts and NVS data are excluded.
-Source checkouts can build/flash without a release BIN. The published source ZIP
-already contains the accepted BIN and can be used for building; copy that BIN
-into a Git checkout if you want to create another source package with option 8.
+Outputs: firmware/build-arduino/v1/EvilKeyV1.ino.bin and
+firmware/build-arduino/v1.1/EvilKeyV1.ino.bin, with separate build manifests.
+Command line:
+
+    python firmware/build_arduino.py --board-revision v1.1
+    python firmware/flash_arduino.py --board-revision v1.1 --port COM6
+
+A rebuild is a new artifact; release hashes apply only to the exact published files.
+
+Option **8** operates on a Git checkout with intended source staged and no unstaged
+changes. It requires both complete accepted sets listed in RELEASE_CURRENT.json
+under artifacts/firmware and verifies BIN/ELF/table/bootloader/build records and
+sidecars. The public source ZIP includes these files. Extracted source can build
+and flash without Git; repackaging with option8 requires a Git checkout.
+Outputs are ignored under release/. Private receipts/NVS data and game
+code/packages are excluded.
+
+Read [installation and rollback](../firmware/INSTALLATION_INFORMATION.md) and
+[validation](VALIDATION.md).

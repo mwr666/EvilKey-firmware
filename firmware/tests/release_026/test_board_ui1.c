@@ -26,13 +26,21 @@ int ek_apps_diagnostics_export_request(void){
  ++fake_export.request;fake_export.status=EK_DIAGNOSTICS_EXPORT_BUSY;return 1;
 }
 void ek_apps_diagnostics_export_snapshot(EkDiagnosticsExport *out){*out=fake_export;}
-/* This adapter test exercises NORMAL mode; BLE controls have a native suite. */
+/* Real board adapter: normal UI plus IMU acquisition in pad/mouse/app roles.
+ * BLE transport itself is mocked; controls also have a native mapping suite. */
 static PfControlMode fake_control_mode=PF_CONTROL_NORMAL;
+static bool fake_ble_connected,fake_mouse_role;
+static bool fake_qmi_present,fake_qmi_read_error,fake_qmi_write_error;
+static uint8_t fake_qmi_id=5,fake_qmi_regs[128];
+static int16_t fake_qmi_xyz[3];
+static unsigned fake_qmi_reads;
+static bool fake_app_accel_valid;
+static int32_t fake_app_accel[3];
 PfControlMode pf_control_mode(void){return fake_control_mode;}
 void pf_control_restart(PfControlMode mode){(void)mode;}
 void pf_controls_preferences(WsControlPrefs *out){ws_controls_defaults(out);}
 bool pf_controls_save(const WsControlPrefs *prefs){return ws_controls_valid(prefs);}
-bool pf_ble_connected(void){return false;}
+bool pf_ble_connected(void){return fake_ble_connected;}
 bool pf_ble_ready(void){return false;}
 bool pf_ble_failed(void){return false;}
 bool pf_ble_pad_report(const WsPadReport *report){(void)report;return false;}
@@ -44,7 +52,7 @@ void ek_apps_set_visible(bool visible){if(!visible)fake_apps.running=false;}
 void ek_apps_set_modal(bool visible){fake_app_modal=visible;}
 void ek_apps_snapshot(EkAppsState *out){*out=fake_apps;}
 void ek_apps_input(const EvilKeyAppTouch *t,uint32_t count,bool valid,int32_t x,int32_t y,int32_t z)
-{if(t)fake_app_contacts+=count;(void)valid;(void)x;(void)y;(void)z;}
+{if(t)fake_app_contacts+=count;fake_app_accel_valid=valid;fake_app_accel[0]=x;fake_app_accel[1]=y;fake_app_accel[2]=z;}
 void ek_apps_launch(unsigned i){if(i<fake_apps.count){++fake_apps_launches;fake_apps.running=true;}}
 void ek_apps_select_page(unsigned page){if(!fake_apps.running && page*9<fake_apps.count)fake_apps.page=(uint8_t)page;}
 void ek_apps_request(EkAppsCommand c){
@@ -52,7 +60,7 @@ void ek_apps_request(EkAppsCommand c){
  else if(c==EK_APPS_NEXT && (unsigned)(fake_apps.page+1)*9<fake_apps.count)++fake_apps.page;
  else if(c==EK_APPS_PREV && fake_apps.page)--fake_apps.page;
 }
-bool pf_air_mouse_role(void){return false;}
+bool pf_air_mouse_role(void){return fake_mouse_role;}
 bool pf_air_mouse_report(uint8_t b,int8_t x,int8_t y,int8_t w){(void)b;(void)x;(void)y;(void)w;return true;}
 void pf_air_mouse_exit(void){}
 void pf_air_mouse_restart_into(void){}
@@ -152,12 +160,37 @@ esp_err_t ws_lvgl_init(void){return display_start_case==3?-1:0;}
 esp_err_t ws_lvgl_render(const ws_ui_snapshot_t *v){assert(!v->screen_off&&admission_depth==0);bool owned=ek_render_frame_begin(EK_RENDER_FRAME_DISPLAY);op('R');++renders;ek_render_frame_end(owned);return render_ok?0:-1;}
 esp_err_t ws_panel_brightness(uint8_t n){assert(!admission_depth);op(n==0?'0':n==8?'D':'B');physical_brightness=n;++brightness_calls;return 0;}
 esp_err_t ws_panel_set_enabled(bool b){assert(!admission_depth);op(b?'N':'F');physical_on=b;++enable_calls;return 0;}
-esp_err_t i2c_param_config(int n,const i2c_config_t *c){(void)n;(void)c;return 0;}
+static bool shared_reset_ready;
+esp_err_t ws_panel_prepare_reset(void){shared_reset_ready=true;return ESP_OK;}
+esp_err_t i2c_param_config(int n,const i2c_config_t *c){
+#if EVILKEY_BOARD_REVISION == 11
+ assert(shared_reset_ready); /* Reset precedes the first touch/IMU transaction. */
+#endif
+ (void)n;(void)c;return 0;}
 esp_err_t i2c_driver_install(int a,int b,int c,int d,int e){(void)a;(void)b;(void)c;(void)d;(void)e;return 0;}
-esp_err_t i2c_master_write_to_device(int a,uint8_t b,const uint8_t*c,size_t d,unsigned e){(void)a;(void)b;(void)c;(void)d;(void)e;return 0;}
+esp_err_t i2c_master_write_to_device(int a,uint8_t b,const uint8_t*c,size_t d,unsigned e){
+ (void)a;(void)e;assert(critical_depth==0);
+ if(b==0x6b){if(!fake_qmi_present || fake_qmi_write_error)return -1;assert(d==2 && c[0]<128);fake_qmi_regs[c[0]]=c[1];}
+ return 0;
+}
 esp_err_t i2c_master_write_read_device(int a,uint8_t b,const uint8_t*c,size_t d,uint8_t*o,size_t n,unsigned e){
  (void)a;(void)c;(void)d;(void)e;assert(critical_depth==0);
+ if(b==0x6b){
+  if(!fake_qmi_present || fake_qmi_read_error)return -1;
+  assert(d==1 && *c<128);
+  if(*c==0 && n==1){*o=fake_qmi_id;return 0;}
+  if(*c==0x35 && n==6){
+   assert(fake_qmi_regs[2]==0x40 && fake_qmi_regs[3]==6 && fake_qmi_regs[8]==1);
+   ++fake_qmi_reads;
+   for(unsigned i=0;i<3;++i){o[2*i]=(uint16_t)fake_qmi_xyz[i];o[2*i+1]=(uint16_t)fake_qmi_xyz[i]>>8;}
+   return 0;
+  }
+  return -1;
+ }
  if(b!=WS_TOUCH_ADDR)return -1;
+ if((fake_control_mode!=PF_CONTROL_NORMAL || fake_mouse_role) && n==15){
+  memset(o,0,n);return io_ok?0:-1; /* a genuine empty FT3168 frame arms controls */
+ }
  /* This NORMAL-mode fixture has no diagnostic register model. */
  if(n==1)return -1;
  assert(n==5 || n==11);memset(o,0,n);
@@ -294,6 +327,51 @@ static void test_launcher(void){
  assert(s_view.state==WS_UI_WAITING && !s_view.launcher_transition && s_root_page==WS_ROOT_HOME);
  puts("PASS launcher: root gestures, cyclic intro/grid navigation (1/2 grids), finger-direction wrap, last-page gaps, swipe/tap exclusion, 56px corner, Yes/No return, security eviction");
 }
+static void test_imu_consumers(void){
+ fake_qmi_present=true;fake_qmi_xyz[0]=0;fake_qmi_xyz[1]=0;fake_qmi_xyz[2]=16384;
+ fake_control_mode=PF_CONTROL_BLE_PAD;fake_ble_connected=false;reset();
+ for(unsigned i=0;i<55;++i)tick(20);
+ assert(s_gamepad.imu.valid && s_gamepad.imu.ready && s_gamepad.armed);
+ fake_qmi_xyz[0]=10000;fake_qmi_xyz[2]=12977;
+ for(unsigned i=0;i<20;++i)tick(20);
+ assert(s_gamepad.imu.valid && !s_gamepad.report.x && !s_gamepad.report.y && s_gamepad.report.hat==8);
+ fake_ble_connected=true;for(unsigned i=0;i<20;++i)tick(20);
+ assert(s_gamepad.imu.valid && s_gamepad.imu.ready && (s_gamepad.report.x || s_gamepad.report.y));
+ fake_qmi_read_error=true;tick(20);assert(!s_gamepad.imu.valid && !s_gamepad.report.x && !s_gamepad.report.y);
+ fake_qmi_read_error=false;
+ puts("PASS IMU Gamepad: calibration samples while disconnected, neutral reports until BLE connects, tilt and read-error safety");
+
+ fake_control_mode=PF_CONTROL_NORMAL;fake_ble_connected=false;fake_qmi_xyz[0]=-8192;fake_qmi_xyz[1]=4096;fake_qmi_xyz[2]=12288;
+ reset();fake_drive_enabled=false;tick(20);assert(s_view.air_mouse_available);
+ s_root_page=WS_ROOT_APPS;s_launcher_intro=false;s_launcher_open=true;
+ s_launcher_transition=s_launcher_from=s_launcher_to=255;
+ fake_apps.ready=fake_apps.catalog_ready=fake_apps.running=true;
+ tick(20);assert(s_apps_sensor_ok && fake_app_accel_valid);
+ assert(fake_app_accel[0]==-500 && fake_app_accel[1]==250 && fake_app_accel[2]==750);
+ fake_qmi_read_error=true;for(unsigned i=0;i<3;++i)tick(20);
+ assert(!fake_app_accel_valid && !s_apps_sensor_ok);
+ fake_qmi_read_error=false;tick(1000);assert(s_apps_sensor_ok && fake_app_accel_valid);
+ fake_apps.running=false;tick(20);assert(!s_apps_sensor_ok && !s_apps_sample_valid && fake_qmi_regs[8]==0);
+ puts("PASS IMU Apps/ABI input: signed XYZ mg, errors invalidate, bounded retry, stop disables sensor");
+
+ fake_mouse_role=true;fake_qmi_xyz[0]=0;fake_qmi_xyz[1]=0;fake_qmi_xyz[2]=16384;
+ for(unsigned transport=0;transport<2;++transport){
+  fake_control_mode=transport?PF_CONTROL_BLE_MOUSE:PF_CONTROL_USB_MOUSE;fake_ble_connected=transport!=0;
+  s_air_mouse_gravity_valid=false;s_air_mouse_sampled_at=0;s_air_mouse_errors=0;reset();
+  for(unsigned i=0;i<65;++i)tick(10);
+  assert(s_view.air_mouse_active && s_air_mouse_sensor_ok && s_air_mouse_neutral_valid && s_air_mouse_gravity_valid);
+  assert(s_air_mouse_gravity_z>0.99f && s_air_mouse_cal_samples==60);
+ }
+ fake_qmi_read_error=true;for(unsigned i=0;i<10;++i)tick(10);
+ assert(!s_air_mouse_sensor_ok && !s_view.air_mouse_sensor_ok);
+ fake_qmi_read_error=false;fake_mouse_role=false;fake_control_mode=PF_CONTROL_NORMAL;fake_qmi_present=false;reset();
+ fake_drive_enabled=false;tick(20);assert(!s_view.air_mouse_available);
+ fake_qmi_present=true;fake_qmi_id=4;reset();assert(!s_air_mouse_sensor_ok);
+ fake_qmi_id=5;fake_qmi_write_error=true;fake_control_mode=PF_CONTROL_BLE_PAD;reset();
+ assert(!s_air_mouse_sensor_ok && !s_gamepad.imu.valid);fake_qmi_write_error=false;
+ fake_control_mode=PF_CONTROL_NORMAL;fake_qmi_present=false;
+ puts("PASS IMU Air Mouse/Settings: gravity and neutral calibration, failures, missing/wrong ID and configuration error");
+}
 int main(int argc,char **argv){
  if(argc==2){
   display_start_case=argv[1][0]-'0';assert(display_start_case>=0&&display_start_case<=3);
@@ -304,6 +382,10 @@ int main(int argc,char **argv){
   puts("DISPLAY CORE1 START PASS actual board init/create once, entry/name/8192/prio1/core1, allocation/init failure fail-closed");return 0;
  }
 
+ assert(touch_init()==ESP_OK);
+#if EVILKEY_BOARD_REVISION == 11
+ assert(shared_reset_ready);
+#endif
  reset();fake_eject=true;unsigned writes=fake_drive_writes;bool ro=fake_drive_ro;tick(20);
  assert(!fake_drive_enabled&&s_manager_restart_pending&&!fake_restarts&&fake_drive_writes==writes+1&&fake_drive_ro==ro);
  fake_eject=true;tick(20);assert(fake_drive_writes==writes+1&&!fake_restarts);
@@ -490,5 +572,5 @@ reset();open_usb_settings();assert(fake_drive_ro);
  assert(s_view.accent_rgb==0x70B8FF && s_view.settings_revision==9);
  tick(5000);assert(s_view.dim && physical_brightness==12);tick(6000);assert(s_view.screen_off);
  sample(1,50,300,20);assert(!s_view.screen_off && physical_brightness==130 && !s_touch.valid);
- puts("PASS board M1: runtime brightness, dim/off timing, palette, revision and consumed wake gesture");test_exit_display_invalidation();test_launcher();return 0;
+ puts("PASS board M1: runtime brightness, dim/off timing, palette, revision and consumed wake gesture");test_exit_display_invalidation();test_launcher();test_imu_consumers();return 0;
  }

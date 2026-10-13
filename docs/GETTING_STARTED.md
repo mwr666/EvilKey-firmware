@@ -1,13 +1,14 @@
 # Getting started
 
-EvilKey 0.7.6 is verified on the Waveshare **ESP32-S3 Touch AMOLED 1.64
-PCB V1.0**, with 16 MiB flash, 8 MiB PSRAM and a 280×456 display.
-PCB V1.1 compatibility has not yet been established.
+EvilKey 0.8.0 is verified on the Waveshare **ESP32-S3 Touch AMOLED 1.64
+PCB V1 and V1.1**, with 16 MiB flash, 8 MiB PSRAM and a 280×456 display.
+Confirmed PCB V1.1 compatibility begins with firmware 0.8.0. Choose the
+revision printed on your board before building or selecting the programming port.
 
 ## 1. Firmware and Windows tools
 
-Get the [0.7.6 release](https://github.com/mwr666/EvilKey-firmware/releases/tag/v0.7.6).
-It provides the accepted BIN, firmware source ZIP and checksums.
+Get the [0.8.0 release](https://github.com/mwr666/EvilKey-firmware/releases/tag/v0.8.0).
+It provides both labelled PCB image sets, firmware source ZIP and checksums.
 Use [Build and flash](BUILD_AND_FLASH.md) for prerequisites and the guarded
 `EvilKey.cmd` installation workflow. Compare artifact identities with
 [RELEASE_CURRENT.json](../RELEASE_CURRENT.json). A rebuilt image needs its own

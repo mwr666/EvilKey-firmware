@@ -7,6 +7,8 @@
 
 typedef void (*ws_panel_flush_done_cb_t)(void *ctx);
 
+/* Startup only. Idempotent so V1.1's shared LCD/touch reset happens before I2C. */
+esp_err_t ws_panel_prepare_reset(void);
 esp_err_t ws_panel_init(void);
 /* Queues RGB565 data directly from a DMA-capable LVGL draw buffer. The caller
  * must keep pixels alive until done(ctx) runs from the panel completion ISR. */

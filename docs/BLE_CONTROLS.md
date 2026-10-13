@@ -52,3 +52,10 @@ The uploader preserves `nvs`, `otadata`, `part0` and `wsdev` at their existing
 offsets. No full-flash erase or eFuse provisioning is involved.
 See [installation and rollback](../firmware/INSTALLATION_INFORMATION.md) and
 [release checks](VALIDATION.md).
+
+## Pairing a new board
+
+Gamepad steering remains neutral until BLE CONNECTED. Pair the selected PCB
+with the host, keep it still during calibration, then test tilt input. PAIR ON
+HOST is a connection state. USB/BLE AirMouse, Settings and Apps share the IMU
+service; calibration and availability are retained across their normal paths.

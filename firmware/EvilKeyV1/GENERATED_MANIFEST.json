@@ -1,6 +1,6 @@
 {
   "profile": "arduino-v1-development",
-  "port_version": "0.7.6",
+  "port_version": "0.8.0",
   "arduino_core": "3.3.12-recommended;3.3.11-supported",
   "revisions": {
     "fido": "fc7c60e9b45338fe815a43bb228d234322e48d97",
@@ -13,7 +13,7 @@
   "translation_units": 371,
   "generated_sha256": {
     "board/local_uv_binding.h": "a53a31b0b29c60a8e970de453d10fbe436cf29b5a82303181f40b30cfdefc6ea",
-    "board/ws_board.c": "90563683f2bf7ffb2e97cd188eee7daa99a9ef578f7efe7cdd6128bdc9c0e93d",
+    "board/ws_board.c": "2224451b1c6d44bb7da5afa7d8cce9dafef03ba387cf62f0ec9b65b91cf05e42",
     "board/ws_board.h": "9a2aa7a2e73a2e8c1a625b9b9ef18a915a597f6fd217429089e400d5626f2f03",
     "board/ws_controls.c": "946d25a148ed7042914251f7d75a3a7e6a2460d871c466351f6e51e16f3ee55b",
     "board/ws_controls.h": "fe56f57340a7b33112f627811c570e9b33d9f34dadae4ecdb36b4f9d6ed68565",
@@ -30,11 +30,11 @@
     "board/ws_manager_config.h": "b03bf4db9f4140090aae0b508a2028d0fbcaf6fd1cdab6126c52ea45b575194c",
     "board/ws_manager_drive_state.c": "2a424aa160c179bd325dd564ee8d0b26e515b4420ed255b97efc2ee9662ae3c4",
     "board/ws_manager_drive_state.h": "82e6083fa30678bfe0eb0b1c27cf5f40a723c08ab5eb75ce8722b474b84266ad",
-    "board/ws_panel.c": "85fbc0023ee17476a66ad4838c784afe51f34bb5487fadccaebe598e2802e0d7",
-    "board/ws_panel.h": "02fb1c6bc28e51f479d550822f70d7a2b64c468622ef3af7c2b89cd60571b776",
+    "board/ws_panel.c": "46a22ce8c5c540ed00638c7deadddaac5b03eb7dd4b06e1b4a8f3cd8e5ff88c0",
+    "board/ws_panel.h": "b02d63d14611f477f4956707a54eb4790733d003cbfe21776328e65aa1c3e5ca",
     "board/ws_pinpad.c": "056f2755e4cc7e40e596c3445ca33e15fdb6f384982fc59cc1154db817aee878",
     "board/ws_pinpad.h": "0bafb66f391176fbb1ca519d30056a414c4f900e6635887fab1230bb80f6bf65",
-    "board/ws_pins.h": "7e42c509e9a7825cb2718630a40c11f0bae7af87e4047e8ab80fcaad1cfcef6d",
+    "board/ws_pins.h": "ee29bd162858f22e26133f04279c90a54b239b7e871779a5e6c0ebf77d158bd5",
     "board/ws_presence.c": "aea0d97b9f9579ae6630a1e1c00d3fe9f4876de1a3da8e725833b51c8cc3cced",
     "board/ws_presence.h": "e1cc202356171cec9bd9fa526f4f180005ae29cb8653835ec8e55585890bd976",
     "board/ws_screen_power.h": "87cc9e863e9f0028f692f99805fab39a2dff07cd66fc7b1ef7f90f85ac3889c6",
@@ -899,7 +899,7 @@
     "CRYSTAL_SCREENSAVER_R37",
     "CRYSTAL_CONTRAST_R38"
   ],
-  "package_revision": "EVILKEY_0_7_6_SIMD_SD_MODELS",
+  "package_revision": "EVILKEY_0_8_0_BOARD_REVISIONS",
   "external_usbd_stack_bytes_required": 16384,
   "validation": "source-generation checks only; not a hardware certification",
   "jet": {

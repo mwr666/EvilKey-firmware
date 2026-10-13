@@ -1,6 +1,29 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #pragma once
-/* Waveshare ESP32-S3-Touch-AMOLED-1.64, PCB V1 ONLY. */
+/* Waveshare ESP32-S3-Touch-AMOLED-1.64. Legacy IDE builds default to PCB V1. */
+#ifndef EVILKEY_BOARD_REVISION
+#define EVILKEY_BOARD_REVISION 10
+#endif
+#if EVILKEY_BOARD_REVISION == 10
+#define WS_BOARD_NAME "V1"
+#define WS_LCD_CS          9
+#define WS_IMU_INT1       46
+#define WS_IMU_INT2       (-1)
+#define WS_TOUCH_INT      (-1)
+#define WS_TOUCH_RESET    (-1)
+#define WS_LCD_TE         (-1)
+#elif EVILKEY_BOARD_REVISION == 11
+#define WS_BOARD_NAME "V1.1"
+#define WS_LCD_CS         46
+#define WS_IMU_INT1        9
+#define WS_IMU_INT2       17
+#define WS_TOUCH_INT      18
+/* R35=0R, R34=NC: TP_RESET shares LCD_RESET, NOT GPIO8. */
+#define WS_TOUCH_RESET    21
+#define WS_LCD_TE         45
+#else
+#error Unsupported EVILKEY_BOARD_REVISION: use 10 (V1) or 11 (V1.1)
+#endif
 #define WS_USB_DM        19
 #define WS_USB_DP        20
 #define WS_BOOT           0
@@ -9,7 +32,6 @@
 #define WS_SD_MOSI        39
 #define WS_SD_MISO        40
 #define WS_SD_SCLK        41
-#define WS_LCD_CS         9
 #define WS_LCD_CLK       10
 #define WS_LCD_D0        11
 #define WS_LCD_D1        12
@@ -24,5 +46,5 @@
 #define WS_LCD_X_OFFSET  20
 #define WS_LCD_Y_OFFSET   0
 #define WS_LCD_STRIP_ROWS 64
-/* V1 has no MCU-connected touch IRQ/reset. Poll the FT3168 over I2C.
+/* Both profiles poll FT3168 and QMI8658; IRQ and TE pins remain unused.
  * Do not configure GPIO48 as NeoPixel, or GPIO19/20 as ordinary GPIO. */

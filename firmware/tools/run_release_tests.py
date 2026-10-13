@@ -4,7 +4,7 @@ from pathlib import Path
 import argparse, os, shlex, shutil, subprocess, tempfile
 
 def main():
-    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--sanitize',action='store_true');parser.add_argument('--only');args=parser.parse_args()
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--sanitize',action='store_true');parser.add_argument('--only');parser.add_argument('--board-revision',choices=('v1','v1.1'),default='v1');args=parser.parse_args()
     root=Path(__file__).resolve().parents[1];p=root/'templates/port';t=root/'tests/release_026'
     groups=[
       ('power',[t/'test_screen_power.c'],'board_stubs'),
@@ -29,6 +29,7 @@ def main():
             # Zig's Windows target defines NDEBUG by default. Never silently
             # compile away regression assertions in a release-test binary.
             out=Path(tmp)/(name+('.exe' if os.name=='nt' else ''));flags=['-std=c11','-O1','-g','-UNDEBUG','-Wall','-Wextra','-Werror','-Wno-misleading-indentation']
+            flags+=['-DEVILKEY_BOARD_REVISION='+('10' if args.board_revision=='v1' else '11')]
             if args.sanitize:flags+=['-fsanitize=address,undefined','-fno-omit-frame-pointer','-fno-pie','-no-pie']
             print('BUILD / RUN:',name,'sanitized' if args.sanitize else 'normal',flush=True)
             subprocess.run(cc+flags+['-I',str(t/stubs),'-I',str(p)]+list(map(str,sources))+['-o',str(out)],check=True)

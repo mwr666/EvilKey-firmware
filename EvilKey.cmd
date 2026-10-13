@@ -4,9 +4,9 @@ cd /d "%~dp0"
 :menu
 echo EVILKEY firmware - see RELEASE_CURRENT.json
 echo 6. Firmware software checks
-echo 7. Build firmware BIN
-echo 8. Package public source and accepted BIN
-echo 11. Build and flash - choose COM port
+echo 7. Build firmware BIN - choose PCB V1 / V1.1
+echo 8. Package public source and accepted PCB firmware
+echo 11. Build and flash - choose PCB V1 / V1.1 and COM port
 echo Q. Exit
 set "CHOICE="
 set /p "CHOICE=Choice: " || exit /b 0

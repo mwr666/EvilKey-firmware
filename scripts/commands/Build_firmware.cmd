@@ -3,9 +3,9 @@ setlocal
 cd /d "%~dp0\..\.."
 where py >nul 2>nul
 if not errorlevel 1 (
-  py -3 firmware\build_arduino.py
+  py -3 firmware\build_arduino.py --select-board
 ) else (
-  python firmware\build_arduino.py
+  python firmware\build_arduino.py --select-board
 )
 set "CODE=%ERRORLEVEL%"
 if not "%CODE%"=="0" echo Firmware build failed. Read the message above.

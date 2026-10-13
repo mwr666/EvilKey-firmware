@@ -28,6 +28,7 @@ static volatile bool s_pending;
 static ws_panel_flush_done_cb_t s_flush_done;
 static void *s_flush_ctx;
 static bool s_usable;
+static bool s_reset_ready;
 static struct {
     uint16_t width,next_y,end_y;
     bool active,first;
@@ -88,6 +89,23 @@ static esp_err_t one(uint8_t cmd,uint8_t data)
     return command(cmd,&data,1);
 }
 
+esp_err_t ws_panel_prepare_reset(void)
+{
+    if(s_reset_ready) return ESP_OK;
+    const gpio_config_t reset={
+        .pin_bit_mask=1ULL<<WS_LCD_RESET, .mode=GPIO_MODE_OUTPUT,
+        .pull_up_en=GPIO_PULLUP_DISABLE, .pull_down_en=GPIO_PULLDOWN_DISABLE,
+        .intr_type=GPIO_INTR_DISABLE,
+    };
+    TRY(gpio_config(&reset));
+    TRY(gpio_set_level(WS_LCD_RESET,0));
+    vTaskDelay(pdMS_TO_TICKS(10));
+    TRY(gpio_set_level(WS_LCD_RESET,1));
+    vTaskDelay(pdMS_TO_TICKS(150));
+    s_reset_ready=true;
+    return ESP_OK;
+}
+
 esp_err_t ws_panel_init(void)
 {
     if(s_pending || s_stream.active) return ESP_ERR_INVALID_STATE;
@@ -116,16 +134,7 @@ esp_err_t ws_panel_init(void)
         .flags={.quad_mode=true},
     };
     TRY(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)SPI2_HOST,&io,&s_io));
-    const gpio_config_t reset={
-        .pin_bit_mask=1ULL<<WS_LCD_RESET, .mode=GPIO_MODE_OUTPUT,
-        .pull_up_en=GPIO_PULLUP_DISABLE, .pull_down_en=GPIO_PULLDOWN_DISABLE,
-        .intr_type=GPIO_INTR_DISABLE,
-    };
-    TRY(gpio_config(&reset));
-    TRY(gpio_set_level(WS_LCD_RESET,0));
-    vTaskDelay(pdMS_TO_TICKS(10));
-    TRY(gpio_set_level(WS_LCD_RESET,1));
-    vTaskDelay(pdMS_TO_TICKS(150));
+    TRY(ws_panel_prepare_reset());
     TRY(one(0x36,0x00)); /* RGB, native portrait orientation */
     TRY(one(0x3A,0x55)); /* RGB565 */
     TRY(command(0x11,NULL,0));

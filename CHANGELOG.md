@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.0 - 2026-10-14
+
+- Separate PCB V1/V1.1 profiles and revision selection before build/COM.
+- Guided factory/blank-module initialization with explicit ERASE.
+- Preserving updates and both verified per-PCB image sets/checksums.
+- Existing rendering, ABI4/5 and storage contracts retained.
+
+[Release details](docs/RELEASE_0.8.0.md).
+
 ## 0.7.6 — 2026-10-13
 
 - Shared SIMD pixel operations for GUI, 2D apps and native scenes.

@@ -8,3 +8,8 @@
 *.ttf binary
 *.exe binary
 *.bin binary
+
+firmware/EvilKeyV1/src/engine/board/ws_pins.h text eol=lf
+firmware/EvilKeyV1/src/engine/board/ws_panel.h text eol=lf
+firmware/EvilKeyV1/src/engine/board/ws_panel.c text eol=lf
+firmware/EvilKeyV1/src/engine/board/ws_board.c text eol=lf

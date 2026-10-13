@@ -16,10 +16,10 @@ from tools.flash_safety import validate_write, validate_command
 from tools.check_ble_storage import verify as verify_ble_storage, source_digest
 from tools.flash_safety import PROTECTED, parse_table
 from tools.install_preserving_storage import install as install_preserving_storage
+from board_profiles import REVISIONS, build_path, prompt_revision, verify_board_identity
+from tools.initialize_new_device import initialize as initialize_new_device, confirm_initialization
 
 ROOT = Path(__file__).resolve().parent
-BUILD_PATH = ROOT / "build-arduino"
-BUILD_INFO = BUILD_PATH / "evilkey-build.json"
 BUILD_SCRIPT = ROOT / "build_arduino.py"
 COM_PORT = re.compile(r"^COM([1-9][0-9]*)$", re.IGNORECASE)
 APP_OFFSET = 0x500000
@@ -132,28 +132,31 @@ def confirm_upload(answer: str) -> bool:
     return answer.strip().upper() == "Y"
 
 
-def load_verified_build_info() -> dict[str, object]:
-    if not BUILD_INFO.is_file():
+def load_verified_build_info(revision: str = "v1") -> dict[str, object]:
+    expected_build = build_path(ROOT, revision).resolve()
+    manifest_path = expected_build / "evilkey-build.json"
+    if not manifest_path.is_file():
         raise RuntimeError("No manifest for a fresh firmware build.")
-    info = json.loads(BUILD_INFO.read_text(encoding="utf-8"))
+    info = json.loads(manifest_path.read_text(encoding="utf-8"))
     if info.get("schema") != "evilkey-arduino-build-v1":
         raise RuntimeError("Unknown build manifest format.")
-    build_path = Path(str(info.get("build_path", ""))).resolve()
+    verify_board_identity(info, revision)
+    manifest_build_path = Path(str(info.get("build_path", ""))).resolve()
     sketch_path = Path(str(info.get("sketch_path", ""))).resolve()
     image_path = Path(str(info.get("image_path", ""))).resolve()
-    if build_path != BUILD_PATH.resolve() or sketch_path != (ROOT / "EvilKeyV1").resolve():
+    if manifest_build_path != expected_build or sketch_path != (ROOT / "EvilKeyV1").resolve():
         raise RuntimeError("The manifest points to an unexpected project or build directory.")
     if info.get("erase_flash") != "none" or "EraseFlash=none" not in str(info.get("fqbn", "")):
         raise RuntimeError("NVS preservation is not guaranteed: EraseFlash=none is required.")
     verify_partition_layout()
     verify_ble_storage()
-    elf=BUILD_PATH/'EvilKeyV1.ino.elf'
+    elf=expected_build/'EvilKeyV1.ino.elf'
     if info.get('nvs_guard')!='link-wrap-v1' or info.get('build_inputs_sha256')!=source_digest() or \
             not elf.is_file() or hashlib.sha256(elf.read_bytes()).hexdigest()!=info.get('elf_sha256'):
         raise RuntimeError('NVS guard/source/ELF verification is missing or stale; upload cancelled.')
     if info.get('app_offset')!=APP_OFFSET or info.get('app_capacity')!=APP_CAPACITY:
         raise RuntimeError('Manifest does not use the reviewed application layout')
-    if not image_path.is_file() or image_path.parent != BUILD_PATH.resolve():
+    if not image_path.is_file() or image_path != expected_build / 'EvilKeyV1.ino.bin':
         raise RuntimeError("The application image listed in the manifest is missing.")
     digest = hashlib.sha256(image_path.read_bytes()).hexdigest()
     if digest != info.get("image_sha256") or image_path.stat().st_size != info.get("image_size"):
@@ -161,7 +164,7 @@ def load_verified_build_info() -> dict[str, object]:
     if image_path.stat().st_size > APP_CAPACITY:
         raise RuntimeError("The image exceeds the factory partition; upload cancelled.")
     partition_path = Path(str(info.get("partition_path", ""))).resolve()
-    if partition_path.parent != BUILD_PATH.resolve() or not partition_path.is_file():
+    if partition_path != expected_build / 'EvilKeyV1.ino.partitions.bin' or not partition_path.is_file():
         raise RuntimeError("The built partition image is missing.")
     if partition_path.stat().st_size != info.get("partition_size") or \
             partition_path.stat().st_size != 0xC00 or \
@@ -183,11 +186,36 @@ def verify_device_partition(esptool: Path, port: dict[str, str],
             "read-flash", hex(PARTITION_OFFSET), str(info["partition_size"]),
             str(observed),
         ], check=True)
-        data=observed.read_bytes();parse_table(data);return data
+        data=observed.read_bytes()
+        if len(data)!=0xC00:
+            raise RuntimeError('Incomplete device partition readback')
+        return data
+
+
+def needs_initialization(observed):
+    try:
+        parse_table(observed)
+        return False
+    except (RuntimeError, UnicodeError):
+        return True
+
+
+def prompt_initialization(port, revision):
+    print('\nNo supported EvilKey partition table was detected.')
+    print(f'Fresh initialization of PCB {revision.upper()} on {port["address"]} will ERASE ALL 16 MiB of flash,')
+    print('including NVS credentials/settings and all other internal data, then install the EvilKey partition table.')
+    print('The microSD card is not erased. If you need existing internal data, cancel now.')
+    try:
+        answer=input('Type ERASE to initialize this new module, or press Enter to cancel: ')
+    except (EOFError, KeyboardInterrupt):
+        return None
+    return answer if confirm_initialization(answer) else None
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--board-revision', choices=REVISIONS,
+                        help='Explicit PCB revision; otherwise prompt before selecting COM')
     parser.add_argument(
         "--list-only", action="store_true",
         help="Only display detected COM ports; never build or upload.",
@@ -197,6 +225,12 @@ def main() -> int:
         help="Use an existing image only if its source, ELF, BIN and partition manifest checks pass; fail closed if stale.",
     )
     args = parser.parse_args()
+    revision = args.board_revision
+    if not args.list_only and revision is None:
+        revision = prompt_revision()
+        if revision is None:
+            print('Cancelled. No build or upload was performed.')
+            return 0
     cli = shutil.which("arduino-cli")
     if not cli:
         print("ERROR: arduino-cli is not in PATH.", file=sys.stderr)
@@ -218,10 +252,10 @@ def main() -> int:
     if selected is None:
         print("Cancelled: the selected port is not in the list above.")
         return 2
-    print(f"\nSelected {selected['address']}. Uploading will restart the device.")
+    print(f"\nSelected PCB {revision.upper()} on {selected['address']}. Uploading will restart the device.")
     print("Application at 0x500000; a reviewed older layout also requires the 0x8000 table sector.")
-    print("NVS/part0 remain at their original offsets and will be verified by readback hashes.")
-    if not confirm_upload(input(f"Build and flash firmware to {selected['address']}? (Y/N): ")):
+    print("Normal EvilKey updates preserve internal data; fresh initialization requires a separate erase confirmation.")
+    if not confirm_upload(input(f"Build and flash PCB {revision.upper()} to {selected['address']}? (Y/N): ")):
         print("Cancelled. No build or upload was performed.")
         return 0
 
@@ -229,12 +263,12 @@ def main() -> int:
         print("\n[1/2] Verifying the existing compiled image against current sources...")
     else:
         print("\n[1/2] Building fresh firmware...")
-        build = subprocess.run([sys.executable, str(BUILD_SCRIPT)])
+        build = subprocess.run([sys.executable, str(BUILD_SCRIPT), '--board-revision', revision])
         if build.returncode:
             print("ERROR: build failed. Upload was not started.", file=sys.stderr)
             return build.returncode
     try:
-        info = load_verified_build_info()
+        info = load_verified_build_info(revision)
         esptool = resolve_esptool(cli, str(info["fqbn"]))
         current_ports = discover_ports(cli)
     except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError,
@@ -252,9 +286,16 @@ def main() -> int:
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
         print(f"ERROR: device partition check failed: {exc}", file=sys.stderr)
         return 2
-    print(f"\n[2/2] Installing and verifying protected storage on {current['address']}...")
     try:
-        install_preserving_storage(esptool,current,info,observed,ROOT/'.flash-backups')
+        if needs_initialization(observed):
+            confirmation=prompt_initialization(current,revision)
+            if confirmation is None:
+                print('Cancelled. No flash erase or write was performed; device remains in download mode.')
+                return 0
+            initialize_new_device(esptool,current,info,observed,ROOT/'.flash-backups',confirmation=confirmation)
+        else:
+            print(f"\n[2/2] Installing and verifying protected storage on {current['address']}...")
+            install_preserving_storage(esptool,current,info,observed,ROOT/'.flash-backups')
     except subprocess.CalledProcessError as exc:
         print(f"ERROR: verified esptool installation exited with code {exc.returncode}.", file=sys.stderr)
         return exc.returncode

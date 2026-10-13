@@ -59,7 +59,7 @@ def install(esptool, port, info, observed_table, backup_root):
     (backup/'partition-before.bin').write_bytes(observed_table)
     (backup/'partition-after.bin').write_bytes(wanted)
     receipt={'schema':'evilkey-storage-preservation-v2','digest_algorithm':'md5-device',
-             'port':port['address'],
+             'port':port['address'],'board_revision':info.get('board_revision'),
              'old_app':before_layout,'new_app':[app_offset,app_capacity],
              'migration':migrating,'image_sha256':info['image_sha256'],
              'protected_before':{},'protected_after':{},'verified':False}

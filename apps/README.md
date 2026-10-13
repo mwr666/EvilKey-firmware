@@ -12,7 +12,7 @@ App loading and saves do not access NVS or FIDO credentials.
 
 ## Format and SDK
 
-Firmware 0.7.6 supports **ABI v4 and v5**, package revision **5**.
+Firmware 0.8.0 supports **ABI v4 and v5**, package revision **5**.
 ABI v4 provides the base contract:
 Wasm without imports, touch coordinates, accelerometer samples, drawing
 commands, RGB565 assets and save requests. Packages require a UTF-8 name,

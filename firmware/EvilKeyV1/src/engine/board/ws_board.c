@@ -725,6 +725,12 @@ static bool touch_write_register(uint8_t reg,uint8_t value,void *context)
 
 static esp_err_t touch_init(void)
 {
+#if EVILKEY_BOARD_REVISION == 11
+    /* V1.1 TP_RESET shares GPIO21 with LCD_RESET. Reset before probing touch;
+     * the idempotent panel initializer must not reset the configured FT3168. */
+    esp_err_t reset_err=ws_panel_prepare_reset();
+    if(reset_err!=ESP_OK) return reset_err;
+#endif
     const i2c_config_t cfg={
         .mode=I2C_MODE_MASTER,
         .sda_io_num=WS_I2C_SDA, .scl_io_num=WS_I2C_SCL,
@@ -1339,6 +1345,7 @@ void ws_board_init(void)
     memset(&s_view,0,sizeof(s_view));
     s_view.state=WS_UI_DISCONNECTED;
     if(pf_control_mode()<PF_CONTROL_BLE_MOUSE && !ek_apps_start()) ESP_LOGW(TAG,"Apps worker unavailable; FIDO remains available");
+    ESP_LOGI(TAG,"Waveshare PCB %s",WS_BOARD_NAME);
     ESP_LOGW(TAG,"DEVELOPMENT ONLY: keys in unencrypted NVS, no eFuse programming");
 #ifdef CONFIG_WS_V1_DISPLAY
     esp_err_t err=touch_init();

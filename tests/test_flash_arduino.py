@@ -32,7 +32,7 @@ class FlashArduinoTests(unittest.TestCase):
              patch.object(FLASH, "discover_ports", return_value=ports), \
              patch("builtins.input", side_effect=["1", "N"]), \
              patch.object(FLASH.subprocess, "run") as run, \
-             patch.object(FLASH.sys, "argv", ["flash_arduino.py"]):
+             patch.object(FLASH.sys, "argv", ["flash_arduino.py", "--board-revision", "v1"]):
             self.assertEqual(FLASH.main(), 0)
             run.assert_not_called()
 
@@ -44,13 +44,14 @@ class FlashArduinoTests(unittest.TestCase):
              patch.object(FLASH, "load_verified_build_info", return_value=info), \
              patch.object(FLASH, "resolve_esptool", return_value=Path("esptool.exe")), \
              patch.object(FLASH, "verify_device_partition", return_value=b"reviewed table"), \
+             patch.object(FLASH, "needs_initialization", return_value=False), \
              patch.object(FLASH, "install_preserving_storage") as install, \
              patch("builtins.input", side_effect=["1", "Y"]), \
              patch.object(FLASH.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as run, \
-             patch.object(FLASH.sys, "argv", ["flash_arduino.py"]):
+             patch.object(FLASH.sys, "argv", ["flash_arduino.py", "--board-revision", "v1"]):
             self.assertEqual(FLASH.main(), 0)
             self.assertEqual(discover.call_count, 2)
-            run.assert_called_once_with([FLASH.sys.executable, str(FLASH.BUILD_SCRIPT)])
+            run.assert_called_once_with([FLASH.sys.executable, str(FLASH.BUILD_SCRIPT), '--board-revision', 'v1'])
             install.assert_called_once_with(Path("esptool.exe"), ports[0], info,
                                             b"reviewed table", FLASH.ROOT / '.flash-backups')
 
