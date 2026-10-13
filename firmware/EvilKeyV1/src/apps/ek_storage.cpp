@@ -5,6 +5,7 @@
  */
 #include "ek_storage.h"
 #include "ek_assets.h"
+#include "ek_mesh.h"
 #include "../engine/board/ws_pins.h"
 #include <Arduino.h>
 #include <SPI.h>
@@ -72,6 +73,36 @@ static bool hash_payload(File &f,const EkPackageInfo &info,uint8_t *output) {
     return ok;
 }
 
+extern "C" void ek_storage_models_free(EkAssets *assets){
+    if(!assets)return;
+    for(unsigned i=0;i<assets->count;i++)if(assets->items[i].owned){
+        free((void*)assets->items[i].rgb565);assets->items[i].rgb565=nullptr;assets->items[i].owned=0;}
+}
+extern "C" int ek_storage_models_load(const char *id,EkAssets *assets,size_t embedded_size){
+    if(!assets||!ek_package_valid_id(id)||embedded_size>EK_PACKAGE_MAX_ASSETS)return fail("Invalid model owner");
+    size_t total=embedded_size;
+    for(unsigned i=0;i<assets->count;i++)if(assets->items[i].flags==4){
+        size_t n=ekm_u32(assets->items[i].rgb565);
+        if(n>EK_PACKAGE_MAX_ASSETS-total)return fail("Model asset quota");total+=n;
+    }
+    for(unsigned i=0;i<assets->count;i++){
+        EkAsset &a=assets->items[i];if(a.flags!=4)continue;
+        const char *error=nullptr;char filename[100];
+        if(!s_mounted||!pf_apps_storage_role_allowed())error="microSD unavailable";
+        snprintf(filename,sizeof(filename),"%s/%s.models/%u.ekmesh",kApps,id,(unsigned)a.id);
+        File file;if(!error){file=SD.open(filename,FILE_READ);if(!file||file.isDirectory()||file.size()!=ekm_u32(a.rgb565))error="Model file missing/size";}
+        uint8_t *bytes=nullptr;size_t length=ekm_u32(a.rgb565);
+        if(!error){bytes=(uint8_t*)heap_caps_malloc(length,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);if(!bytes)error="Model memory unavailable";}
+        for(size_t off=0;off<length&&!error;){size_t n=length-off;if(n>512)n=512;
+            if(!pf_apps_storage_role_allowed()||!read_exact(file,bytes+off,n))error="Model read failed";off+=n;}
+        file.close();uint8_t digest[32];EkMeshInfo mesh;
+        if(!error&&(mbedtls_sha256(bytes,length,digest,0)!=0||memcmp(digest,a.rgb565+4,32)))error="Model hash mismatch";
+        if(!error&&!ek_mesh_validate(bytes,length,&mesh))error="Model geometry invalid";
+        if(error){free(bytes);ek_storage_models_free(assets);return fail(error);}
+        a.rgb565=bytes;a.length=length;a.flags=2;a.owned=1;a.mesh_vertices=mesh.vertices;a.mesh_triangles=mesh.triangles;
+    }
+    return 1;
+}
 extern "C" int ek_storage_begin(void) {
     if (s_mounted) return 1;
     if (!pf_apps_storage_role_allowed()) return fail("USB role owns microSD");
@@ -95,7 +126,7 @@ extern "C" const char *ek_storage_error(void) {return s_error;}
 extern "C" int ek_storage_diagnostics_write(const uint8_t *data,size_t size,
                                            char *filename,size_t capacity) {
     if(filename&&capacity)filename[0]=0;
-    if(!data||!size||size>8192||!filename||capacity<32)return fail("Invalid report");
+    if(!data||!size||size>EK_STORAGE_DIAGNOSTICS_MAX_BYTES||!filename||capacity<32)return fail("Invalid report");
     if(!pf_apps_storage_role_allowed())return fail("USB owns microSD");
     if(!s_mounted)return fail("microSD not mounted");
     const char *directory="/evilkey/diagnostics";
@@ -201,7 +232,15 @@ extern "C" int ek_storage_icon(const EkPackageInfo *info,uint8_t *rgb565,size_t 
     return ok?1:fail("App icon missing or corrupt");
 }
 static uint16_t s_loaded_abi;
+static EkPackageInfo s_loaded_info;
+static uint8_t s_loaded_program_sha256[32];
 extern "C" uint16_t ek_storage_loaded_abi(void) {return s_loaded_abi;}
+extern "C" int ek_storage_loaded_info(EkPackageInfo *out){
+    if(!out||!s_loaded_abi)return 0;*out=s_loaded_info;return 1;
+}
+extern "C" int ek_storage_loaded_program_sha256(uint8_t out[32]){
+    if(!out||!s_loaded_abi)return 0;memcpy(out,s_loaded_program_sha256,32);return 1;
+}
 extern "C" int ek_storage_load(const char *id,uint8_t **payload,
                                  size_t *wasm_size,size_t *asset_size) {
     if (!s_mounted || !ek_package_valid_id(id) || !payload || !wasm_size || !asset_size)
@@ -225,7 +264,10 @@ extern "C" int ek_storage_load(const char *id,uint8_t **payload,
     if (!ek_assets_parse(buffer+info.wasm_size,info.asset_size,&assets)) {
         free(buffer);return fail("App assets invalid");
     }
-    *payload=buffer;*wasm_size=info.wasm_size;*asset_size=info.asset_size;s_loaded_abi=info.abi;
+    *payload=buffer;*wasm_size=info.wasm_size;*asset_size=info.asset_size;
+    if(mbedtls_sha256(buffer,info.wasm_size,s_loaded_program_sha256,0)!=0){
+        free(buffer);*payload=nullptr;*wasm_size=*asset_size=0;return fail("Program SHA-256 failed");}
+    s_loaded_info=info;s_loaded_abi=info.abi;
     s_error[0]=0;return 1;
 }
 

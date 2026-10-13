@@ -8,12 +8,15 @@
 #define FIDO_V1_USB_TOOL 1
 #include "../../templates/port/ws_board.c"
 #include "../../EvilKeyV1/src/apps/ek_exit_dialog.c"
+static int display_start_case;static unsigned pinned_create_calls;
 static EkAppsState fake_apps;
 static unsigned fake_apps_launches;
 static unsigned fake_app_contacts;
 static bool fake_app_modal;
 static EkDiagnosticsExport fake_export;
 static unsigned fake_export_calls;
+static bool fake_diagnostics_enabled;
+void ek_apps_diagnostics_enable(bool enabled){fake_diagnostics_enabled=enabled;}
 static int critical_depth;
 static unsigned admission_depth,admission_begins,admission_ends;
 bool ek_render_frame_begin(unsigned client){assert(client==EK_RENDER_FRAME_DISPLAY&&!admission_depth&&critical_depth==0);++admission_begins;++admission_depth;return true;}
@@ -144,9 +147,9 @@ int64_t esp_timer_get_time(void){return (int64_t)clock_ms*1000;}
 const char *esp_err_to_name(esp_err_t e){(void)e;return "mock";}
 int gpio_get_level(int pin){(void)pin;return hold_boot?0:1;}
 uint32_t led_get_mode(void){return fake_mode;}
-esp_err_t ws_panel_init(void){physical_on=true;physical_brightness=0;return 0;}
-esp_err_t ws_lvgl_init(void){return 0;}
-esp_err_t ws_lvgl_render(const ws_ui_snapshot_t *v){assert(!v->screen_off&&admission_depth==1);op('R');++renders;return render_ok?0:-1;}
+esp_err_t ws_panel_init(void){physical_on=true;physical_brightness=0;return display_start_case==2?-1:0;}
+esp_err_t ws_lvgl_init(void){return display_start_case==3?-1:0;}
+esp_err_t ws_lvgl_render(const ws_ui_snapshot_t *v){assert(!v->screen_off&&admission_depth==0);bool owned=ek_render_frame_begin(EK_RENDER_FRAME_DISPLAY);op('R');++renders;ek_render_frame_end(owned);return render_ok?0:-1;}
 esp_err_t ws_panel_brightness(uint8_t n){assert(!admission_depth);op(n==0?'0':n==8?'D':'B');physical_brightness=n;++brightness_calls;return 0;}
 esp_err_t ws_panel_set_enabled(bool b){assert(!admission_depth);op(b?'N':'F');physical_on=b;++enable_calls;return 0;}
 esp_err_t i2c_param_config(int n,const i2c_config_t *c){(void)n;(void)c;return 0;}
@@ -162,6 +165,10 @@ esp_err_t i2c_master_write_read_device(int a,uint8_t b,const uint8_t*c,size_t d,
 }
 void vTaskDelete(void*p){(void)p;}
 int xTaskCreate(void(*f)(void*),const char*n,unsigned s,void*a,unsigned p,void*h){(void)f;(void)n;(void)s;(void)a;(void)p;(void)h;return pdPASS;}
+int xTaskCreatePinnedToCore(void(*f)(void*),const char*n,unsigned stack,void*a,unsigned priority,void*h,int core){
+ assert(f==display_task&&!strcmp(n,"ws_display")&&stack==8192&&!a&&priority==1&&!h&&core==1);
+ ++pinned_create_calls;return display_start_case==1?0:pdPASS;
+}
 static void tick(unsigned delta){clock_ms+=delta;ws_board_poll();if(display_running)(void)ws_display_step(&display_cache);}
 void vTaskDelay(unsigned t){
  assert(critical_depth==0);++delay_calls;
@@ -287,7 +294,16 @@ static void test_launcher(void){
  assert(s_view.state==WS_UI_WAITING && !s_view.launcher_transition && s_root_page==WS_ROOT_HOME);
  puts("PASS launcher: root gestures, cyclic intro/grid navigation (1/2 grids), finger-direction wrap, last-page gaps, swipe/tap exclusion, 56px corner, Yes/No return, security eviction");
 }
-int main(void){
+int main(int argc,char **argv){
+ if(argc==2){
+  display_start_case=argv[1][0]-'0';assert(display_start_case>=0&&display_start_case<=3);
+  ws_board_init();ws_board_start_display();
+  assert(pinned_create_calls==(display_start_case<2?1u:0u));
+  assert(s_panel_ok==(display_start_case==0));
+  ws_board_start_display();assert(pinned_create_calls==(display_start_case<2?1u:0u));
+  puts("DISPLAY CORE1 START PASS actual board init/create once, entry/name/8192/prio1/core1, allocation/init failure fail-closed");return 0;
+ }
+
  reset();fake_eject=true;unsigned writes=fake_drive_writes;bool ro=fake_drive_ro;tick(20);
  assert(!fake_drive_enabled&&s_manager_restart_pending&&!fake_restarts&&fake_drive_writes==writes+1&&fake_drive_ro==ro);
  fake_eject=true;tick(20);assert(fake_drive_writes==writes+1&&!fake_restarts);
@@ -402,6 +418,8 @@ reset();assert(s_view.state==WS_UI_READY && s_view.settings_transition==0);
  page_up();assert(s_view.settings_page==WS_SETTINGS_PAGE_AUTH);
  page_up();assert(s_view.settings_page==WS_SETTINGS_PAGE_DIAGNOSTICS);
  rev=fake_settings.revision;unsigned pin_calls=fake_supplied_calls,ro_writes=fake_drive_ro_writes;
+ assert(!s_diagnostics_enabled);tap(80,400);assert(fake_export_calls==0);
+ tap(140,204);assert(s_diagnostics_enabled&&fake_diagnostics_enabled);
  bool live=s_diagnostics_enabled;tap(80,400);
  assert(fake_export_calls==1&&fake_export.request==1&&s_view.diagnostics_export_status==EK_DIAGNOSTICS_EXPORT_BUSY);
  tap(80,400);assert(fake_export_calls==2&&fake_export.request==1);
@@ -411,6 +429,9 @@ reset();assert(s_view.state==WS_UI_READY && s_view.settings_transition==0);
  assert(!strcmp(s_view.diagnostics_export_message,fake_export.filename));
  fake_export.status=EK_DIAGNOSTICS_EXPORT_ERROR;strcpy(fake_export.error,"SD report verify failed");tick(20);
  assert(!strcmp(s_view.diagnostics_export_message,fake_export.error));
+ tap(140,204);assert(!s_diagnostics_enabled&&!fake_diagnostics_enabled);
+ tap(80,400);assert(fake_export_calls==3);
+ assert(fake_settings.revision==rev&&fake_supplied_calls==pin_calls&&fake_drive_ro_writes==ro_writes);
  puts("PASS Diagnostics export: release tap queues once, busy tap ignored, feedback propagated, live status/settings/PIN/USB policy preserved");
  page_up();assert(s_view.settings_page==WS_SETTINGS_PAGE_GAMEPAD);
  page_up();assert(s_view.settings_page==WS_SETTINGS_PAGE_AIR_MOUSE);

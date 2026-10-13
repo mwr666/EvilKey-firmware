@@ -67,7 +67,7 @@ public:
     std::vector<uint8_t> save;
     bool save_exists = false;
     bool fail_mkdir=false,fail_log_open=false,fail_log_read_open=false,fail_rename=false;
-    MockIO log_io;
+    MockIO log_io,entry_io;
     std::map<std::string,std::vector<uint8_t>> logs;
     std::set<std::string> directories;
     std::vector<std::string> removed;
@@ -97,7 +97,7 @@ public:
         }
         for(auto &entry:entries) {
             if(std::string(name)=="/evilkey/apps/"+entry.name)
-                return File(&entry.bytes,name);
+                return File(&entry.bytes,name,0,&entry_io);
         }
         if (std::string(name) != "/evilkey/apps/example.save") return {};
         if (!save_exists && std::string(mode) != FILE_WRITE) return {};

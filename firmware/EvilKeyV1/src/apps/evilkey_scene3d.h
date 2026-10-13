@@ -15,6 +15,16 @@
 #define EVILKEY_3D_BALL 2u /* 32 faces, diameter one before scale */
 #define EVILKEY_3D_PLANE 3u /* XZ plane, +Y up */
 #define EVILKEY_3D_PYRAMID 4u
+#define EVILKEY_3D_MESH_ASSET 0x8000u
+#define EVILKEY_APP_FEATURE_MODEL_ASSETS 1u
+#define EVILKEY_APP_FEATURE_TRANSPARENT_SCENE 2u
+#define EVILKEY_3D_TRANSPARENT_BACKGROUND 1u
+/* Scene version2.flags bit0 preserves preceding 2D pixels where depth=0.
+ * Publish required_features bit1; older renderers reject that package.
+ * Scene version2: model=MESH_ASSET|asset_id. material selects role0.
+ * reserved2[0]: role1..7 material indices, seven low-to-high nibbles;
+ * top nibble zero. reserved2[1]/reserved stay zero. Builtins unchanged.
+ * Models are indexed EKMESH1 resources loaded before app_init. */
 #define EVILKEY_3D_ORTHOGRAPHIC 0u
 #define EVILKEY_3D_PERSPECTIVE 1u
 #define EVILKEY_3D_UNLIT 1u

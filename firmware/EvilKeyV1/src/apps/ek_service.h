@@ -5,6 +5,8 @@
 #include <stdint.h>
 #include "evilkey_app_abi.h"
 #include "ek_scene3d.h"
+#include "ek_run_metrics.h"
+#include "ek_storage.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -44,11 +46,22 @@ void ek_apps_input(const EvilKeyAppTouch *touch, uint32_t count,
 void ek_apps_snapshot(EkAppsState *out);
 /* Last native scene profile, retained after exit; copied under worker guard. */
 void ek_apps_scene_profile(EkSceneProfile *out);
+void ek_apps_run_metrics(EkRunMetrics *out);
+/* ACK only the copied generation after the display owner's flush completes. */
+void ek_apps_display_complete(uint32_t generation,bool success);
+void ek_apps_display_complete_detail(uint32_t generation,bool success,
+    uint32_t display_us,uint32_t copy_us,unsigned method,const uint32_t detail[4],unsigned cadence);
+void ek_apps_display_complete_raster(uint32_t generation,bool success,
+    uint32_t display_us,uint32_t copy_us,unsigned method,const uint32_t detail[4],unsigned cadence,uint32_t lvgl_us,bool sampled);
+void ek_apps_display_complete_profile(uint32_t generation,bool success,
+    uint32_t display_us,uint32_t copy_us,unsigned method);
 enum {EK_DIAGNOSTICS_EXPORT_IDLE,EK_DIAGNOSTICS_EXPORT_BUSY,
       EK_DIAGNOSTICS_EXPORT_SAVED,EK_DIAGNOSTICS_EXPORT_ERROR,
-      EK_DIAGNOSTICS_REPORT_CAPACITY=8192};
+      EK_DIAGNOSTICS_REPORT_CAPACITY=EK_STORAGE_DIAGNOSTICS_MAX_BYTES};
 typedef struct {uint32_t status,request;char filename[32],error[80];} EkDiagnosticsExport;
 /* Reserve one export; the display owner captures it on its next snapshot. */
+void ek_apps_diagnostics_enable(bool enabled);
+bool ek_apps_diagnostics_enabled(void);
 int ek_apps_diagnostics_export_request(void);
 /* On success the worker owns/frees data; failure leaves ownership with caller. */
 int ek_apps_diagnostics_export(char *data,size_t size);
@@ -60,13 +73,22 @@ int ek_apps_copy_frame(uint16_t *pixels,size_t count,uint32_t *generation,
 /* Private display path: same consumption contract, destination in panel order. */
 int ek_apps_copy_frame_panel(uint16_t *pixels,size_t count,uint32_t *generation,
                              EkAppsDirty *dirty);
+/* Private transport snapshot: panel prefix, native suffix; force re-snapshots
+ * one guarded generation during a display format change. Not a guest ABI. */
+int ek_apps_copy_frame_transport(uint16_t *pixels,size_t count,uint32_t *generation,
+    EkAppsDirty *dirty,unsigned panel_rows,bool force);
+/* Sole display owner exchanges its heap PSRAM canvas on full snapshots. Returned
+ * pointer is caller-owned; previous pointer becomes service-owned. Stop never
+ * frees the caller canvas. Partial/no-new use the ordinary copy contract. */
+int ek_apps_exchange_frame_transport(uint16_t **pixels,size_t count,uint32_t *generation,
+    EkAppsDirty *dirty,unsigned panel_rows,bool force);
 typedef struct {
     uint32_t copies,last_bytes,last_us,peak_us;
     uint16_t last_width,last_height;
     uint32_t panel_order;
     uint32_t method;
 } EkAppsCopyStats;
-enum {EK_APPS_COPY_NATIVE=0,EK_APPS_COPY_FUSED=1,EK_APPS_COPY_ROW_SWAP=2};
+enum {EK_APPS_COPY_NATIVE=0,EK_APPS_COPY_FUSED=1,EK_APPS_COPY_ROW_SWAP=2,EK_APPS_COPY_BLOCK_SWAP=3,EK_APPS_COPY_MIXED=4,EK_APPS_COPY_EXCHANGE_MIXED=5,EK_APPS_COPY_EXCHANGE_FULL=6};
 void ek_apps_copy_stats(EkAppsCopyStats *out);
 #ifdef __cplusplus
 }

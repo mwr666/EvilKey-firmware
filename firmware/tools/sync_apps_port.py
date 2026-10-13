@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 TEMPLATES = ROOT / "templates" / "port"
 ENGINE = ROOT / "EvilKeyV1" / "src" / "engine" / "board"
 MANIFEST = ROOT / "EvilKeyV1" / "GENERATED_MANIFEST.json"
-FILES = ("ws_board.c", "ws_panel.c", "ws_lvgl.c", "ws_lvgl.h", "ws_gui_3d.cpp", "ws_gui_3d.h", "ws_ui.c", "ws_ui.h", "ws_ui_layout.h", "ws_settings_icon_asset.h")
+FILES = ("ws_board.c", "ws_panel.c", "ws_panel.h", "ws_lvgl.c", "ws_lvgl.h", "ws_gui_3d.cpp", "ws_gui_3d.h", "ws_ui.c", "ws_ui.h", "ws_ui_layout.h", "ws_settings_icon_asset.h")
 
 
 def digest(data: bytes) -> str:

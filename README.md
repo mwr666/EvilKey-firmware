@@ -16,28 +16,29 @@
 
 # EvilKey firmware
 
-EvilKey 0.7.5 is FIDO2 firmware for the **Waveshare ESP32-S3 Touch AMOLED 1.64, PCB V1**. Its touch GUI includes a local PIN keypad for compatible built-in user verification requests, USB/BLE AirMouse, a landscape BLE Gamepad, diagnostics, USB storage controls, a deliberately activated USB Tool, and Apps loaded from microSD. Standard host-side ClientPIN remains supported. [On-device PIN details](docs/ON_DEVICE_PIN.md) explain the scope and validation limits.
+EvilKey 0.7.6 is FIDO2 firmware for the **Waveshare ESP32-S3 Touch AMOLED 1.64, PCB V1**. Its touch GUI includes a local PIN keypad for compatible built-in user verification requests, USB/BLE AirMouse, a landscape BLE Gamepad, diagnostics, USB storage controls, a deliberately activated USB Tool, and Apps loaded from microSD. Standard host-side ClientPIN remains supported. [On-device PIN details](docs/ON_DEVICE_PIN.md) explain the scope and validation limits.
 
 This repository contains the device firmware, Jet renderer, LVGL interface, generated upstream source, preparation tools, source notices and installation instructions. It does not contain the separately licensed Manager or microSD examples.
 
-## 0.7.5 update
+## 0.7.6 update
 
-The Jet GUI and native Scene3D renderer now split rendering work between both
-ESP32-S3 cores. The rasterizer skips pixels outside triangle spans, reuses
-transformed cube vertices and reduces separate PSRAM accesses. The existing
-graphics and detail are preserved. Jet and ABI v5 were introduced in 0.7.4;
-this release improves their rendering paths and coordination with the display.
+The GUI, 2D apps and native Scene3D renderer share ESP32-S3 SIMD pixel
+operations. These handle bulk pixel fills, copies, transparent bitmap spans and
+display conversion while retaining the existing interface and graphics.
 
-**Diagnostics → Save report** writes all seven diagnostic cards to one text file
-on SD, under `/evilkey/diagnostics/`.
+Independent apps can now load indexed `.ekmesh` models from microSD. The
+[MIT SDK](apps/sdk/MODEL_ASSETS.md) includes OBJ conversion and packaging tools;
+models are checked and loaded when an app starts, rather than read every frame.
 
-Using **Eject** on the computer now turns off Manager Drive. EvilKey saves the
-setting and briefly restarts, reconnecting without USB storage so local apps can
-access the card again. Re-enable Manager Drive in Settings when needed.
+Diagnostics is **OFF after startup**. Enable **Settings → Diagnostics** to collect
+FPS and maximum native rendering time or use **Save report**. Reports are stored
+under `/evilkey/diagnostics/`; enable diagnostics before a new session for a
+complete-session measurement. Rendering limits and safety checks remain active.
 
-ABI v4/v5 compatibility and package revision 5 remain. Manager stays at 1.1.6.
-[Download 0.7.5](https://github.com/mwr666/EvilKey-firmware/releases/tag/v0.7.5)
-· [Getting started](docs/GETTING_STARTED.md) · [Release notes](docs/RELEASE_0.7.5.md).
+ABI v4/v5, package revision 5 and the corner exit profile remain compatible.
+Hardware clocks and storage layout are unchanged. Manager stays at 1.1.6.
+[Download 0.7.6](https://github.com/mwr666/EvilKey-firmware/releases/tag/v0.7.6)
+· [Getting started](docs/GETTING_STARTED.md) · [Release notes](docs/RELEASE_0.7.6.md).
 
 ## Watch the real device GUI
 
@@ -81,7 +82,7 @@ USB Tool is a separate USB role. Select a script on EvilKey's touchscreen and pr
 
 I needed a FIDO2 key. It now runs falling blocks and pinball. Apparently I was left unsupervised. This silent Short shows **EvilBlocks and EvilPinball on the real PCB V1 prototype**: select an app from microSD, press **RUN**, then play using the touchscreen. The captions and 3D logo/glitch outro are edited; the gameplay is filmed during development, rather than a benchmark of the latest app builds.
 
-Apps are independent `.ekapp` packages in `/evilkey/apps/`. In **0.7.5**, swipe left from Home to the Apps introduction, swipe up/down for a paged **3×3 icon grid**, then tap an icon. Compatible packages need an embedded name/icon and the `corner-exit-v1` profile. The firmware-owned upper-left grip opens a visible slide-to-exit control and Yes/No confirmation; touches elsewhere remain app-owned. [Firmware 0.7.5](https://github.com/mwr666/EvilKey-firmware/releases/tag/v0.7.5) supports ABI v4 and v5, accelerometer data, RGB565 assets and bounded per-app `.save` files. The tested PCB V1 panel reports one contact, despite the ABI's two-contact capacity. Separately licensed games are not included in the public repositories. The older video shows the launch flow used during its filming.
+Apps are independent `.ekapp` packages in `/evilkey/apps/`. In **0.7.6**, swipe left from Home to the Apps introduction, swipe up/down for a paged **3×3 icon grid**, then tap an icon. Compatible packages need an embedded name/icon and the `corner-exit-v1` profile. The firmware-owned upper-left grip opens a visible slide-to-exit control and Yes/No confirmation; touches elsewhere remain app-owned. [Firmware 0.7.6](https://github.com/mwr666/EvilKey-firmware/releases/tag/v0.7.6) supports ABI v4 and v5, accelerometer data, RGB565 assets and bounded per-app `.save` files. The tested PCB V1 panel reports one contact, despite the ABI's two-contact capacity. Separately licensed games are not included in the public repositories. The older video shows the launch flow used during its filming.
 
 What app would you put on a device like this? Useful tools and gloriously unnecessary experiments are welcome.
 
@@ -148,7 +149,7 @@ The following panels are stills from a code-derived interface preview. They show
 
 Only one USB role is active at a time. Switching roles is an explicit action on the key.
 
-## Firmware 0.7.5
+## Firmware 0.7.6
 
 - **Apps launcher:** animated introduction, cached card catalog, 3×3 icon pages and a shared corner exit gesture. Home: swipe right for screensaver, left for Apps, then left for Settings. Without compatible apps, left opens Settings directly. Charger-only power still permits navigation.
 - **BLE Gamepad:** landscape A/B/X/Y cross, shoulder controls, IMU direction, Center, analog/D-pad mode, dead zone and Rotate 180. PC/Xbox and Generic/Android are BLE HID profiles; native XInput and console compatibility are not established.
@@ -156,7 +157,7 @@ Only one USB role is active at a time. Switching roles is an explicit action on 
 - **Radio lifecycle:** BLE starts only when a BLE module is launched. Exit returns to FIDO with BLE off; Home, Apps, Settings, screensaver and USB roles keep it off.
 - **Storage-preserving upload:** guarded NVS initialization and verified migration to a 4 MiB app at `0x500000`; credential/storage offsets are retained.
 
-[Download 0.7.5](https://github.com/mwr666/EvilKey-firmware/releases/tag/v0.7.5) · [Changelog](CHANGELOG.md) · [Gamepad and BLE](docs/BLE_CONTROLS.md) · [AirMouse](docs/AIR_MOUSE.md).
+[Download 0.7.6](https://github.com/mwr666/EvilKey-firmware/releases/tag/v0.7.6) · [Changelog](CHANGELOG.md) · [Gamepad and BLE](docs/BLE_CONTROLS.md) · [AirMouse](docs/AIR_MOUSE.md).
 
 ## Apps from microSD
 

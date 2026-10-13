@@ -3,6 +3,8 @@
 #include "evilkey_scene3d.h"
 #include <stddef.h>
 #include <string.h>
+#include "ek_assets.h"
+#include "ek_mesh.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -11,13 +13,19 @@ extern "C" {
 static inline uint16_t ek3_u16(const uint8_t *p) {return p[0]|((uint16_t)p[1]<<8);}
 static inline uint32_t ek3_u32(const uint8_t *p) {return ek3_u16(p)|((uint32_t)ek3_u16(p+2)<<16);}
 static inline int ek3_zero(const uint8_t *p,size_t n) {while(n--)if(*p++)return 0;return 1;}
+static inline const EkAsset *ek3_asset(const EkAssets *assets,unsigned id){
+    if(assets)for(unsigned i=0;i<assets->count;i++)if(assets->items[i].id==id)return &assets->items[i];
+    return NULL;
+}
 static inline unsigned ek3_faces(unsigned model) {
     return model==1?12:model==2?32:model==3?2:model==4?6:0;
 }
-static inline int ek_scene3d_validate(const uint8_t *p,size_t size) {
+static inline int ek_scene3d_validate_assets(const uint8_t *p,size_t size,const EkAssets *assets) {
     if(!p || size!=sizeof(EvilKey3DScene) || sizeof(EvilKey3DScene)!=3172 ||
        sizeof(EvilKey3DObject)!=32 || ek3_u32(p)!=EVILKEY_3D_MAGIC ||
-       ek3_u16(p+4)!=1 || ek3_u32(p+12)) return 0;
+       (ek3_u16(p+4)!=1 && ek3_u16(p+4)!=2) ||
+       (ek3_u32(p+12)&~EVILKEY_3D_TRANSPARENT_BACKGROUND) ||
+       (ek3_u16(p+4)==1 && ek3_u32(p+12))) return 0;
     unsigned n=ek3_u16(p+6),m=ek3_u16(p+8),faces=0;
     if(!n || n>96 || !m || m>8) return 0;
     int32_t delta[3];
@@ -37,8 +45,16 @@ static inline int ek_scene3d_validate(const uint8_t *p,size_t size) {
     }
     if(!ek3_zero(p+36+8*m,8*(8-m))) return 0;
     for(unsigned i=0;i<n;i++) {
-        const uint8_t *o=p+100+32*i;unsigned f=ek3_faces(ek3_u16(o));
-        if(!f || ek3_u16(o+2)>=m || ek3_u16(o+22) || ek3_u32(o+24) || ek3_u32(o+28))return 0;
+        const uint8_t *o=p+100+32*i;unsigned model=ek3_u16(o),f=ek3_faces(model);
+        if(ek3_u16(o+2)>=m || ek3_u16(o+22) || ek3_u32(o+28))return 0;
+        if(model&0x8000u){
+            const EkAsset *asset=ek3_asset(assets,model&0x7fffu);
+            if(ek3_u16(p+4)!=2||!asset||asset->flags!=2||
+               !asset->mesh_vertices||!asset->mesh_triangles)return 0;
+            uint32_t map=ek3_u32(o+24);if(map>>28)return 0;
+            for(unsigned role=0;role<7;role++)if(((map>>(role*4))&15)>=m)return 0;
+            f=asset->mesh_triangles;
+        }else if(!f||ek3_u32(o+24))return 0;
         faces+=f;
         for(unsigned k=0;k<3;k++) {
             int pos=(int16_t)ek3_u16(o+4+k*2),angle=(int16_t)ek3_u16(o+10+k*2);
@@ -49,7 +65,10 @@ static inline int ek_scene3d_validate(const uint8_t *p,size_t size) {
     }
     return faces<=EVILKEY_3D_MAX_TRIANGLES && ek3_zero(p+100+32*n,32*(96-n));
 }
+static inline int ek_scene3d_validate(const uint8_t *p,size_t size){return ek_scene3d_validate_assets(p,size,NULL);}
 typedef struct EkScene3D EkScene3D;
+/* Borrowed immutable assets must outlive rendering; no ownership transfer. */
+void ek_scene3d_set_assets(EkScene3D *ctx,const EkAssets *assets);
 /* A supplied clock must be monotonic and safe to call concurrently from both
  * cores. Firmware uses esp_timer_get_time; NULL disables time checks in tests. */
 typedef uint64_t (*EkSceneClock)(void *user);
@@ -67,6 +86,8 @@ enum { EK_SCENE_BUDGET_US=20000, EK_SCENE_MAX_PIXEL_TESTS=300000,
 EkScene3D *ek_scene3d_create(void);
 void ek_scene3d_destroy(EkScene3D *ctx);
 EkSceneProfile ek_scene3d_profile(const EkScene3D *ctx);
+/* Exact allocated context+hot-cache bytes; diagnostic only, no allocation. */
+size_t ek_scene3d_allocation_bytes(const EkScene3D *ctx);
 /* Writes a complete frame or repeats the last completed viewport. No partial
  * frame on quota/clock abort. Budget is cooperative, checked per scanline. */
 EkSceneStats ek_scene3d_render(EkScene3D *ctx,const uint8_t *scene,

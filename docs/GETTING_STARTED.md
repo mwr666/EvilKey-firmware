@@ -1,12 +1,12 @@
 # Getting started
 
-EvilKey 0.7.5 is verified on the Waveshare **ESP32-S3 Touch AMOLED 1.64
+EvilKey 0.7.6 is verified on the Waveshare **ESP32-S3 Touch AMOLED 1.64
 PCB V1.0**, with 16 MiB flash, 8 MiB PSRAM and a 280×456 display.
 PCB V1.1 compatibility has not yet been established.
 
 ## 1. Firmware and Windows tools
 
-Get the [0.7.5 release](https://github.com/mwr666/EvilKey-firmware/releases/tag/v0.7.5).
+Get the [0.7.6 release](https://github.com/mwr666/EvilKey-firmware/releases/tag/v0.7.6).
 It provides the accepted BIN, firmware source ZIP and checksums.
 Use [Build and flash](BUILD_AND_FLASH.md) for prerequisites and the guarded
 `EvilKey.cmd` installation workflow. Compare artifact identities with
@@ -51,6 +51,9 @@ and ABI5; app-specific saves remain the app's responsibility.
 - **Manager Drive:** enable [USB storage](MANAGER_DRIVE.md) to access the card.
 - **USB Tool:** select a script and press **RUN** on the device.
   Read [USB Tool](USB_TOOL.md) before executing a payload.
+- **Diagnostics:** enable it in Settings when measurements or **Save report**
+  are needed. It is OFF after startup. Start a new app session after enabling
+  it to record the complete session.
 
 USB modes are exclusive; changing them may reconnect the USB device.
 The tested panel supports one touch contact. IMU steering and one-finger drag

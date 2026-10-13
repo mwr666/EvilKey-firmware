@@ -4,7 +4,7 @@
 ABI v5 extends [ABI v4](ABI_V4.md). Input stays 4160 bytes, commands stay 20
 bytes, and package revision stays 5 (320-byte header, icon, Wasm, assets).
 The runtime ABI field at header offset 12 is 5 for a native-scene app.
-Firmware 0.7.5 accepts ABI4 and ABI5. Existing ABI4 packages receive ABI4
+Firmware 0.7.6 accepts ABI4 and ABI5. Existing ABI4 packages receive ABI4
 mailboxes and cannot issue the new command. The SDK's legacy VERSION macro
 remains 4; LATEST is 5. Pass `abi=5` / `--abi 5` explicitly when packaging.
 
@@ -39,7 +39,9 @@ must be zero. Magic `0x35443345`, scene version 1, flags zero.
 Camera/target separation must be at least one unit, with nonzero
 horizontal component and squared horizontal / total distance >= 0.001.
 This excludes unstable vertical look-at poses. Submitted builtin faces <=1280.
-No custom vertices, textures, shaders, plugins or native app code in this ABI.
+Scene version 1 has no custom vertices. The optional sdmesh1 extension accepts
+arbitrary validated model assets through scene version 2; see [model assets](sdk/MODEL_ASSETS.md).
+No custom shaders, plugins or executable model code. Existing version 1 remains unchanged.
 
 ## Budget and presentation
 
@@ -77,3 +79,14 @@ ABI4 regression, native bounds/clipping/occlusion/abort tests, atomic-invalid
 scene cases, package ABI gating, service allocation/cleanup and Wasm fixture
 execution are host checks. See [qualification](../docs/ABI5_QUALIFICATION.md). ESP32-S3 smoothness, IMU orientation, concurrent
 USB/FIDO and extended device play require physical qualification.
+
+
+## Optional run measurement
+
+The pure optional Wasm export `app_measurement: i()` returns a scalar run token, not a linear-memory pointer. It requires no imports, new commands or ABI version. Older apps may omit it. The host bounds telemetry to 16384 raw Wasm3 gas units separately from app_step and restores the app budget counters. Invalid telemetry suppresses measurement, not gameplay.
+
+The SDK header documents the token layout. Apps choose tags 1..15 and epochs to
+mark session phases. Complete-run FPS counts newly displayed frames; diagnostics
+must be enabled in Settings before a new session. Enabling it mid-session produces
+a partial measurement. Repeated frames, paused exit dialogs and failed scenes
+do not count as newly displayed frames. This facility is independent of app or model IDs.

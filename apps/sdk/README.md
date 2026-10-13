@@ -52,6 +52,13 @@ notice. Pass the app directory explicitly; the SDK has no built-in app bundle.
 
 ## Native scenes (ABI5)
 
-Use `include/evilkey_scene3d.h` and command 7 for bounded builtin 3D scenes.
-Pass `--abi 5` when packaging; released firmware 0.7.5 supports this API. ABI4 stays
+Use `include/evilkey_scene3d.h` and command 7 for bounded native 3D scenes.
+Pass `--abi 5` when packaging; released firmware 0.7.6 supports this API. ABI4 stays
 compatible and remains the default. See [ABI v5](../ABI_V5.md).
+
+## Models from microSD
+
+Firmware 0.7.6 accepts arbitrary indexed `.ekmesh` models,
+including standalone files under `/evilkey/apps/<id>.models/<asset-id>.ekmesh`.
+See [MODEL_ASSETS.md](MODEL_ASSETS.md) for the format, resource manifest, material
+roles, scene version2 and compatibility. Legacy ABI4/5 apps keep working.

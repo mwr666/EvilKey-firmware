@@ -33,6 +33,8 @@
 #include "../../EvilKeyV1/src/apps/ek_service.h"
 #include "../../EvilKeyV1/src/apps/ek_render_parallel.h"
 #include "../../EvilKeyV1/src/apps/ek_exit_dialog.h"
+#include "../../EvilKeyV1/src/apps/ek_display_strips.h"
+#include "../../EvilKeyV1/src/apps/ek_pixel_accel.h"
 #include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
@@ -42,6 +44,7 @@
 #include <stdarg.h>
 #include <string.h>
 #include "../lvgl/lvgl.h"
+#include "../lvgl/src/draw/sw/lv_draw_sw.h"
 #include "ws_logo_assets.h"
 #include "ws_unified_logo_assets.h"
 #include "ws_settings_icon_asset.h"
@@ -53,6 +56,9 @@
 #endif
 #define RGB24_DEFAULT WS_CONTROL_ACCENT_DEFAULT
 static const char *TAG="ws_lvgl";
+/* Display-owner flag: ISR never reads it; a zero frame ticket skips profiling. */
+static bool s_diagnostics_active;
+static uint32_t diagnostics_now(void){return s_diagnostics_active?(uint32_t)esp_timer_get_time():0;}
 
 /* Match the production Pico FIDO palette used by the previous renderer. */
 #define COL_BG      WS_CONTROL_BG
@@ -145,6 +151,7 @@ static unsigned s_frame_flush_slot;
 typedef struct { lv_obj_t *glow; uint32_t accent; int rotation[3]; uint8_t opacity[8]; bool valid; } halo_cache_t;
 static halo_cache_t s_halo_cache[2];
 static uint16_t *s_apps_pixels;
+static bool s_apps_mixed;
 static uint32_t s_apps_frame;
 static uint8_t *s_launcher_pixels;
 static uint32_t s_launcher_generation;
@@ -632,11 +639,11 @@ static void icon_show_only(hero_icon_id_t id)
 static void flush_wait(lv_disp_drv_t *drv)
 {
     
-    uint32_t start=(uint32_t)esp_timer_get_time();
+    uint32_t start=diagnostics_now();
     /* Same active wait as LVGL8.4's default; measure it once without changing
      * DMA ownership, scheduling or the existing completion/error policy. */
     while(drv->draw_buf->flushing) {}
-    ws_gui_3d_record_lvgl_wait((uint32_t)esp_timer_get_time()-start);
+    ws_gui_3d_record_lvgl_wait(diagnostics_now()-start);
     
 }
 static void flush_done(void *ctx)
@@ -644,10 +651,94 @@ static void flush_done(void *ctx)
     /* esp_lcd invokes this from the color-DMA completion callback. LVGL 8.4
      * waits for this signal before reusing the single DMA draw buffer. */
     frame_flush_t *stamp=(frame_flush_t *)ctx;
-    if(stamp->final)ws_gui_3d_frame_complete(stamp->frame,(uint32_t)esp_timer_get_time());
+    if(stamp->final&&stamp->frame)ws_gui_3d_frame_complete(stamp->frame,(uint32_t)esp_timer_get_time());
     lv_disp_flush_ready(stamp->drv);
 }
 static void staging_done(void *ctx) { (void)ctx; }
+static uint32_t s_apps_direct_frames,s_apps_lvgl_frames;
+
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+static uint32_t s_pie_calls,s_pie_scalar,s_pie_pixels;
+static uint32_t s_pie_bench_scalar_us,s_pie_bench_vector_us,s_pie_bench_samples;
+static int s_pie_core=-1;
+static bool apps_pie_eligible(void){
+    BaseType_t core=xTaskGetCoreID(NULL);
+    if(core!=0&&core!=1)return false;
+    if(s_diagnostics_active)s_pie_core=(int)core;return ek_pixel_accel_ready();
+}
+static void apps_pie_copy(uint16_t *out,const uint16_t *source,size_t pixels){
+    memcpy(out,source,pixels*2);ek_pixel_accel_swap(out,pixels);
+}
+
+#endif
+
+typedef struct {uint32_t frame;unsigned end;bool started;uint32_t copy_us,io_us;} AppsStripContext;
+static int apps_strip_wait(void *ctx){
+    AppsStripContext *stream=(AppsStripContext *)ctx;
+    uint32_t at=diagnostics_now();
+    esp_err_t err;
+    if(!stream->started)err=ws_panel_wait_idle(500U);
+    else {err=ws_panel_stream_end();stream->started=false;}
+    stream->io_us+=diagnostics_now()-at;return err;
+}
+static int apps_strip_copy(void *ctx,uint16_t *out,const uint16_t *source,size_t pixels){
+    AppsStripContext *stream=(AppsStripContext *)ctx;
+    uint32_t at=diagnostics_now();
+    /* The caller owns one admission for the complete immutable series. */
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+    if(pixels>=16 && apps_pie_eligible()){
+        if(s_diagnostics_active&&!s_pie_bench_samples){
+            ek_pixel_accel_stage(4);
+            /* One ABBA on the identical strip, normally during countdown.
+             * Only the owned SRAM output is written; no extra heap/buffers. */
+            for(unsigned sample=0;sample<4;++sample){
+                uint32_t begin=diagnostics_now();
+                if(sample==0 || sample==3){
+                    ek_display_native_copy(out,source,pixels);
+                    s_pie_bench_scalar_us+=diagnostics_now()-begin;
+                }else{
+                    apps_pie_copy(out,source,pixels);
+                    s_pie_bench_vector_us+=diagnostics_now()-begin;
+                }
+            }
+            s_pie_bench_samples=2;
+        }
+        apps_pie_copy(out,source,pixels);
+        if(s_diagnostics_active)++s_pie_calls;
+        size_t prefix=((16u-((uintptr_t)out&15u))&15u)/2u;
+        if(s_diagnostics_active)s_pie_pixels+=(uint32_t)((pixels-prefix)/8u*8u);
+    }else{
+        ek_display_native_copy(out,source,pixels);if(s_diagnostics_active)++s_pie_scalar;
+    }
+#else
+    ek_display_native_copy(out,source,pixels);
+#endif
+    stream->copy_us+=diagnostics_now()-at;
+    return ESP_OK;
+}
+static void apps_strip_done(void *ctx){
+    if(ctx)ws_gui_3d_frame_complete((uint32_t)(uintptr_t)ctx,(uint32_t)esp_timer_get_time());
+}
+static int apps_strip_submit_inner(void *ctx,unsigned y,unsigned rows,const uint16_t *pixels,size_t count,int last){
+    AppsStripContext *stream=(AppsStripContext *)ctx;
+    if(!stream->started){
+        esp_err_t err=ws_panel_stream_begin(0,(uint16_t)y,WS_LCD_WIDTH-1,(uint16_t)(stream->end-1));
+        if(err!=ESP_OK)return err;
+        stream->started=true;
+    }
+    esp_err_t err=ws_panel_stream_write((uint16_t)y,rows,pixels,count,
+        last?apps_strip_done:staging_done,last?(void *)(uintptr_t)stream->frame:NULL);
+    if(err==ESP_OK)ws_gui_3d_frame_flush(s_frame_id,(uint32_t)(count*2U));
+    return err;
+}
+static int apps_strip_submit(void *ctx,unsigned y,unsigned rows,const uint16_t *pixels,size_t count,int last){
+    uint32_t at=diagnostics_now();
+    int err=apps_strip_submit_inner(ctx,y,rows,pixels,count,last);
+    ((AppsStripContext *)ctx)->io_us+=diagnostics_now()-at;return err;
+}
+
 
 static void controls_rounder_cb(lv_disp_drv_t *drv,lv_area_t *area)
 {
@@ -1444,6 +1535,31 @@ static void build_pin(void)
     ui.pin_cancel_label=label(ui.pin_cancel,"Cancel",&lv_font_montserrat_20,0,10,WS_PIN_CANCEL_W,28);
 }
 
+/* Official LVGL draw context extension: leave all masks/alpha/AA to stock. */
+static void pixel_blend(lv_draw_ctx_t *ctx,const lv_draw_sw_blend_dsc_t *dsc){
+#if LV_COLOR_DEPTH == 16
+    lv_disp_t *disp=_lv_refr_get_disp_refreshing();
+    lv_area_t area,bounded;
+    if(disp&&disp->driver->set_px_cb==NULL&&!disp->driver->screen_transp&&
+       dsc->opa==LV_OPA_COVER&&dsc->blend_mode==LV_BLEND_MODE_NORMAL&&
+       (!dsc->mask_buf||dsc->mask_res==LV_DRAW_MASK_RES_FULL_COVER)&&
+       _lv_area_intersect(&area,dsc->blend_area,ctx->clip_area)&&
+       _lv_area_intersect(&bounded,&area,ctx->buf_area)){
+        size_t ds=(size_t)lv_area_get_width(ctx->buf_area);
+        uint16_t *dst=(uint16_t *)ctx->buf+ds*(bounded.y1-ctx->buf_area->y1)+(bounded.x1-ctx->buf_area->x1);
+        size_t ss=(size_t)lv_area_get_width(dsc->blend_area);
+        const uint8_t *src=dsc->src_buf?(const uint8_t *)(dsc->src_buf+
+            ss*(bounded.y1-dsc->blend_area->y1)+(bounded.x1-dsc->blend_area->x1)):NULL;
+        if(ek_pixel_accel_rect(dst,ds,src,ss,(size_t)lv_area_get_width(&bounded),
+           (size_t)lv_area_get_height(&bounded),dsc->color.full,false))return;
+    }
+#endif
+    lv_draw_sw_blend_basic(ctx,dsc);
+}
+static void pixel_draw_init(lv_disp_drv_t *drv,lv_draw_ctx_t *ctx){
+    lv_draw_sw_init_ctx(drv,ctx);((lv_draw_sw_ctx_t *)ctx)->blend=pixel_blend;
+}
+
 esp_err_t ws_lvgl_init(void)
 {
     if(s_ready) return ESP_OK;
@@ -1521,6 +1637,7 @@ esp_err_t ws_lvgl_init(void)
     lv_disp_drv_init(&s_disp_drv);
     s_disp_drv.hor_res=WS_LCD_WIDTH;
     s_disp_drv.ver_res=WS_LCD_HEIGHT;
+    s_disp_drv.draw_ctx_init=pixel_draw_init;
     s_disp_drv.flush_cb=flush_cb;
     s_disp_drv.wait_cb=flush_wait;
     s_disp_drv.draw_buf=&s_draw_buf;
@@ -2183,12 +2300,13 @@ static void update_settings(const ws_ui_snapshot_t *v,uint32_t accent)
         break;
     }
     case WS_SETTINGS_PAGE_DIAGNOSTICS: {
-        bool saving=v->diagnostics_export_status==EK_DIAGNOSTICS_EXPORT_BUSY;
+        bool saving=!v->diagnostics_enabled||v->diagnostics_export_status==EK_DIAGNOSTICS_EXPORT_BUSY;
+        hidden(ui.diagnostics_save,!v->diagnostics_enabled);
         bool pressed=settings_pressed(v,WS_SETTINGS_ACTION_DIAGNOSTICS_SAVE);
         set_card_flat(ui.diagnostics_save,pressed&&!saving?accent:COL_PANEL2,
             saving?COL_FAINT:accent,1);
         set_text(ui.diagnostics_save_label,v->diagnostics_export_status==EK_DIAGNOSTICS_EXPORT_BUSY?"Saving...":"Save report",saving?COL_FAINT:pressed?COL_INK:accent);
-        settings_row_set(&ui.settings_row[0],"Show live status",
+        settings_row_set(&ui.settings_row[0],"Diagnostics",
             v->diagnostics_enabled?"ON":"OFF",true,false,false,
             settings_pressed(v,WS_SETTINGS_ACTION_DIAGNOSTICS_TOGGLE),accent);
         if(v->diagnostics_enabled) {
@@ -2881,12 +2999,12 @@ static __attribute__((noinline)) void diagnostics_report(const ws_ui_snapshot_t 
     if(!text){ek_apps_diagnostics_export_failed("Report memory unavailable");return;}
     size_t used=0;const size_t capacity=EK_DIAGNOSTICS_REPORT_CAPACITY;
 #define REPORT(...) diagnostics_append(text,capacity,&used,__VA_ARGS__)
-    REPORT("EvilKey Diagnostics\nformat_version=1\nfirmware=%s\nspec_revision=22\n"
+    REPORT("EvilKey Diagnostics\nformat_version=2\nfirmware=%s\nspec_revision=56\n"
         "captured_monotonic_us=%llu\nwidth=280\nheight=456\nlive_status=%u\n"
-        "timing_unit=us unless key ends in _ms\n"
-        "snapshot_note=component snapshots collected at request; no continuous history\n"
+        "timing_unit=us unless key ends in _ms\nnotes_reference=spec50:D64\n"
+        ""
         "native_status=0 empty,1 OK,2 TIMEOUT,other native fault\n"
-        "admission_note=queue wait precedes unchanged native compute budget; end-to-end latency is not bounded to20ms\n"
+        ""
         "native_limits=20000us pre-copy,300000 pixel candidates\n",
         PF_FIRMWARE_VERSION_STRING,(unsigned long long)esp_timer_get_time(),v->diagnostics_enabled?1U:0U);
     lv_mem_monitor_t pool;lv_mem_monitor(&pool);
@@ -2910,14 +3028,14 @@ static __attribute__((noinline)) void diagnostics_report(const ws_ui_snapshot_t 
         (unsigned)ps.peak_frame_us,(unsigned)ps.frames,(unsigned)ps.flushes,(unsigned)ps.bytes,
         (unsigned)ps.failed_frames,(unsigned)ps.tile_rows,(unsigned)ps.face_cache_bytes,ps.internal_tiles?1U:0U);
     ws_gui_3d_stats_t jet=ws_gui_3d_stats();
-    REPORT("lvgl_wait_us=%u\npeak_lvgl_wait_us=%u\nwait_note=panel_wait includes LVGL active wait and panel semaphore; subsets of compose wall\n",
+    REPORT("lvgl_wait_us=%u\npeak_lvgl_wait_us=%u\n",
         (unsigned)ps.lvgl_wait_us,(unsigned)ps.peak_lvgl_wait_us);
     EkAppsCopyStats copy;ek_apps_copy_stats(&copy);
     REPORT("\n[app_frame_copy]\ncopies=%u\nlast_bytes=%u\nlast_us=%u\npeak_us=%u\nwidth=%u\nheight=%u\npanel_order=%u\n"
-        "copy_note=copy/conversion inside Apps guard; excludes guard queue; bytes are destination bytes\n",
+        "",
         (unsigned)copy.copies,(unsigned)copy.last_bytes,(unsigned)copy.last_us,(unsigned)copy.peak_us,
         (unsigned)copy.last_width,(unsigned)copy.last_height,(unsigned)copy.panel_order);
-    REPORT("method=%u\nmethod_meaning=0 native memcpy,1 fused,2 full row memcpy+scalar swap\n",(unsigned)copy.method);
+    REPORT("method=%u\n",(unsigned)copy.method);
     REPORT("\n[gui_renderer]\nready=%u\npsram_bytes=%u\nframes=%u\nlast_us=%u\npeak_us=%u\ntriangles=%u\n",
         jet.ready?1U:0U,(unsigned)jet.psram_bytes,(unsigned)jet.frames,(unsigned)jet.last_us,
         (unsigned)jet.peak_us,(unsigned)jet.triangles);
@@ -2933,18 +3051,47 @@ static __attribute__((noinline)) void diagnostics_report(const ws_ui_snapshot_t 
     }
     EkSceneProfile native;ek_apps_scene_profile(&native);
     REPORT("\n[native.last]\n");diagnostics_profile(text,capacity,&used,&native);
+    EkRunMetrics *runs=heap_caps_malloc(sizeof(*runs),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    if(!runs){free(text);ek_apps_diagnostics_export_failed("Run snapshot memory unavailable");return;}
+    ek_apps_run_metrics(runs);
+    REPORT("\n[app_transport]\ndirect_frames=%u\nlvgl_frames=%u\nreserved_lvgl_rows=44\nack=final_dma_complete\ndma_source=%s\ndma_rows=%u\n",
+        (unsigned)s_apps_direct_frames,(unsigned)s_apps_lvgl_frames,
+        s_staging[0]?"staging_internal":s_pixels_b?"draw_internal":"single_fallback",
+        (unsigned)(s_staging[0]?STAGING_ROWS:s_draw_pixels/WS_LCD_WIDTH));
+    REPORT("\n[app.run_contract]\nversion=1\nfirmware_profile=sdmesh1-r31-final\nslots=2\nstage_profile_version=2\ndraw_profile_version=2\ndraw_sampling_interval=32\ndraw_note=sample sums/means;limits continuous;wall\nstage_note=wall;output includes native;threads overlap;display parts sum wall\nphase=1 countdown,2 active,3 pause,4 complete,5 fault,6 abandoned\n"
+        "fps_note=newscene finalDMA;active only;no repeats\n"
+        "fps_unit=milliFPS\nwindow_note=exact1s active minimum including stalls\n"
+        "percentile_note=64bins;native512us,gap/end-to-end4096us;overflow=max\n"
+        "retention=RAM;nextsameapp/tag or reset;Continue partial\n"
+        "limits=20000us pre-copy;300000 native pixel tests;1280faces;96objects;8materials\n");
+    if(used<capacity){int written=ek_run_report(text+used,capacity-used,runs);
+        if(written<0)used=capacity;else used+=(size_t)written;}
+    free(runs);
     EkRenderWorkerStats cores;ek_render_worker_stats(&cores);
     REPORT("\n[render_cores]\nready=%u\nenabled=%u\ncore0_jobs=%u\ncore1_jobs=%u\ncore0_stack_free_bytes=%u\ncore1_stack_free_bytes=%u\n",
         (unsigned)cores.ready,(unsigned)cores.enabled,(unsigned)cores.jobs[0],(unsigned)cores.jobs[1],
         (unsigned)cores.stack_free[0],(unsigned)cores.stack_free[1]);
     EkRenderFrameStats admission;ek_render_frame_stats(&admission);
-    REPORT("\n[graphics_admission]\nready=%u\nowner=%u\nowner_meaning=0 idle,1 native compute,2 display\n"
+    REPORT("\n[graphics_admission]\nready=%u\nowner=%u\n"
         "native_acquisitions=%u\nnative_contentions=%u\nnative_wait_last_us=%u\nnative_wait_peak_us=%u\n"
         "display_acquisitions=%u\ndisplay_contentions=%u\ndisplay_wait_last_us=%u\ndisplay_wait_peak_us=%u\n",
         (unsigned)admission.ready,(unsigned)admission.owner,(unsigned)admission.acquisitions[0],
         (unsigned)admission.contentions[0],(unsigned)admission.wait_last_us[0],(unsigned)admission.wait_peak_us[0],
         (unsigned)admission.acquisitions[1],(unsigned)admission.contentions[1],
         (unsigned)admission.wait_last_us[1],(unsigned)admission.wait_peak_us[1]);
+    EkPixelStats pixel_stats;ek_pixel_accel_stats(&pixel_stats);
+    REPORT("\n[pixel_acceleration]\nimplementation=esp32s3-pie-shared\nselftest=%u\nprevious_stage=%u\nreset_reason=%u\nblocked_after_reset=%u\nfill_calls=%u\ncopy_calls=%u\nzero_key_calls=%u\nswap_calls=%u\nworker_dispatches=%u\nfallbacks=%u\nselftest_core=%d\n",
+        (unsigned)pixel_stats.selftest,(unsigned)pixel_stats.previous_stage,(unsigned)pixel_stats.reset_reason,
+        (unsigned)pixel_stats.blocked,(unsigned)pixel_stats.fill,(unsigned)pixel_stats.copy,
+        (unsigned)pixel_stats.key,(unsigned)pixel_stats.swap,(unsigned)pixel_stats.worker,
+        (unsigned)pixel_stats.fallback,(int)pixel_stats.core);
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+    REPORT("\n[strip_acceleration]\nimplementation=esp32s3-pie-internal-sram\nselftest=%u\nvector_calls=%u\nscalar_calls=%u\nvector_pixels=%u\nexisting_task_core=%d\nbench_samples_per_path=%u\nbench_scalar_total_us=%u\nbench_vector_total_us=%u\n",
+        (unsigned)pixel_stats.selftest,(unsigned)s_pie_calls,(unsigned)s_pie_scalar,(unsigned)s_pie_pixels,
+        s_pie_core,(unsigned)s_pie_bench_samples,(unsigned)s_pie_bench_scalar_us,(unsigned)s_pie_bench_vector_us);
+#else
+    REPORT("\n[strip_acceleration]\nimplementation=scalar-host\nselftest=0\nvector_calls=0\n");
+#endif
     REPORT("\nreport_end=complete\n");
 #undef REPORT
     if(used>=capacity){free(text);ek_apps_diagnostics_export_failed("Report too large");}
@@ -2953,19 +3100,31 @@ static __attribute__((noinline)) void diagnostics_report(const ws_ui_snapshot_t 
 esp_err_t ws_lvgl_render(const ws_ui_snapshot_t *v)
 {
     if(!s_ready || !v) return ESP_ERR_INVALID_STATE;
+    s_diagnostics_active=v->diagnostics_enabled;
+    ws_gui_3d_profile(s_diagnostics_active);
     static uint32_t captured_request;
     if(v->diagnostics_export_status==EK_DIAGNOSTICS_EXPORT_BUSY &&
        v->diagnostics_export_request && captured_request!=v->diagnostics_export_request){
         captured_request=v->diagnostics_export_request;diagnostics_report(v);
     }
+    /* Functional clock also schedules 33 ms GUI animation updates. */
     s_render_tick=(uint32_t)esp_timer_get_time();
+    /* Admission protects composition/copies, not hardware DMA waits. */
+    bool admitted=ek_render_frame_begin(EK_RENDER_FRAME_DISPLAY);
+    uint32_t detail[4]={s_diagnostics_active?diagnostics_now()-s_render_tick:0,0,0,0};
+    bool app_frame_copied=false;
+    uint32_t app_copied_generation=0;
+    bool app_direct=false;
+    EkAppsCopyStats app_copy_stats={0};
+    EkAppsDirty app_dirty={0};
     s_frame_id=ws_gui_3d_frame_begin(s_render_tick);
     ws_gui_3d_profile(v->diagnostics_enabled);
     if(pf_control_mode()==PF_CONTROL_BLE_PAD) {
         ws_gamepad_view_render(v);
     
     s_flush_error=ESP_OK;lv_refr_now(NULL);
-        ws_gui_3d_frame_end(s_frame_id,(uint32_t)esp_timer_get_time(),ws_gui_3d_take_panel_wait(),s_flush_error==ESP_OK);
+        ek_render_frame_end(admitted);
+        ws_gui_3d_frame_end(s_frame_id,diagnostics_now(),ws_gui_3d_take_panel_wait(),s_flush_error==ESP_OK);
         return s_flush_error;
     }
     const uint32_t accent=v->accent_rgb?v->accent_rgb:RGB24_DEFAULT;
@@ -2979,6 +3138,15 @@ esp_err_t ws_lvgl_render(const ws_ui_snapshot_t *v)
 
     const bool app_visible=v->apps_running && ws_ui_settings_allowed(v->state) &&
         v->launcher_transition==255U;
+    /* Only the fixed exit grip occupies rows0..43. A modal, role/state,
+     * orientation or visibility change always falls back to complete LVGL.
+     * This applies to every app ID, not just games using native scenes. */
+    bool fast_app=app_visible && !first && !v->apps_exit_dragging && !v->apps_exit_confirm &&
+        !v->air_mouse_active && s_last_view.apps_running && s_last_view.launcher_transition==255U &&
+        !s_last_view.apps_exit_dragging && !s_last_view.apps_exit_confirm &&
+        !s_last_view.air_mouse_active && s_last_view.state==v->state &&
+        s_last_view.accent_rgb==v->accent_rgb && s_pixels_a && s_pixels_b &&
+        !s_disp_drv.sw_rotate && s_disp_drv.rotated==LV_DISP_ROT_NONE;
     hidden(ui.launcher_group,app_visible || pin || v->air_mouse_active ||
         !ws_ui_settings_allowed(v->state) || !v->launcher_transition);
     hidden(ui.apps_group,!app_visible);
@@ -2986,11 +3154,15 @@ esp_err_t ws_lvgl_render(const ws_ui_snapshot_t *v)
         hidden(ui.apps_exit_grip,v->apps_exit_confirm);
         hidden(ui.apps_exit_pull,!v->apps_exit_dragging);
         hidden(ui.apps_exit_dim,!v->apps_exit_dragging);
+        if(first || !s_last_view.apps_running || s_last_view.launcher_transition!=255U ||
+           !ws_ui_settings_allowed(s_last_view.state) || s_last_view.accent_rgb!=v->accent_rgb ||
+           s_last_view.apps_exit_dragging!=v->apps_exit_dragging){
         set_card_flat(ui.apps_exit_grip,v->apps_exit_dragging?accent:0x142328UL,
                       v->apps_exit_dragging?accent:0x365a60UL,1);
         for(unsigned i=0;i<2;++i)
             lv_obj_set_style_line_color(lv_obj_get_child(ui.apps_exit_arrow,(int32_t)i),
                 color(v->apps_exit_dragging?0x081916UL:accent),0);
+        }
         if(v->apps_exit_dragging) {
             unsigned progress=v->apps_exit_progress>100?100:v->apps_exit_progress;
             hidden(ui.apps_exit_fill,!progress);
@@ -3015,16 +3187,36 @@ esp_err_t ws_lvgl_render(const ws_ui_snapshot_t *v)
         hidden(ui.main_group,true);
         hidden(ui.settings_group,true);
         hidden(ui.screensaver_group,true);
+        /* Unknown/full invalidation may expose the suffix through LVGL.
+         * Use its ordinary full-panel snapshot before allowing that draw. */
+        lv_disp_t *display=lv_disp_get_default();
+        if(fast_app && display)for(unsigned i=0;i<display->inv_p;i++)
+            if(!display->inv_area_joined[i] && display->inv_areas[i].y2>=44){fast_app=false;break;}
         EkAppsDirty dirty={0};
         if(s_apps_pixels && ui.apps_image &&
-           ek_apps_copy_frame_panel(s_apps_pixels,EK_APPS_PIXELS,&s_apps_frame,&dirty)) {
+           (fast_app?ek_apps_exchange_frame_transport(&s_apps_pixels,EK_APPS_PIXELS,&s_apps_frame,&dirty,
+                44,s_apps_mixed!=fast_app):ek_apps_copy_frame_transport(s_apps_pixels,EK_APPS_PIXELS,&s_apps_frame,&dirty,
+                EK_APPS_HEIGHT,s_apps_mixed!=fast_app))) {
+            s_apps_img.data=(const uint8_t *)s_apps_pixels;
+            s_apps_mixed=fast_app;
+            app_frame_copied=true;app_copied_generation=s_apps_frame;
+            ek_apps_copy_stats(&app_copy_stats);
             lv_img_cache_invalidate_src(&s_apps_img);
             lv_area_t area;
             lv_obj_get_coords(ui.apps_image,&area);
             area.x1+=dirty.x;area.y1+=dirty.y;
             area.x2=area.x1+dirty.width-1;
             area.y2=area.y1+dirty.height-1;
-            lv_obj_invalidate_area(ui.apps_image,&area);
+            app_direct=fast_app;app_dirty=dirty;
+            if(app_direct && area.y2>=44)area.y2=43;
+            if(area.y1<=area.y2){
+                /* LVGL8.4's object invalidation expands by5px, even without
+                 * transforms. Mixed snapshot is panel-order only through43:
+                 * submit this verified screen-space prefix directly so no
+                 * transient LVGL DMA reads native rows44..49. */
+                if(app_direct)_lv_inv_area(display,&area);
+                else lv_obj_invalidate_area(ui.apps_image,&area);
+            }
         }
     } else if(v->air_mouse_active) {
         hidden(ui.air_mouse_group,v->air_mouse_settings_open);
@@ -3170,7 +3362,48 @@ esp_err_t ws_lvgl_render(const ws_ui_snapshot_t *v)
      * invalidation is used; the faster transport path only changes how those
      * dirty areas are buffered and transferred. */
     
+    bool lvgl_sampled=s_diagnostics_active && app_frame_copied && (((s_apps_direct_frames+s_apps_lvgl_frames)&31u)==0);
+    uint32_t lvgl_at=lvgl_sampled?diagnostics_now():0;
     lv_refr_now(NULL);
-    ws_gui_3d_frame_end(s_frame_id,(uint32_t)esp_timer_get_time(),ws_gui_3d_take_panel_wait(),s_flush_error==ESP_OK);
+    uint32_t lvgl_us=lvgl_sampled?diagnostics_now()-lvgl_at:0;
+    ek_render_frame_end(admitted);
+    if(app_frame_copied){
+        if(s_flush_error==ESP_OK && app_direct){
+            if(s_diagnostics_active)++s_apps_direct_frames;
+            /* lv_refr_now may leave its last DMA reading a draw strip. The
+             * transport waits before reusing it; staging also remains owned
+             * by this sole display caller. No new allocation is necessary. */
+            uint16_t *first=(uint16_t *)(s_staging[0]?s_staging[0]:s_pixels_a);
+            uint16_t *second=(uint16_t *)(s_staging[0]?s_staging[1]:s_pixels_b);
+            unsigned rows=s_staging[0]?STAGING_ROWS:s_draw_pixels/WS_LCD_WIDTH;
+            AppsStripContext stream={s_frame_id,(app_dirty.y+app_dirty.height+1U)&~1U,false};
+            /* Do not let another native generation interleave the strips of
+             * this generation. Native queue time remains outside its budget. */
+            uint32_t queue_at=diagnostics_now();
+            bool series_admitted=ek_render_frame_begin(EK_RENDER_FRAME_DISPLAY);
+            detail[0]+=diagnostics_now()-queue_at;
+            int err=ek_display_strips_with_copy(s_apps_pixels,first,second,
+                WS_LCD_WIDTH,WS_LCD_HEIGHT,rows,44,app_dirty.y,app_dirty.height,
+                apps_strip_wait,apps_strip_submit,apps_strip_copy,&stream);
+            if(stream.started){
+                uint32_t abort_at=diagnostics_now();
+                esp_err_t cleanup=ws_panel_stream_abort();
+                stream.io_us+=diagnostics_now()-abort_at;
+                if(!err)err=cleanup;
+            }
+            ek_render_frame_end(series_admitted);
+            detail[2]=stream.copy_us;detail[3]=stream.io_us;
+            if(err)s_flush_error=err==-1?ESP_ERR_INVALID_ARG:(esp_err_t)err;
+        }else{
+            if(s_diagnostics_active)++s_apps_lvgl_frames;
+            if(s_flush_error==ESP_OK)s_flush_error=ws_panel_wait_idle(500U);
+        }
+        uint32_t display_us=diagnostics_now()-s_render_tick;
+        uint64_t known=(uint64_t)detail[0]+detail[2]+detail[3];
+        detail[1]=known<=display_us?display_us-(uint32_t)known:0;
+        if(s_diagnostics_active)ek_apps_display_complete_raster(app_copied_generation,s_flush_error==ESP_OK,
+            display_us,app_copy_stats.last_us,app_copy_stats.method,detail,ws_ui_display_period(v),lvgl_us,lvgl_sampled);
+    }
+    ws_gui_3d_frame_end(s_frame_id,diagnostics_now(),ws_gui_3d_take_panel_wait(),s_flush_error==ESP_OK);
     return s_flush_error;
 }

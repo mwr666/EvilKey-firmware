@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Compile and exercise the private firmware's ABI v4 parser and Wasm host."""
+"""Compile and exercise the firmware's ABI v4 parser and Wasm host."""
 from __future__ import annotations
 
 import argparse

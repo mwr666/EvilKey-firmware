@@ -3,19 +3,20 @@
 import argparse,subprocess,os
 from pathlib import Path
 p=argparse.ArgumentParser();compiler=p.add_mutually_exclusive_group(required=True)
-compiler.add_argument('--zig');compiler.add_argument('--gxx');p.add_argument('--rings-only',action='store_true');p.add_argument('--scene-profile-only',action='store_true');a=p.parse_args()
+compiler.add_argument('--zig');compiler.add_argument('--gxx');p.add_argument('--rings-only',action='store_true');p.add_argument('--scene-profile-only',action='store_true');p.add_argument('--app-strips-only',action='store_true');a=p.parse_args()
 root=Path(__file__).resolve().parents[3];here=Path(__file__).parent
 renderer=root/'firmware/build/launcher-renderer.c'
 renderer.parent.mkdir(exist_ok=True)
-text=Path(os.getenv('EVILKEY_LVGL_SOURCE',str(root/'firmware/templates/port/ws_lvgl.c'))).read_text(encoding='utf-8').replace('../../EvilKeyV1/src/apps/','').replace('../lvgl/lvgl.h','lvgl.h')
+text=Path(os.getenv('EVILKEY_LVGL_SOURCE',str(root/'firmware/templates/port/ws_lvgl.c'))).read_text(encoding='utf-8').replace('../../EvilKeyV1/src/apps/','').replace('../lvgl/','')
 renderer.write_text(text,encoding='utf-8')
 for name in ['ws_gamepad_view.c','ws_gamepad_view.h']:
-    text=(root/'firmware/templates/port'/name).read_text().replace('../lvgl/lvgl.h','lvgl.h')
+    text=(root/'firmware/templates/port'/name).read_text().replace('../lvgl/','')
     (renderer.parent/name).write_text(text)
 import sys
 sys.path.insert(0,str(root/'firmware/tools'))
 from run_3d_gui_tests import build_objects
-jet_objects=build_objects(a.zig,a.gxx)
+model_defines=["EK_PIXEL_ACCEL_HOST_MODEL"] if os.getenv("EK_PIXEL_MODEL") else []
+jet_objects=build_objects(a.zig,a.gxx,model_defines)
 sources=sorted((root/'firmware/EvilKeyV1/src/engine/lvgl/src').rglob('*.c'))
 out=root/'firmware/build/launcher-lvgl-test.exe';out.parent.mkdir(exist_ok=True)
 command=[str(Path(a.gxx).with_name('gcc.exe'))] if a.gxx else [a.zig,'cc','-target','x86-windows-gnu']
@@ -24,6 +25,13 @@ rsp=root/'firmware/build/launcher-lvgl.rsp'
 rsp.write_text('\n'.join('"'+arg.replace('\\','/').replace('"','\\"')+'"' for arg in cmd[len(command):]),encoding='utf-8')
 r=subprocess.run([*command,'@'+str(rsp)],capture_output=True,text=True)
 if r.returncode:print(r.stderr);raise SystemExit(r.returncode)
+if a.app_strips_only:
+    for mode,flags in [('direct64',{}),('direct16',{'EVILKEY_TEST_STAGING':'1'}),('staging16',{'EVILKEY_TEST_DIRECT_FAIL':'3','EVILKEY_TEST_STAGING':'1'}),('single16',{'EVILKEY_TEST_SINGLE':'1','EVILKEY_TEST_STAGING':'1'})]:
+        env=os.environ.copy()
+        for key in ('EVILKEY_TEST_DIRECT_FAIL','EVILKEY_TEST_STAGING','EVILKEY_TEST_SINGLE'):env.pop(key,None)
+        env.update(flags);print('APP TRANSPORT MODE',mode,flush=True)
+        subprocess.run([str(out),'--app-strips'],check=True,timeout=90,cwd=root,env=env)
+    raise SystemExit(0)
 if os.getenv('EVILKEY_BUFFER_FRAMES'):
     subprocess.run([str(out),'--buffer-frames'],check=True,timeout=90,cwd=root)
     raise SystemExit(0)
@@ -35,9 +43,10 @@ if a.rings_only:
     raise SystemExit(0)
 from PIL import Image
 import struct
-packages=[root.parent/name/'package'/f'{ident}.ekapp' for name,ident in [('EvilBlocks','evil.blocks'),('EvilBreaker','evil.breaker'),('EvilInvaders','evil.invaders'),('EvilPinball','evil.pinball'),('EvilRacer','evil.racer')]]
-source=root.parent/'EvilBlocks/package/host.ppm'
-if not source.exists():source=root.parent/'EvilBlocks/assets/01.png'
+apps_root=Path(os.getenv('EVILKEY_HOST_APPS_ROOT',str(root.parent)))
+packages=[apps_root/name/'package'/f'{ident}.ekapp' for name,ident in [('EvilBlocks','evil.blocks'),('EvilBreaker','evil.breaker'),('EvilInvaders','evil.invaders'),('EvilPinball','evil.pinball'),('EvilRacer','evil.racer')]]
+source=apps_root/'EvilBlocks/package/host.ppm'
+if not source.exists():source=apps_root/'EvilBlocks/assets/01.png'
 image=Image.open(source).convert('RGB');assert image.size==(280,456)
 frame=root/'firmware/build/blocks-ui.rgb565'
 frame.write_bytes(b''.join(struct.pack('<H',(r>>3)<<11|(g>>2)<<5|(b>>3)) for r,g,b in image.get_flattened_data()))

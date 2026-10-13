@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.6 — 2026-10-13
+
+- Shared SIMD pixel operations for GUI, 2D apps and native scenes.
+- Indexed SD models and MIT mesh conversion/packaging SDK.
+- Settings opt-in diagnostics with complete-session FPS and maximum render time.
+- Existing ABI, graphics, hardware clocks and storage compatibility retained.
+
+[Release details](docs/RELEASE_0.7.6.md).
+
 ## 0.7.5 — 2026-10-09
 
 - Rendering across both ESP32-S3 cores; triangle spans, geometry reuse and PSRAM access improvements.

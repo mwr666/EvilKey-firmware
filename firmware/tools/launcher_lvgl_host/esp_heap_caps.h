@@ -7,6 +7,11 @@
 #define MALLOC_CAP_INTERNAL 4
 #define MALLOC_CAP_DMA 8
 static inline void *heap_caps_malloc(size_t n,int c){
+    static unsigned single_small_attempt;
+    if(getenv("EVILKEY_TEST_SINGLE")&&(c&MALLOC_CAP_DMA)&&n==280*16*2){
+        ++single_small_attempt;if(single_small_attempt==2||single_small_attempt==4)return NULL;
+    }
+    if(getenv("EVILKEY_TEST_SINGLE") && (c&MALLOC_CAP_SPIRAM) && n==280*64*2)return NULL;
     static unsigned small_dma_attempt;
     if((c&MALLOC_CAP_DMA)&&n==280*16*2){
         ++small_dma_attempt;const char *mode=getenv("EVILKEY_TEST_DIRECT_FAIL");
@@ -15,7 +20,7 @@ static inline void *heap_caps_malloc(size_t n,int c){
                (kind==3&&small_dma_attempt<=2)||(kind==4&&small_dma_attempt<=4)||kind==5)return NULL;
         }
     }
-    if(getenv("EVILKEY_TEST_DIAGNOSTICS_ALLOC_FAIL") && n==8192 && (c&MALLOC_CAP_SPIRAM))return NULL;
+    if(getenv("EVILKEY_TEST_DIAGNOSTICS_ALLOC_FAIL") && n==12288 && (c&MALLOC_CAP_SPIRAM))return NULL;
     if(getenv("EVILKEY_TEST_3D_ALLOC_FAIL") && (c&MALLOC_CAP_INTERNAL) && !(c&MALLOC_CAP_SPIRAM))return NULL;
     if(getenv("EVILKEY_TEST_STAGING") && (c&MALLOC_CAP_DMA) && n>280*16*2)return NULL;
     return malloc(n);

@@ -39,7 +39,7 @@ def build(app: Path):
      wasm_size, digest, raw_owner, raw_license, asset_size, reserved,
      raw_name, icon_digest, extension_reserved) = HEADER.unpack_from(data)
     if (magic, size, revision, abi, flags, reserved, extension_reserved) != \
-            (b"EKEYAPP1", 320, PACKAGE_REVISION, abi, 0, bytes(2), UI_PROFILE_BYTES) or abi not in (4,5):
+            (b"EKEYAPP1", 320, PACKAGE_REVISION, abi, flags, bytes(2), UI_PROFILE_BYTES) or abi not in (4,5) or flags & ~3 or (abi==4 and flags):
         raise ValueError("unsupported package header")
     icon = data[HEADER.size:PAYLOAD_OFFSET]
     if len(icon) != ICON_BYTES or hashlib.sha256(icon).digest() != icon_digest:
@@ -83,6 +83,36 @@ def build(app: Path):
         "LICENSE.md": license_bytes,
         "SDK-MIT-LICENSE.txt": (ROOT / "apps" / "sdk" / "LICENSE").read_bytes(),
     }
+    customer_manifest['required_features']=flags
+    blob=data[PAYLOAD_OFFSET+wasm_size:];extra=0;models=[]
+    if blob:
+        if len(blob)<12 or blob[:8]!=b'EKASSET1':raise ValueError('asset header')
+        count,reserved=struct.unpack_from('<HH',blob,8)
+        if count>32 or reserved or len(blob)<12+count*20:raise ValueError('asset table')
+        previous_id=0;end=12+count*20
+        for i in range(count):
+            ident,kind,w,h,offset,length,reserved=struct.unpack_from('<HHHHIII',blob,12+i*20)
+            if ident<=previous_id or reserved or offset<end or offset+length>len(blob):raise ValueError('asset bounds')
+            previous_id=ident;end=offset+length;resource=blob[offset:end]
+            if kind<=1:
+                if not 1<=w<=280 or not 1<=h<=456 or length!=w*h*2:raise ValueError('bitmap dimensions')
+            elif kind in (2,4):
+                from mesh import validate
+                if not flags&1 or w or h or ident>32767:raise ValueError('mesh feature/dimensions')
+                if kind==4:
+                    if length!=36:raise ValueError('model descriptor')
+                    source=package/(app_id+'.models')/(str(ident)+'.ekmesh')
+                    if not source.resolve().is_relative_to(package.resolve()):raise ValueError('model outside package')
+                    content=source.read_bytes();expected=struct.unpack_from('<I',resource)[0]
+                    if len(content)!=expected or hashlib.sha256(content).digest()!=resource[4:]:raise ValueError('external mesh mismatch')
+                    validate(content);name=app_id+'.models/'+str(ident)+'.ekmesh';files[name]=content;extra+=len(content)
+                    models.append({'file':name,'bytes':len(content),'sha256':hashlib.sha256(content).hexdigest()})
+                else:validate(resource)
+            else:raise ValueError('unknown asset type')
+        if end!=len(blob) or len(blob)+extra>1048576:raise ValueError('aggregate asset quota')
+    customer_manifest['model_resources']=models
+    customer_manifest['required_features']=flags
+    files['manifest.json']=(json.dumps(customer_manifest,indent=2,ensure_ascii=False)+'\n').encode('utf-8')
     out_dir = ROOT / "release" / "apps"
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / f"{app_id}_{manifest['version']}_ABI{abi}.zip"

@@ -216,6 +216,22 @@ typedef struct {
     char apps_status[80];
 } ws_ui_snapshot_t;
 
+static inline uint32_t ws_ui_display_period(const ws_ui_snapshot_t *v){
+    uint32_t frame_ms=50U;
+    if(v) {
+            if((v->settings_transition!=0U && v->settings_transition!=255U) ||
+               (v->screensaver_transition!=0U && v->screensaver_transition!=255U) ||
+               (v->launcher_transition!=0U && v->launcher_transition!=255U) ||
+               v->settings_page_offset!=0 || v->launcher_page_offset!=0)
+                frame_ms=8U;
+            else if(v->screensaver_open)
+                frame_ms=8U;
+            else if(v->settings_animation && v->state!=WS_UI_PIN)
+                frame_ms=8U;
+        }
+    return frame_ms;
+}
+
 typedef enum { WS_ROOT_SETTINGS=0, WS_ROOT_APPS, WS_ROOT_HOME, WS_ROOT_SAVER } ws_root_page_t;
 /* Finger direction: +1 = swipe right, -1 = swipe left. Ends clamp. */
 ws_root_page_t ws_ui_root_next(ws_root_page_t page,int direction,bool has_apps);

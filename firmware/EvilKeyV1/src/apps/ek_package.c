@@ -50,7 +50,8 @@ int ek_package_parse(const uint8_t *header, size_t header_size,
         read16(header + 8) != EK_PACKAGE_HEADER_SIZE ||
         read16(header + 10) != EK_PACKAGE_FORMAT_VERSION ||
         (read16(header + 12) != 4 && read16(header + 12) != EK_PACKAGE_API_VERSION) ||
-        read16(header + 14) != 0 ||
+        (read16(header + 14) & ~3u) != 0 ||
+        (read16(header + 12)==4 && read16(header + 14)!=0) ||
         read16(header + 288) != EK_PACKAGE_UI_PROFILE) return 0;
     for (unsigned i = 190; i < 192; ++i)
         if (header[i] != 0) return 0;

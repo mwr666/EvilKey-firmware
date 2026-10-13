@@ -12,7 +12,7 @@ App loading and saves do not access NVS or FIDO credentials.
 
 ## Format and SDK
 
-Firmware 0.7.5 supports **ABI v4 and v5**, package revision **5**.
+Firmware 0.7.6 supports **ABI v4 and v5**, package revision **5**.
 ABI v4 provides the base contract:
 Wasm without imports, touch coordinates, accelerometer samples, drawing
 commands, RGB565 assets and save requests. Packages require a UTF-8 name,
@@ -22,6 +22,7 @@ Firmware validates bounds and SHA-256 before launch.
 - [Base ABI v4 specification](ABI_V4.md)
 - [ABI v5 native Scene3D extension](ABI_V5.md)
 - [MIT SDK and packaging](sdk/README.md)
+- [Models loaded from microSD](sdk/MODEL_ASSETS.md)
 - [Mandatory UI profile](sdk/UI_PROFILE.md)
 
 The firmware owns the top-left 56×56 touch zone. Drag its grip right and release
@@ -29,10 +30,10 @@ at full progress to open YES/NO exit confirmation. After capture, the drag area
 expands and completion stays latched. Touches starting elsewhere remain
 app-owned, allowing sliders. App time pauses during the system gesture/dialog.
 
-
-
 ## Application licensing
 
-EvilBlocks, EvilPinball, EvilBreaker, EvilInvaders and EvilRacer are independently licensed applications. Game source, bytecode, artwork and saves are not included in this public firmware repository or its releases. Firmware and GUI are AGPLv3; the ABI and SDK declarations retain MIT terms. Compatible app updates do not require firmware updates.
+Applications are distributed separately under their own licenses. This repository
+and its firmware ZIP contain the ABI and MIT SDK, without game source or bundles.
+App updates within the supported ABI do not require firmware updates.
 
 The ABI supports up to two contacts, but the tested PCB V1 panel currently reports only one. Build controls that remain usable with one finger. Bounds checks and API restrictions are an interpreter boundary, not demonstrated hardware isolation. A package digest detects corruption, not publisher authenticity.

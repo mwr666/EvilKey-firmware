@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 #include "ek_assets.h"
 #include <string.h>
+#include "ek_mesh.h"
 
 static uint16_t u16(const uint8_t *p) { return (uint16_t)(p[0] | ((uint16_t)p[1] << 8)); }
 static uint32_t u32(const uint8_t *p) {
@@ -24,16 +25,23 @@ int ek_assets_parse(const uint8_t *data, size_t size, EkAssets *out) {
         uint16_t id = u16(entry), flags = u16(entry + 2);
         uint16_t width = u16(entry + 4), height = u16(entry + 6);
         uint32_t offset = u32(entry + 8), length = u32(entry + 12);
-        if (!id || (i && id <= out->items[i - 1].id) || (flags & ~1u) ||
-            !width || !height || width > 280 || height > 456 ||
-            (uint32_t)width * height * 2u != length ||
+        if (!id || (i && id <= out->items[i - 1].id) ||
             offset < previous_end || offset > size || length > size - offset ||
             u32(entry + 16) != 0) return 0;
+        if(flags<=1){
+            if(!width||!height||width>280||height>456||(uint32_t)width*height*2u!=length)return 0;
+        }else if(flags==2){
+            EkMeshInfo mesh;if(width||height||id>32767||!ek_mesh_validate(data+offset,length,&mesh))return 0;
+            out->items[i].mesh_vertices=mesh.vertices;out->items[i].mesh_triangles=mesh.triangles;
+        }else if(flags==4){
+            if(width||height||id>32767||length!=36||u32(data+offset)<34||u32(data+offset)>65536)return 0;
+        }else return 0;
         out->items[i].id = id;
         out->items[i].flags = flags;
         out->items[i].width = width;
         out->items[i].height = height;
         out->items[i].rgb565 = data + offset;
+        out->items[i].length = length;
         previous_end = offset + length;
     }
     out->count = (uint8_t)count;

@@ -57,6 +57,18 @@ int main(void){
  icon_package[320]=0;icon_package[256]=1;assert(!ek_storage_icon(&info,icon,sizeof(icon)));
  icon_package.resize(320);assert(!ek_storage_icon(&info,icon,sizeof(icon)));
  assert(!ek_storage_icon(&info,icon,8191));
+ // Program identity is the loaded Wasm slice, not the package payload digest.
+ SD.entries.clear();auto loaded=package("loaded");loaded.resize(EK_PACKAGE_PAYLOAD_OFFSET+20);
+ loaded[186]=12;memcpy(loaded.data()+EK_PACKAGE_PAYLOAD_OFFSET+8,"EKASSET1",8);
+ SD.entries.push_back({"loaded.ekapp",loaded});uint8_t *payload=nullptr;size_t wasm_size=0,asset_size=0;uint8_t digest[32];
+ assert(ek_storage_load("loaded",&payload,&wasm_size,&asset_size));
+ assert(wasm_size==8&&asset_size==12&&ek_storage_loaded_info(&info));
+ assert(ek_storage_loaded_program_sha256(digest));
+ assert(!memcmp(digest,"\0asm\1\0\0\0",8)&&digest[8]==0&&info.sha256[1]==0);
+ free(payload);SD.entries[0].bytes[288]=0;
+ assert(!ek_storage_load("loaded",&payload,&wasm_size,&asset_size));
+ assert(!ek_storage_loaded_info(&info)&&!ek_storage_loaded_program_sha256(digest));
+ puts("PASS loaded program identity:Wasm-only slice,assets excluded,failed load invalidates metadata (digest mock)");
  puts("PASS catalog, cancellation, mandatory UTF-8 name, reserved bytes, revision and exact bounds");
  puts("PASS icon read, pixel/hash mismatch, changed cached digest, short file and short output (digest mock)");
 }

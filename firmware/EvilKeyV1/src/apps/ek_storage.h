@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "ek_package.h"
+#include "ek_assets.h"
 #include "evilkey_app_abi.h"
 #ifdef __cplusplus
 extern "C" {
@@ -22,6 +23,11 @@ int ek_storage_icon(const EkPackageInfo *info, uint8_t *rgb565, size_t capacity)
 int ek_storage_load(const char *id, uint8_t **payload, size_t *wasm_size,
                     size_t *asset_size);
 uint16_t ek_storage_loaded_abi(void);
+/* Worker-owned metadata from the last successfully verified load, not scan. */
+int ek_storage_loaded_info(EkPackageInfo *out);
+int ek_storage_loaded_program_sha256(uint8_t out[32]);
+int ek_storage_models_load(const char *id,EkAssets *assets,size_t embedded_size);
+void ek_storage_models_free(EkAssets *assets);
 /* Returns 1 for a valid record (including an empty payload), 0 otherwise. */
 int ek_storage_save_load(const char *id, uint8_t *out, size_t capacity,
                          size_t *out_size);
@@ -33,6 +39,7 @@ int ek_storage_save_write(const char *id, const uint8_t *data, size_t size,
                           EkStorageSaveTrace trace, void *trace_user);
 const char *ek_storage_error(void);
 /* One worker-owned, verified diagnostic text file; never overwrites a report. */
+enum { EK_STORAGE_DIAGNOSTICS_MAX_BYTES=12288 };
 int ek_storage_diagnostics_write(const uint8_t *data,size_t size,
                                 char *filename,size_t capacity);
 

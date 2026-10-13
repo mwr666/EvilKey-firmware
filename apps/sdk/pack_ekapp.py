@@ -40,36 +40,44 @@ def assets_blob(manifest_path: Path | None) -> bytes:
     table = bytearray(b"EKASSET1" + struct.pack("<HH", len(entries), 0))
     pixels = bytearray()
     previous = 0
+    external_bytes = 0
     for item in entries:
         ident = item["id"]
-        width, height = item["width"], item["height"]
-        if not isinstance(ident, int) or not previous < ident <= 65535 or \
-                not isinstance(width, int) or not 1 <= width <= 280 or \
-                not isinstance(height, int) or not 1 <= height <= 456:
-            raise ValueError("invalid asset ID or dimensions")
+        model=item.get('type')=='mesh'
+        width,height=(0,0) if model else (item['width'],item['height'])
+        if not isinstance(ident,int) or not previous<ident<=(32767 if model else 65535):
+            raise ValueError('invalid asset ID')
+        if not model and (not isinstance(width,int) or not 1<=width<=280 or not isinstance(height,int) or not 1<=height<=456):raise ValueError('invalid bitmap dimensions')
         previous = ident
         source = (manifest_path.parent / item["file"]).resolve()
         if not source.is_relative_to(manifest_path.parent.resolve()):
             raise ValueError("asset path leaves manifest directory")
         image = source.read_bytes()
-        if len(image) != width * height * 2:
-            raise ValueError(f"incorrect RGB565 length: {source.name}")
-        flags = 1 if item.get("transparent_zero", False) else 0
+        if model:
+            from mesh import validate
+            validate(image);flags=4 if item.get('external',False) else 2
+            if flags==4:
+                external_bytes+=len(image)
+                image=struct.pack('<I',len(image))+hashlib.sha256(image).digest()
+        else:
+            if len(image)!=width*height*2:raise ValueError('incorrect RGB565 length')
+            flags=1 if item.get('transparent_zero',False) else 0
         table += ENTRY.pack(ident, flags, width, height,
                             12 + len(entries) * ENTRY.size + len(pixels),
                             len(image), 0)
         pixels += image
     blob = bytes(table + pixels)
-    if len(blob) > 1024 * 1024:
+    if len(blob)+external_bytes > 1024 * 1024:
         raise ValueError("asset blob exceeds 1 MiB")
     return blob
 
 
 def encode_package(program: bytes, blob: bytes, app_id: str, owner: str,
                    license_id: str, version: str, name: str, image: bytes,
-                   ui_profile: str, abi: int = 4) -> bytes:
+                   ui_profile: str, abi: int = 4, required_features: int = 0) -> bytes:
     if abi not in (4, 5):
         raise ValueError("only ABI 4 and 5 supported")
+    if required_features & ~3 or (abi==4 and required_features):raise ValueError("unsupported feature bits")
     if ui_profile != UI_PROFILE:
         raise ValueError("explicit ui_profile='corner-exit-v1' is required; reserve 56x56 touch and 48x48 visual zones")
     if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,30}", app_id) or \
@@ -86,7 +94,7 @@ def encode_package(program: bytes, blob: bytes, app_id: str, owner: str,
     if len(image) != ICON_BYTES:
         raise ValueError("icon must be a 64x64 little-endian RGB565 image (8192 bytes)")
     payload = program + blob
-    header = HEADER.pack(b"EKEYAPP1", HEADER_SIZE, PACKAGE_REVISION, abi, 0, *map(int, parts),
+    header = HEADER.pack(b"EKEYAPP1", HEADER_SIZE, PACKAGE_REVISION, abi, required_features, *map(int, parts),
                          field(app_id, 32, "ascii"), len(program),
                          hashlib.sha256(payload).digest(),
                          field(owner, 64, "utf-8"),
@@ -97,14 +105,21 @@ def encode_package(program: bytes, blob: bytes, app_id: str, owner: str,
 
 def pack(wasm: Path, output: Path, app_id: str, owner: str,
          license_id: str, version: str, assets: Path | None,
-         name: str, icon: Path, ui_profile: str, abi: int = 4) -> Path:
+         name: str, icon: Path, ui_profile: str, abi: int = 4, required_features: int = 0) -> Path:
     if output.name != f"{app_id}.ekapp":
         raise ValueError("output filename must match app ID")
+    entries=json.loads(assets.read_text(encoding='utf-8'))['assets'] if assets else []
+    if any(e.get('type')=='mesh' for e in entries):required_features|=1
     package = encode_package(wasm.read_bytes(), assets_blob(assets), app_id, owner,
-                             license_id, version, name, icon.read_bytes(), ui_profile, abi)
+                             license_id, version, name, icon.read_bytes(), ui_profile, abi, required_features)
     if output.exists():
         raise FileExistsError(output)
     output.parent.mkdir(parents=True, exist_ok=True)
+    for entry in entries:
+        if entry.get('type')=='mesh' and entry.get('external',False):
+            source=(assets.parent/entry['file']).resolve();target=output.parent/(app_id+'.models')/(str(entry['id'])+'.ekmesh')
+            target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(source.read_bytes())
+            if target.read_bytes()!=source.read_bytes():raise IOError('model readback mismatch')
     output.write_bytes(package)
     if output.read_bytes() != package:
         raise IOError("package readback mismatch")
@@ -117,9 +132,10 @@ def main() -> None:
         parser.add_argument(f"--{name}", required=True)
     parser.add_argument("--assets", type=Path)
     parser.add_argument("--abi", type=int, choices=[4,5], default=4)
+    parser.add_argument("--required-features",type=int,choices=[0,1,2,3],default=0)
     args = parser.parse_args()
     print(pack(Path(args.wasm), Path(args.output), args.id, args.owner,
-               args.license, args.version, args.assets, args.name, Path(args.icon), args.ui_profile, args.abi))
+               args.license, args.version, args.assets, args.name, Path(args.icon), args.ui_profile, args.abi, args.required_features))
 
 
 if __name__ == "__main__":

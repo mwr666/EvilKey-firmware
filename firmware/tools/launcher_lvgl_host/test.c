@@ -15,9 +15,46 @@ static bool override_frame_stats;
 static EkRenderFrameStats admission_stats;
 static void ui_frame_stats(EkRenderFrameStats *out){if(override_frame_stats)*out=admission_stats;else ek_render_frame_stats(out);}
 #define ek_render_frame_stats ui_frame_stats
+static unsigned display_admission_depth,display_admission_copies,unlocked_dma_native;
+static bool test_stream_active;
+static HANDLE native_probe,native_probe_entered,native_probe_done;
+static unsigned native_series_probes,locked_dma_waits;
+static DWORD WINAPI probe_native_admission(LPVOID unused){
+ (void)unused;SetEvent(native_probe_entered);
+ bool owned=ek_render_frame_begin(EK_RENDER_FRAME_NATIVE);assert(owned);
+ SetEvent(native_probe_done);ek_render_frame_end(owned);return 0;
+}
+static bool ui_frame_begin(unsigned client){
+ assert(client==EK_RENDER_FRAME_DISPLAY&&!display_admission_depth);
+ bool owned=ek_render_frame_begin(client);++display_admission_depth;return owned;
+}
+static void ui_frame_end(bool owned){
+ assert(display_admission_depth==1);--display_admission_depth;ek_render_frame_end(owned);
+ if(native_probe){
+  assert(WaitForSingleObject(native_probe_done,5000)==WAIT_OBJECT_0);
+  assert(WaitForSingleObject(native_probe,5000)==WAIT_OBJECT_0);
+  CloseHandle(native_probe);CloseHandle(native_probe_entered);CloseHandle(native_probe_done);
+  native_probe=native_probe_entered=native_probe_done=NULL;++native_series_probes;
+ }
+}
+#define ek_render_frame_begin ui_frame_begin
+#define ek_render_frame_end ui_frame_end
+#include "ws_gui_3d.h"
+static ws_gui_3d_channel_stats_t fixed_gui_channel(unsigned channel){
+ ws_gui_3d_channel_stats_t cs=ws_gui_3d_channel_stats(channel);
+ if(getenv("EVILKEY_TEST_FIXED_TIMINGS")){
+  cs.p50_us=1000;cs.p95_us=2000;cs.last_us=1000;cs.peak_us=2000;
+  cs.geometry_us=1000;cs.raster_us=2000;cs.convert_us=1000;
+ }
+ return cs;
+}
+#define ws_gui_3d_channel_stats fixed_gui_channel
 #include "launcher-renderer.c"
+#undef ws_gui_3d_channel_stats
 #undef ek_render_worker_stats
 #undef ek_render_frame_stats
+#undef ek_render_frame_begin
+#undef ek_render_frame_end
 PfControlMode pf_control_mode(void){return getenv("EVILKEY_TEST_BLE_PAD")?PF_CONTROL_BLE_PAD:getenv("EVILKEY_TEST_BLE_MOUSE")?PF_CONTROL_BLE_MOUSE:getenv("EVILKEY_TEST_USB_MOUSE")?PF_CONTROL_USB_MOUSE:PF_CONTROL_NORMAL;}
 const char *pf_ble_last_status(void){return "";}
 void pf_controls_preferences(WsControlPrefs *p){ws_controls_defaults(p);}
@@ -28,6 +65,7 @@ static uint16_t frame[280*456];
 static uint8_t icons[9*8192];
 static uint16_t app_pixels[280*456];
 static uint32_t app_generation=1;
+static EkAppsDirty app_test_dirty={0,0,280,456};
 static EkSceneProfile native_profile;
 static char *submitted_report;static size_t submitted_report_size;
 static unsigned report_submissions;static bool report_accept=true;
@@ -40,12 +78,33 @@ int ek_apps_diagnostics_export(char *data,size_t size){
 void ek_apps_diagnostics_export_failed(const char *reason){snprintf(report_error,sizeof(report_error),"%s",reason);}
 void ek_apps_scene_profile(EkSceneProfile *p){*p=native_profile;}
 int ek_apps_copy_icons(uint8_t *p,size_t n,uint32_t *g){assert(n>=sizeof icons);if(*g==1)return 0;memcpy(p,icons,sizeof icons);*g=1;return 1;}
-int ek_apps_copy_frame(uint16_t *p,size_t n,uint32_t *g,EkAppsDirty *d){assert(n>=280*456);if(*g==app_generation)return 0;memcpy(p,app_pixels,sizeof(app_pixels));*g=app_generation;d->x=0;d->y=0;d->width=280;d->height=456;return 1;}
-int ek_apps_copy_frame_panel(uint16_t *p,size_t n,uint32_t *g,EkAppsDirty *d){
- if(!ek_apps_copy_frame(p,n,g,d))return 0;
- for(unsigned i=0;i<280*456;i++){uint16_t c=p[i];p[i]=(uint16_t)((c<<8)|(c>>8));}return 1;
+int ek_apps_copy_frame(uint16_t *p,size_t n,uint32_t *g,EkAppsDirty *d){assert(n>=280*456);if(*g==app_generation)return 0;*d=app_test_dirty;
+ for(unsigned y=d->y;y<d->y+d->height;y++)memcpy(p+y*280+d->x,app_pixels+y*280+d->x,d->width*2);
+ *g=app_generation;return 1;}
+int ek_apps_copy_frame_transport(uint16_t *p,size_t n,uint32_t *g,EkAppsDirty *d,unsigned rows,bool force){
+ assert(display_admission_depth==1&&n>=280*456&&rows<=456);
+ if(*g==app_generation&&!force)return 0;
+ *d=force?(EkAppsDirty){0,0,280,456}:app_test_dirty;
+ for(unsigned y=d->y;y<d->y+d->height;y++)for(unsigned x=d->x;x<d->x+d->width;x++){
+  unsigned i=y*280+x;uint16_t c=app_pixels[i];p[i]=y<rows?(uint16_t)((c&255)*256+c/256):c;
+ }
+ *g=app_generation;return 1;
 }
+int ek_apps_copy_frame_panel(uint16_t *p,size_t n,uint32_t *g,EkAppsDirty *d){return ek_apps_copy_frame_transport(p,n,g,d,456,false);}
 static EkAppsCopyStats copy_stats;
+static uint16_t *exchange_spare;static unsigned exchanges;
+int ek_apps_exchange_frame_transport(uint16_t **p,size_t n,uint32_t *g,EkAppsDirty *d,unsigned rows,bool force){
+ assert(display_admission_depth==1&&n>=280*456&&rows<=456);
+ if(*g==app_generation&&!force)return 0;
+ if(force||(app_test_dirty.x==0&&app_test_dirty.y==0&&app_test_dirty.width==280&&app_test_dirty.height==456)){
+  if(!exchange_spare)exchange_spare=(uint16_t*)malloc(280*456*2);
+  uint16_t *previous=*p;*p=exchange_spare;exchange_spare=previous;++exchanges;
+  *d=(EkAppsDirty){0,0,280,456};
+  for(unsigned y=0;y<456;y++)for(unsigned x=0;x<280;x++){uint16_t c=app_pixels[y*280+x];(*p)[y*280+x]=y<rows?(uint16_t)((c<<8)|(c>>8)):c;}
+  *g=app_generation;copy_stats.method=rows&&rows<456?5:6;return 1;
+ }
+ return ek_apps_copy_frame_transport(*p,n,g,d,rows,force);
+}
 void ek_apps_copy_stats(EkAppsCopyStats *p){if(p)*p=copy_stats;}
 static const uint16_t *pending_dma;
 static uint16_t pending_copy[280*64];
@@ -54,9 +113,49 @@ static bool direct_async;
 static ws_panel_flush_done_cb_t pending_done;
 static void *pending_context;
 static bool panel_idle_fail,panel_submit_fail;
+
+static unsigned display_acks,display_failed;
+static bool worst_run_metrics;
+void ek_apps_run_metrics(EkRunMetrics *p){
+ memset(p,0,sizeof *p);
+ if(worst_run_metrics)for(unsigned i=0;i<2;i++){
+  memset(&p->record[i],255,sizeof p->record[i]);
+  memset(p->record[i].identity.app_id,'a',31);p->record[i].identity.app_id[31]=0;
+  memset(p->record[i].identity.version,'9',19);p->record[i].identity.version[19]=0;
+  memset(p->record[i].identity.program_sha256,'a',64);p->record[i].identity.program_sha256[64]=0;
+ }
+}
+void ek_apps_display_complete(uint32_t generation,bool success){assert(generation==app_generation);
+ if(success){assert(!pending_dma);display_acks++;}else display_failed++;}
+void ek_apps_display_complete_profile(uint32_t generation,bool success,uint32_t wall,uint32_t copy,unsigned method){
+ assert(method<=6);ek_apps_display_complete(generation,success);
+}
+void ek_apps_display_complete_detail(uint32_t generation,bool success,uint32_t wall,uint32_t copy,unsigned method,const uint32_t detail[4],unsigned cadence){
+ assert(detail&&((uint64_t)detail[0]+detail[1]+detail[2]+detail[3])==wall);
+ assert(cadence==8||cadence==50);
+ ek_apps_display_complete_profile(generation,success,wall,copy,method);
+}
+void ek_apps_display_complete_raster(uint32_t generation,bool success,uint32_t wall,uint32_t copy,unsigned method,const uint32_t detail[4],unsigned cadence,uint32_t lvgl_us,bool sampled){
+ assert(lvgl_us<=detail[1]);if(!sampled)assert(!lvgl_us);
+ ek_apps_display_complete_detail(generation,success,wall,copy,method,detail,cadence);
+}
 static void ppm(const char *path);
 esp_err_t ws_panel_wait_idle(uint32_t t){(void)t;
  if(panel_idle_fail)return ESP_ERR_TIMEOUT;
+ if(pending_dma&&test_stream_active){
+  assert(display_admission_depth==1);++locked_dma_waits;
+  if(!native_series_probes&&!native_probe){
+   native_probe_entered=CreateEvent(NULL,TRUE,FALSE,NULL);native_probe_done=CreateEvent(NULL,TRUE,FALSE,NULL);
+   assert(native_probe_entered&&native_probe_done);native_probe=CreateThread(NULL,0,probe_native_admission,NULL,0,NULL);assert(native_probe);
+   assert(WaitForSingleObject(native_probe_entered,5000)==WAIT_OBJECT_0);
+  }
+  if(native_probe)assert(WaitForSingleObject(native_probe_done,0)==WAIT_TIMEOUT);
+ }
+ if(pending_dma&&direct_async&&!display_admission_depth){
+  bool owned=ek_render_frame_begin(EK_RENDER_FRAME_NATIVE);
+  if(ek_render_workers_ready())assert(owned);
+  ek_render_frame_end(owned);++unlocked_dma_native;
+ }
  if(pending_dma){assert(memcmp(pending_dma,pending_copy,pending_pixels*2)==0);pending_dma=NULL;
   if(pending_done){ws_panel_flush_done_cb_t done=pending_done;void *ctx=pending_context;pending_done=NULL;done(ctx);
   }
@@ -66,11 +165,13 @@ esp_err_t ws_panel_flush_async(uint16_t x,uint16_t y,uint16_t x2,uint16_t y2,con
 if(panel_submit_fail)return ESP_FAIL;
 assert(ws_panel_wait_idle(500)==ESP_OK);
 assert(x2<280 && y2<456);
+/* DMA rectangle oracle: LVGL cannot read the native mixed suffix. */
+if(s_apps_mixed&&display_admission_depth&&!test_stream_active&&
+   ui.apps_group&&lv_obj_is_visible(ui.apps_group))assert(y2<44);
 assert(!(x&1) && !(y&1) && (x2&1) && (y2&1));
 if(s_staging[0]) {
  assert(p==(const uint16_t *)s_staging[0] || p==(const uint16_t *)s_staging[1]);
  assert(n<=280*16);assert(!pending_dma);
- if(done==staging_done){pending_dma=p;pending_pixels=n;memcpy(pending_copy,p,n*2);}
 }
 if(pf_control_mode()==PF_CONTROL_USB_MOUSE || pf_control_mode()==PF_CONTROL_BLE_MOUSE){
  if((x&1)||(y&1)||!(x2&1)||!(y2&1))fprintf(stderr,"Unaligned mouse panel window: %u,%u..%u,%u\n",x,y,x2,y2);
@@ -84,15 +185,38 @@ if(pf_control_mode()==PF_CONTROL_BLE_PAD){
  assert(!(x&1) && !(y&1) && (x2&1) && (y2&1));
 }
 assert(n==(size_t)(x2-x+1)*(y2-y+1));for(unsigned r=y;r<=y2;++r)memcpy(frame+r*280+x,p+(r-y)*(x2-x+1),(x2-x+1)*2);
-if(direct_async&&!s_staging[0]){
- assert(p==(const uint16_t*)s_pixels_a||p==(const uint16_t*)s_pixels_b);
+if(direct_async){
+ if(!s_staging[0])assert(p==(const uint16_t*)s_pixels_a||p==(const uint16_t*)s_pixels_b);
  assert(!pending_dma&&n<=280*64);pending_dma=p;pending_pixels=n;memcpy(pending_copy,p,n*2);
  pending_done=done;pending_context=ctx;
 }else done(ctx);return ESP_OK;}
+static unsigned test_stream_next,test_stream_end,test_stream_x,test_stream_x2;
+static unsigned test_stream_begins,test_stream_continues,test_stream_ends;
+static unsigned test_stream_fail_at,test_stream_writes;
+static bool test_stream_end_fail;
+esp_err_t ws_panel_stream_begin(uint16_t x,uint16_t y,uint16_t x2,uint16_t y2){
+ assert(!test_stream_active&&!pending_dma&&y>=44&&!(x&1)&&!(y&1)&&(x2&1)&&(y2&1)&&x2<280&&y2<456);
+ if(panel_idle_fail)return ESP_ERR_TIMEOUT;
+ test_stream_active=true;test_stream_next=y;test_stream_end=y2+1;test_stream_x=x;test_stream_x2=x2;test_stream_writes=0;++test_stream_begins;return ESP_OK;
+}
+esp_err_t ws_panel_stream_write(uint16_t y,unsigned rows,const uint16_t *p,size_t n,ws_panel_flush_done_cb_t done,void *ctx){
+ assert(test_stream_active&&y==test_stream_next&&rows&&!(rows&1)&&y+rows<=test_stream_end);
+ assert(display_admission_depth==1);
+ if(++test_stream_writes==test_stream_fail_at)return ESP_FAIL;
+ esp_err_t err=ws_panel_flush_async(test_stream_x,y,test_stream_x2,y+rows-1,p,n,done,ctx);
+ if(err==ESP_OK){test_stream_next+=rows;++test_stream_continues;}return err;
+}
+esp_err_t ws_panel_stream_end(void){
+ assert(test_stream_active&&test_stream_next==test_stream_end);
+ esp_err_t err=ws_panel_wait_idle(500);test_stream_active=false;++test_stream_ends;return test_stream_end_fail?ESP_ERR_TIMEOUT:err;
+}
+esp_err_t ws_panel_stream_abort(void){
+ assert(test_stream_active);esp_err_t err=ws_panel_wait_idle(500);test_stream_active=false;return err;
+}
 static void host_dma_wait(lv_disp_drv_t *drv){(void)drv;assert(ws_panel_wait_idle(500)==ESP_OK);}
 static void memory(const char *stage){lv_mem_monitor_t m;lv_mem_monitor(&m);printf("%s free=%u largest=%u used=%u%% peak=%u\n",stage,(unsigned)m.free_size,(unsigned)m.free_biggest_size,(unsigned)m.used_pct,(unsigned)m.max_used);fflush(stdout);}
 
-static void render(ws_ui_snapshot_t *v){host_time_us+=16000;assert(ws_lvgl_render(v)==ESP_OK);lv_mem_monitor_t m;lv_mem_monitor(&m);assert(m.free_size>20000);assert(m.total_size-m.max_used>20000);}
+static void render(ws_ui_snapshot_t *v){host_time_us+=16000;assert(ws_lvgl_render(v)==ESP_OK);assert(!display_admission_depth);lv_mem_monitor_t m;lv_mem_monitor(&m);assert(m.free_size>20000);assert(m.total_size-m.max_used>20000);}
 static void mouse_redraw(ws_ui_snapshot_t *v){
  render(v);uint16_t *reference=malloc(sizeof frame);assert(reference);memcpy(reference,frame,sizeof frame);
  lv_obj_invalidate(ui.screen);render(v);assert(memcmp(reference,frame,sizeof frame)==0);free(reference);
@@ -249,9 +373,11 @@ static void label_fits(lv_obj_t *label){
 }
 static int test_native_profile_card(void){
  assert(ws_lvgl_init()==ESP_OK);
+ ws_ui_snapshot_t off={0};off.state=WS_UI_READY;off.accent_rgb=0x4de3c1;off.settings_open=true;off.settings_transition=255;off.settings_page=WS_SETTINGS_PAGE_DIAGNOSTICS;
+ render(&off);assert(lv_obj_has_flag(ui.diagnostics_save,LV_OBJ_FLAG_HIDDEN));assert(!s_diagnostics_active);assert(ws_gui_3d_frame_begin(1)==0);
  ws_ui_snapshot_t v={0};v.state=WS_UI_READY;v.accent_rgb=0x4de3c1;
  v.settings_open=true;v.settings_transition=255;v.settings_page=WS_SETTINGS_PAGE_DIAGNOSTICS;v.diagnostics_enabled=true;
- v.diagnostics_tick=12;render(&v);assert(!strcmp(lv_label_get_text(ui.diagnostics_value),"No scene sample"));
+ v.diagnostics_tick=12;render(&v);assert(!lv_obj_has_flag(ui.diagnostics_save,LV_OBJ_FLAG_HIDDEN));assert(!strcmp(lv_label_get_text(ui.diagnostics_value),"No scene sample"));
  native_profile=(EkSceneProfile){{2,29874,132,20375},1200,300,20001,14500,8373,2400,1400};
  v.diagnostics_tick=13;render(&v);assert(strstr(lv_label_get_text(ui.diagnostics_memory),"Geom 20001 (raster 14500)"));
  for(unsigned card=0;card<7;card++){v.diagnostics_tick=card*3;render(&v);label_fits(ui.diagnostics_value);label_fits(ui.diagnostics_memory);}
@@ -261,13 +387,15 @@ static int test_native_profile_card(void){
  native_profile=(EkSceneProfile){{2,UINT32_MAX,UINT32_MAX,UINT32_MAX},UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX};
  copy_stats=(EkAppsCopyStats){UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT16_MAX,UINT16_MAX,1,2};
  override_frame_stats=true;memset(&admission_stats,255,sizeof admission_stats);
+ worst_run_metrics=true;
  v.diagnostics_export_status=EK_DIAGNOSTICS_EXPORT_BUSY;v.diagnostics_export_request=1;render(&v);
- assert(submitted_report&&report_submissions==1&&submitted_report_size<8192);
- const char *sections[]={"[draw_buffer]","[apps_catalog]","[ui_latency]","[app_frame_copy]","[gui_renderer]","[gui.Saver]","[gui.Settings]","[gui.Status]","[gui.Apps]","[native.last]","[render_cores]","[graphics_admission]"};
+ if(!(submitted_report&&report_submissions==1&&submitted_report_size<EK_DIAGNOSTICS_REPORT_CAPACITY))fprintf(stderr,"Diagnostic report failure: %s; submissions=%u size=%zu capacity=%u\n",report_error,report_submissions,submitted_report_size,(unsigned)EK_DIAGNOSTICS_REPORT_CAPACITY);
+ assert(submitted_report&&report_submissions==1&&submitted_report_size<EK_DIAGNOSTICS_REPORT_CAPACITY);
+ const char *sections[]={"[draw_buffer]","[apps_catalog]","[ui_latency]","[app_frame_copy]","[gui_renderer]","[gui.Saver]","[gui.Settings]","[gui.Status]","[gui.Apps]","[native.last]","[render_cores]","[graphics_admission]","[pixel_acceleration]","[strip_acceleration]"};
  for(unsigned i=0;i<sizeof sections/sizeof sections[0];i++)assert(strstr(submitted_report,sections[i]));
  const char *removed[]={"[previous_boot]","[copy_ab]","[display_ab]","[memory_probe]","[owner_task_probe]","[clock_probe]","[scene_comparison]","[native.first_timeout]"};
  for(unsigned i=0;i<sizeof removed/sizeof removed[0];i++)assert(!strstr(submitted_report,removed[i]));
- assert(strstr(submitted_report,"spec_revision=22")&&strstr(submitted_report,"report_end=complete")&&strstr(submitted_report,"native_wait_peak_us=4294967295"));
+ assert(strstr(submitted_report,"spec_revision=56")&&strstr(submitted_report,"report_end=complete")&&strstr(submitted_report,"native_wait_peak_us=4294967295"));
  FILE *report=fopen("firmware/build/diagnostics-report-max.txt","wb");assert(report);assert(fwrite(submitted_report,1,submitted_report_size,report)==submitted_report_size);fclose(report);
  free(submitted_report);submitted_report=NULL;render(&v);assert(report_submissions==1);
  for(unsigned state=0;state<4;state++){
@@ -286,6 +414,7 @@ static int test_native_profile_card(void){
 }
 static DWORD WINAPI finish_test_flush(void *p){(void)p;Sleep(10);lv_disp_flush_ready(&s_disp_drv);return 0;}
 static int wait_contract(){
+ s_diagnostics_active=true;ws_gui_3d_profile(true);
  assert(ws_lvgl_init()==ESP_OK);assert(s_disp_drv.wait_cb);
  uint32_t id=ws_gui_3d_frame_begin((uint32_t)host_time_us);ws_gui_3d_frame_flush(id,2);
  s_draw_buf.flushing=1;real_timer_start=GetTickCount64();real_timer=true;
@@ -298,6 +427,7 @@ static int wait_contract(){
  puts("PASS production LVGL wait callback: threaded completion, measured once, total/subset/peak attribution");return 0;
 }
 static int buffer_frames(){
+ ek_render_workers_start();assert(ek_render_workers_ready());
  const char *failure=getenv("EVILKEY_TEST_DIRECT_FAIL");unsigned fail=failure?(unsigned)atoi(failure):0;
  esp_err_t init=ws_lvgl_init();
  if(fail==5){assert(init==ESP_ERR_NO_MEM);puts("PASS no DMA memory failure");return 0;}
@@ -337,7 +467,117 @@ static int buffer_frames(){
  }
  assert(!fclose(out));printf("PASS buffer assembled frames=%u, incremental/full identical\n",frames);return 0;
 }
-int main(int argc,char **argv){if(argc==2&&strcmp(argv[1],"--wait-contract")==0)return wait_contract();if(argc==2&&strcmp(argv[1],"--buffer-frames")==0)return buffer_frames();if(argc==2 && strcmp(argv[1],"--scene-profile-only")==0)return test_native_profile_card();if(argc==2 && strcmp(argv[1],"--rings-only")==0)return test_landing_rings();assert(argc==7);FILE *app=fopen(argv[6],"rb");assert(app);assert(fread(app_pixels,1,sizeof(app_pixels),app)==sizeof(app_pixels));fclose(app);assert(ws_lvgl_init()==ESP_OK);assert(pf_control_mode()==PF_CONTROL_BLE_PAD || s_3d_available==!getenv("EVILKEY_TEST_3D_FALLBACK"));memory("init");ws_ui_snapshot_t v={0};v.state=WS_UI_READY;v.settings_animation=true;v.accent_rgb=0x4de3c1;
+static int app_strips_test(void){
+ ek_render_workers_start();assert(ek_render_workers_ready());
+ assert(ws_lvgl_init()==ESP_OK);
+ const bool single=getenv("EVILKEY_TEST_SINGLE")!=NULL;
+ assert(single?!s_pixels_b:(s_pixels_a&&s_pixels_b));
+ if(getenv("EVILKEY_TEST_DIRECT_FAIL"))assert(s_staging[0]&&s_staging[1]);
+ else assert(!s_staging[0]);
+ direct_async=true;s_disp_drv.wait_cb=host_dma_wait;
+ ws_ui_snapshot_t v={0};v.state=WS_UI_READY;v.accent_rgb=0x4de3c1;v.apps_running=true;v.launcher_transition=255;v.diagnostics_enabled=true;
+ uint16_t *reference=malloc(sizeof frame);assert(reference);unsigned pairs=0;
+ uint16_t *real_app=NULL;const char *image_path=getenv("EVILKEY_APP_IMAGE");
+ if(image_path){real_app=malloc(sizeof app_pixels);assert(real_app);FILE *f=fopen(image_path,"rb");assert(f&&fread(real_app,1,sizeof app_pixels,f)==sizeof app_pixels);fclose(f);}
+ for(unsigned sample=0;sample<120;sample++){
+  v.diagnostics_enabled=(sample&1)==0;
+  v.apps_running=sample%12!=10;v.apps_exit_dragging=sample%12==4;v.apps_exit_confirm=sample%12==5;
+  v.apps_exit_progress=55;v.apps_exit_pressed=sample%3;v.accent_rgb=sample%12==8?0xf85aae:0x4de3c1;
+  const EkAppsDirty choices[]={{0,0,280,456},{6,37,260,10},{16,45,220,111},{0,455,280,1},{44,100,70,28},{4,0,40,44}};
+  app_test_dirty=sample<3||sample%12==11?choices[0]:choices[sample%6];
+  for(unsigned y=app_test_dirty.y;y<app_test_dirty.y+app_test_dirty.height;y++)for(unsigned x=app_test_dirty.x;x<app_test_dirty.x+app_test_dirty.width;x++)app_pixels[y*280+x]=(uint16_t)(sample*1709+(y*280+x)*13);
+  if(real_app&&sample<6)memcpy(app_pixels,real_app,sizeof app_pixels);
+  ++app_generation;render(&v);assert(ws_panel_wait_idle(500)==ESP_OK);assert(!pending_dma);memcpy(reference,frame,sizeof frame);
+  if(sample==2||sample==4||sample==5){char path[120];snprintf(path,sizeof path,"firmware/build/app-strips-%u.ppm",sample);ppm(path);}
+  lv_obj_invalidate(ui.screen);assert(ws_lvgl_render(&v)==ESP_OK);assert(ws_panel_wait_idle(500)==ESP_OK);
+  v.diagnostics_enabled=!v.diagnostics_enabled;
+  unsigned before_toggle_acks=display_acks;
+  assert(ws_lvgl_render(&v)==ESP_OK);assert(ws_panel_wait_idle(500)==ESP_OK);
+  if(!v.diagnostics_enabled){assert(display_acks==before_toggle_acks);assert(diagnostics_now()==0);}
+  if(memcmp(reference,frame,sizeof frame)){unsigned first=0;while(reference[first]==frame[first])first++;fprintf(stderr,"APP STRIPS mismatch sample%u at%u,%u old%04x new%04x\n",sample,first%280,first/280,reference[first],frame[first]);}
+  assert(!memcmp(reference,frame,sizeof frame));pairs++;
+ }
+ /* 60 ON samples minus 10 menu-only samples: at least 50 eligible ACKs.
+  * OFF deliberately contributes no diagnostic ACK, in every buffer mode. */
+ assert((single?s_apps_direct_frames==0:s_apps_direct_frames>30)&&s_apps_lvgl_frames>30&&display_acks>=50&&!display_failed);
+ v.diagnostics_enabled=true;v.apps_running=true;v.apps_exit_dragging=v.apps_exit_confirm=false;v.accent_rgb=0x4de3c1;app_test_dirty=(EkAppsDirty){0,0,280,456};render(&v);
+ ++app_generation;panel_submit_fail=true;unsigned ack=display_acks;assert(ws_lvgl_render(&v)==ESP_FAIL);assert(!display_admission_depth&&!test_stream_active);assert(display_acks==ack&&display_failed==1);panel_submit_fail=false;assert(ws_panel_wait_idle(500)==ESP_OK);
+ /* Switch formats and process unknown full invalidation without PRESENT. */
+ unsigned fixed_generation=app_generation;
+ v.apps_exit_dragging=true;render(&v);assert(!s_apps_mixed);
+ v.apps_exit_dragging=false;render(&v);render(&v);
+ if(!single){assert(s_apps_mixed);lv_obj_invalidate(ui.screen);render(&v);assert(!s_apps_mixed);}
+ /* Leaving while drag was active must not retain the highlighted grip. */
+ v.apps_exit_dragging=true;render(&v);v.apps_running=false;v.apps_exit_dragging=false;render(&v);
+ v.accent_rgb=0xf85aae;render(&v);v.apps_running=true;render(&v);
+ assert(lv_color_to32(lv_obj_get_style_bg_color(ui.apps_exit_grip,0))==lv_color_to32(color(0x142328)));
+ for(unsigned i=0;i<2;i++)assert(lv_color_to32(lv_obj_get_style_line_color(lv_obj_get_child(ui.apps_exit_arrow,(int32_t)i),0))==lv_color_to32(color(v.accent_rgb)));
+ assert(app_generation==fixed_generation);
+ /* E22: consecutive snapshots without a full-LVGL reference between frames.
+  * Keep the opaque grip reference, compare every other pixel independently. */
+ app_test_dirty=(EkAppsDirty){0,0,280,456};++app_generation;render(&v);
+ lv_obj_invalidate(ui.screen);render(&v);memcpy(reference,frame,sizeof frame);
+ for(unsigned sample=0;sample<240;sample++){
+  const EkAppsDirty updates[]={{0,0,280,456},{0,32,280,16},{12,37,248,10},{44,0,236,64},{0,44,280,412}};
+  app_test_dirty=updates[sample%5];
+  for(unsigned y=app_test_dirty.y;y<app_test_dirty.y+app_test_dirty.height;y++)
+   for(unsigned x=app_test_dirty.x;x<app_test_dirty.x+app_test_dirty.width;x++)
+    app_pixels[y*280+x]=(uint16_t)(sample*1709+(y*280+x)*13);
+  ++app_generation;render(&v);assert(!pending_dma);
+  for(unsigned y=0;y<456;y++)for(unsigned x=0;x<280;x++){
+   if(x<44&&y<44)continue; /* Rounded grip's enclosing rectangle. */
+   uint16_t c=app_pixels[y*280+x],expected=(uint16_t)((c&255)*256+c/256);
+   if(frame[y*280+x]!=expected){fprintf(stderr,"CONSECUTIVE mismatch sample%u at%u,%u got%04x expected%04x\n",sample,x,y,frame[y*280+x],expected);abort();}
+  }
+  for(unsigned y=8;y<40;y++)for(unsigned x=8;x<40;x++)assert(frame[y*280+x]==reference[y*280+x]);
+ }
+ printf("PASS 240 consecutive mixed/full/partial/43-44 snapshots; independent pixel oracle; no intervening full reference\n");
+ if(!single){
+  v.apps_exit_dragging=v.apps_exit_confirm=false;app_test_dirty=(EkAppsDirty){0,44,280,412};render(&v);
+  unsigned rows=s_staging[0]?STAGING_ROWS:s_draw_pixels/280;
+  unsigned chunks=(412+rows-1)/rows;
+  for(unsigned fail=1;fail<=chunks;fail++){
+   ++app_generation;test_stream_fail_at=fail;unsigned ack=display_acks,before=test_stream_begins;
+   assert(ws_lvgl_render(&v)==ESP_FAIL);
+   assert(test_stream_begins==before+1&&!test_stream_active&&!pending_dma&&!display_admission_depth&&display_acks==ack);
+   test_stream_fail_at=0;render(&v);
+  }
+  ++app_generation;test_stream_end_fail=true;unsigned ack=display_acks;
+  assert(ws_lvgl_render(&v)==ESP_ERR_TIMEOUT);
+  assert(!test_stream_active&&!pending_dma&&!display_admission_depth&&display_acks==ack);
+  test_stream_end_fail=false;render(&v);
+  printf("PASS actualGUI stream abort at all %u submissions and final wait;zero DMA/admission ownership or successful ACK on failure\n",chunks);
+ }
+ assert(unlocked_dma_native>0);
+ if(!single)assert(native_series_probes==1&&locked_dma_waits>0);
+ printf("PASS mixed/full format changes and unknown full invalidation without PRESENT\n");
+ printf("PASS display admission: %u real native thread blocked until series release,%u locked series DMA waits,%u ordinary DMA native acquisitions;no admission leaked\n",native_series_probes,locked_dma_waits,unlocked_dma_native);
+ printf("APP STRIPS LVGL PASS %u exact normal/fast image pairs;partial/full/top boundary/modal/menu/accent;direct=%u fallback=%u;ACK after final asynchronous DMA;failed flush excluded\n",pairs,s_apps_direct_frames,s_apps_lvgl_frames);
+ free(real_app);free(reference);return 0;
+}
+static void shared_blend_oracle(void){
+ lv_disp_t *old=_lv_refr_get_disp_refreshing(),*disp=lv_disp_get_default();
+ _lv_refr_set_disp_refreshing(disp);
+ lv_color_t a[64*40],b[64*40],src[68*45];lv_opa_t mask[68*45];
+ lv_area_t buf={10,12,73,51},blend={6,10,73,54},clip={11,13,72,50};
+ lv_draw_ctx_t ctx;memset(&ctx,0,sizeof ctx);ctx.buf_area=&buf;ctx.clip_area=&clip;
+ lv_draw_sw_blend_dsc_t d;memset(&d,0,sizeof d);d.blend_area=&blend;d.mask_area=&blend;d.color.full=0x1234;
+ unsigned count=0;EkPixelStats before,after;ek_pixel_accel_stats(&before);
+ for(unsigned source=0;source<2;source++)for(unsigned opa=0;opa<3;opa++)for(unsigned kind=0;kind<4;kind++)for(unsigned mode=0;mode<4;mode++){
+  for(unsigned i=0;i<64*40;i++)a[i].full=b[i].full=(uint16_t)(i*73+0x55aa);
+  for(unsigned i=0;i<68*45;i++){src[i].full=(uint16_t)(i*257);mask[i]=(lv_opa_t)(i*29);}
+  d.src_buf=source?src:NULL;d.opa=opa==0?255:opa==1?127:0;
+  d.mask_buf=kind?mask:NULL;d.mask_res=kind==1?LV_DRAW_MASK_RES_FULL_COVER:kind==2?LV_DRAW_MASK_RES_CHANGED:LV_DRAW_MASK_RES_TRANSP;
+  d.blend_mode=(lv_blend_mode_t)mode;
+  ctx.buf=a;lv_draw_sw_blend_basic(&ctx,&d);ctx.buf=b;pixel_blend(&ctx,&d);
+  assert(memcmp(a,b,sizeof a)==0);count++;
+ }
+ ek_pixel_accel_stats(&after);
+ if(!getenv("EK_PIXEL_DISABLE"))assert(after.selftest==1&&after.fill>before.fill&&after.copy>before.copy);
+ _lv_refr_set_disp_refreshing(old);
+ printf("PASS %u stock-vs-shared LVGL blends: clipping,source strides,alpha,masks,all blend modes\n",count);
+}
+int main(int argc,char **argv){if(argc==2&&!strcmp(argv[1],"--app-strips"))return app_strips_test();if(argc==2&&strcmp(argv[1],"--wait-contract")==0)return wait_contract();if(argc==2&&strcmp(argv[1],"--buffer-frames")==0)return buffer_frames();if(argc==2 && strcmp(argv[1],"--scene-profile-only")==0)return test_native_profile_card();if(argc==2 && strcmp(argv[1],"--rings-only")==0)return test_landing_rings();assert(argc==7);FILE *app=fopen(argv[6],"rb");assert(app);assert(fread(app_pixels,1,sizeof(app_pixels),app)==sizeof(app_pixels));fclose(app);assert(ws_lvgl_init()==ESP_OK);assert(pf_control_mode()==PF_CONTROL_BLE_PAD || s_3d_available==!getenv("EVILKEY_TEST_3D_FALLBACK"));memory("init");ws_ui_snapshot_t v={0};v.state=WS_UI_READY;v.settings_animation=true;v.accent_rgb=0x4de3c1;
 if(getenv("EVILKEY_TEST_STAGING")&&!getenv("EVILKEY_TEST_DIRECT_FAIL")){assert(s_pixels_b&&s_draw_pixels==280*16&&!s_staging[0]);}
 if(getenv("EVILKEY_EXPORT_CLASSIC_ICONS")){assert(!s_3d_available);export_classic_icons(&v);return 0;}
 if(pf_control_mode()==PF_CONTROL_BLE_PAD) {
@@ -395,7 +635,7 @@ if(pf_control_mode()==PF_CONTROL_BLE_MOUSE || pf_control_mode()==PF_CONTROL_USB_
     lv_obj_invalidate(ui.screen);render(&v);assert(memcmp(reference,frame,sizeof frame)==0);free(reference);
     memory("BLE mouse");puts("PASS BLE mouse LVGL: pairing status, settings/confirmation geometry, dialog closes cleanly, partial redraw");return 0;
 }
-for(unsigned i=0;i<20;++i){v.animation_phase=i;render(&v);}memory("home");ppm("firmware/build/3d-ready.ppm");jet_cadence_contract();
+for(unsigned i=0;i<20;++i){v.animation_phase=i;render(&v);}memory("home");ppm("firmware/build/3d-ready.ppm");shared_blend_oracle();jet_cadence_contract();
 test_landing_halo(&v);
 for(unsigned i=0;i<=255;i+=15){v.settings_transition=i;v.settings_open=true;render(&v);}memory("settings transition");
 v.settings_storage_ok=v.manager_drive_storage_ok=v.usb_tool_storage_ok=true;render(&v);ppm("firmware/build/settings-intro.ppm");
@@ -447,3 +687,4 @@ v.apps_running=false;render(&v);assert(!lv_obj_is_visible(ui.apps_group));
 puts("PASS actual LVGL: corner grip, progress 55/100, modal hit geometry, NO redraw, app repaint keeps grip, Apps return");
 v.launcher_transition=0;v.state=WS_UI_PIN;v.touch_enabled=v.touch_available=true;v.uv_retries=8;v.seconds_left=105;render(&v);memory("PIN eviction");ppm("firmware/build/3d-pin.ppm");
 puts("PASS actual LVGL: Home/Settings/Saver/Apps transitions, 10 Settings pages, 0..10 app layouts, PIN eviction, >20KiB free (panel/inflater mocked)");return 0;}
+

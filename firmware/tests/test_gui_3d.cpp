@@ -135,6 +135,7 @@ static void ppm(const char *path,const ws_gui_3d_frame_t &frame) {
     }assert(fclose(f)==0);
 }
 int main() {
+    ws_gui_3d_profile(true);ek_render_diagnostics_enable(true);
     raster_contract();
     for(int i=-60000;i<=60000;++i)for(float offset:{-.5f,.5f}){
         float x=i+offset;

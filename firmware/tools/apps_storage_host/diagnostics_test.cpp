@@ -11,7 +11,7 @@ extern "C" bool pf_apps_storage_role_allowed(void){return allowed;}
 static void lose_role(){allowed=false;}
 static void no_partial(){for(const auto &item:SD.logs)assert(item.first.find(".tmp")==std::string::npos);}
 int main(){
- char filename[32];std::vector<uint8_t> data(1800);for(size_t i=0;i<data.size();i++)data[i]=(uint8_t)i;
+ char filename[32];std::vector<uint8_t> data(EK_STORAGE_DIAGNOSTICS_MAX_BYTES);for(size_t i=0;i<data.size();i++)data[i]=(uint8_t)i;
  assert(!ek_storage_diagnostics_write(data.data(),data.size(),filename,sizeof(filename)));
  assert(ek_storage_begin());
  SD.save={9,8,7};SD.save_exists=true;SD.entries.push_back({"keep.ekapp",{1,2,3}});
@@ -36,7 +36,7 @@ int main(){
  assert(!ek_storage_diagnostics_write(data.data(),data.size(),filename,sizeof(filename)));
  SD.fail_mkdir=false;
  assert(!ek_storage_diagnostics_write(nullptr,1,filename,sizeof(filename)));
- assert(!ek_storage_diagnostics_write(data.data(),8193,filename,sizeof(filename)));
+ assert(!ek_storage_diagnostics_write(data.data(),EK_STORAGE_DIAGNOSTICS_MAX_BYTES+1,filename,sizeof(filename)));
  assert(!ek_storage_diagnostics_write(data.data(),data.size(),filename,1));
  assert(SD.save==save&&SD.entries[0].bytes==apps&&SD.logs==committed);
  assert(ek_storage_diagnostics_write(data.data(),data.size(),filename,sizeof(filename)));no_partial();

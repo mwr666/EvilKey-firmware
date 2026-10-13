@@ -10,7 +10,10 @@ extern "C" {
 enum { EK_ASSETS_MAX_COUNT = 32, EK_ASSETS_ENTRY_BYTES = 20 };
 typedef struct {
     uint16_t id, flags, width, height;
-    const uint8_t *rgb565;
+    const uint8_t *rgb565; /* bitmap or immutable typed resource */
+    uint32_t length;
+    uint16_t mesh_vertices,mesh_triangles;
+    uint8_t owned; /* external mesh backing, freed by the Apps worker */
 } EkAsset;
 typedef struct {
     uint8_t count;

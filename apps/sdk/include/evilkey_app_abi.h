@@ -67,5 +67,9 @@ typedef struct {
 uint32_t app_input_ptr(void);
 uint32_t app_init(void);
 uint32_t app_step(void);
+/* Optional pure export, zero imports. epoch bits0..22,partial23,tag24..27,
+ * phase28..31:1 countdown,2 active,3 pause,4 complete,5 fault,6 abandoned.
+ * Return0 if no marked run. Diagnostic extension does not change wire ABI. */
+uint32_t app_measurement(void);
 
 #endif

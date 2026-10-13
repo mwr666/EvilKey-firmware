@@ -48,6 +48,11 @@ static int add_pixels(EkVm *vm, uint32_t *total, uint32_t amount) {
 }
 
 static int apply_output(EkVm *vm, uint32_t offset) {
+    const int detail=vm->host.clock && vm->host.execution_detail;
+    const uint64_t detail_start=detail?vm->host.clock(vm->host.user):0;
+    uint64_t native_time=0,present_time=0;
+    const int draw_capable=vm->host.clock && vm->host.execution_draw && vm->measurement_function;
+    uint64_t groups[4]={0,0,0,0};
     size_t memory_size = 0;
     const uint8_t *memory = m3_GetMemory(vm->module, &memory_size, 0);
     if (!memory || !memory_region(memory_size, offset, 4)) {
@@ -75,7 +80,7 @@ static int apply_output(EkVm *vm, uint32_t offset) {
                 goto invalid;
         } else if (kind == EVILKEY_APP_BLIT) {
             const EkAsset *asset = ek_assets_find(vm->host.assets,(uint16_t)arg0);
-            if (flags || w || h || !arg0 || arg0 > 0xffff || arg1 || !asset ||
+            if (flags || w || h || !arg0 || arg0 > 0xffff || arg1 || !asset || asset->flags>1 ||
                 !region(x,y,asset->width,asset->height) ||
                 ++draws > EK_VM_MAX_DRAWS_PER_CALL ||
                 !add_pixels(vm,&pixels,(uint32_t)asset->width*asset->height))
@@ -84,7 +89,7 @@ static int apply_output(EkVm *vm, uint32_t offset) {
             const EkAsset *asset = arg0 && arg0 <= 0xffff ?
                 ek_assets_find(vm->host.assets,(uint16_t)arg0) : NULL;
             uint32_t sx = arg1 & 0xffffu, sy = arg1 >> 16;
-            if (flags || !asset || !vm->host.blit_region ||
+            if (flags || !asset || asset->flags>1 || !vm->host.blit_region ||
                 !region(x,y,w,h) || sx > asset->width || sy > asset->height ||
                 w > asset->width - sx || h > asset->height - sy ||
                 ++draws > EK_VM_MAX_DRAWS_PER_CALL ||
@@ -103,7 +108,7 @@ static int apply_output(EkVm *vm, uint32_t offset) {
                 w>EVILKEY_3D_MAX_WIDTH || h>EVILKEY_3D_MAX_HEIGHT ||
                 arg1!=sizeof(EvilKey3DScene) ||
                 !memory_region(memory_size,arg0,arg1) ||
-                !ek_scene3d_validate(memory+arg0,arg1) ||
+                !ek_scene3d_validate_assets(memory+arg0,arg1,vm->host.assets) ||
                 ++draws>EK_VM_MAX_DRAWS_PER_CALL || !add_pixels(vm,&pixels,w*h)) goto invalid;
         } else if (kind == EVILKEY_APP_SAVE) {
             if (flags || x || y || w || h || arg1 > EVILKEY_APP_MAX_SAVE_BYTES ||
@@ -115,6 +120,9 @@ invalid:
         if (!vm->error[0]) set_error(vm, "invalid EvilKey app command");
         return 0;
     }
+    const uint64_t validated=detail?vm->host.clock(vm->host.user):0;
+    /* Sample complete valid lists only; all primary run limits remain continuous. */
+    const int draw_detail=draw_capable && ((vm->draw_profile_tick++&31u)==0);
     /* Nothing reaches display or SD until the full list has passed. */
     for (uint32_t i = 0; i < count; ++i) {
         const uint8_t *c = output + 4 + i * sizeof(EvilKeyAppCommand);
@@ -122,24 +130,52 @@ invalid:
         uint32_t x = rd16(c + 4), y = rd16(c + 6);
         uint32_t w = rd16(c + 8), h = rd16(c + 10);
         uint32_t arg0 = rd32(c + 12), arg1 = rd32(c + 16);
-        if (kind == EVILKEY_APP_RECT)
-            vm->host.rect(vm->host.user,x,y,w,h,(uint16_t)arg0);
-        else if (kind == EVILKEY_APP_PRESENT)
+        int group=-1;
+        const uint64_t draw_at=draw_detail?vm->host.clock(vm->host.user):0;
+        if (kind == EVILKEY_APP_RECT) {
+            vm->host.rect(vm->host.user,x,y,w,h,(uint16_t)arg0);group=0;
+        }
+        else if (kind == EVILKEY_APP_PRESENT) {
+            uint64_t at=detail?vm->host.clock(vm->host.user):0;
             vm->host.present(vm->host.user,x,y,w,h);
-        else if (kind == EVILKEY_APP_BLIT)
-            vm->host.blit(vm->host.user,x,y,
-                          ek_assets_find(vm->host.assets,(uint16_t)arg0));
-        else if (kind == EVILKEY_APP_BLIT_REGION)
-            vm->host.blit_region(vm->host.user,x,y,arg1&0xffffu,arg1>>16,w,h,
-                                 ek_assets_find(vm->host.assets,(uint16_t)arg0));
-        else if (kind == EVILKEY_APP_TEXT)
-            vm->host.text(vm->host.user,x,y,w,rd16(c+2),memory+arg0,arg1);
-        else if (kind == EVILKEY_APP_SCENE3D)
+            if(detail)present_time+=vm->host.clock(vm->host.user)-at;
+        }
+        else if (kind == EVILKEY_APP_BLIT) {
+            const EkAsset *a=ek_assets_find(vm->host.assets,(uint16_t)arg0);
+            vm->host.blit(vm->host.user,x,y,a);group=(a->flags&1u)?2:1;
+        }
+        else if (kind == EVILKEY_APP_BLIT_REGION) {
+            const EkAsset *a=ek_assets_find(vm->host.assets,(uint16_t)arg0);
+            vm->host.blit_region(vm->host.user,x,y,arg1&0xffffu,arg1>>16,w,h,a);
+            group=(a->flags&1u)?2:1;
+        }
+        else if (kind == EVILKEY_APP_TEXT) {
+            vm->host.text(vm->host.user,x,y,w,rd16(c+2),memory+arg0,arg1);group=3;
+        }
+        else if (kind == EVILKEY_APP_SCENE3D) {
+            uint64_t at=detail?vm->host.clock(vm->host.user):0;
             vm->scene_stats=vm->host.scene3d(vm->host.user,memory+arg0,x,y,w,h);
+            if(detail)native_time+=vm->host.clock(vm->host.user)-at;
+        }
         else if (kind == EVILKEY_APP_SAVE) {
             vm->save_status = vm->host.save(vm->host.user,memory+arg0,arg1)
                 ? EVILKEY_APP_SAVE_OK : EVILKEY_APP_SAVE_FAILED;
         }
+        if(draw_detail && group>=0)groups[group]+=vm->host.clock(vm->host.user)-draw_at;
+    }
+    if(draw_detail) {
+        uint32_t measured[4];
+        for(unsigned g=0;g<4;g++)measured[g]=groups[g]>UINT32_MAX?UINT32_MAX:(uint32_t)groups[g];
+        vm->host.execution_draw(vm->host.user,measured);
+    }
+    if(detail) {
+        uint64_t end=vm->host.clock(vm->host.user);
+        uint64_t validation=validated-detail_start,wall=end-validated;
+        uint64_t draw=wall>=native_time+present_time?wall-native_time-present_time:0;
+        vm->host.execution_detail(vm->host.user,
+            validation>UINT32_MAX?UINT32_MAX:(uint32_t)validation,
+            draw>UINT32_MAX?UINT32_MAX:(uint32_t)draw,
+            present_time>UINT32_MAX?UINT32_MAX:(uint32_t)present_time);
     }
     return 1;
 }
@@ -164,6 +200,7 @@ static int call_u32(EkVm *vm, IM3Function function, uint32_t *out) {
     M3Result result = m3_SetResourceLimit(vm->runtime,c_m3Limit_GasUnits,
                                           EK_VM_GAS_PER_CALL);
     if (!result) result = m3_Call(function,0,NULL);
+    vm->last_call_gas=(uint32_t)(vm->runtime->gasLimit-vm->runtime->gasRemaining);
     if (!result) {
         const void *returns[] = {out};
         result = m3_GetResults(function,1,returns);
@@ -223,6 +260,13 @@ int ek_vm_open(EkVm *vm, const uint8_t *bytes, size_t size, EkVmHost host) {
     if (result || !signature_ok(vm->step_function)) {
         set_error(vm,"app_step must have signature i()"); goto fail;
     }
+    if(host.measurement){
+        result=m3_FindFunctionIn(&vm->measurement_function,vm->module,"app_measurement");
+        if(result)vm->measurement_function=NULL; /* optional, including ABI4 */
+        else if(!signature_ok(vm->measurement_function)){
+            vm->measurement_function=NULL;vm->measurement_invalid=1;
+        }
+    }
     if (!call_u32(vm,vm->input_function,&vm->input_offset)) goto fail;
     size_t memory_size = 0;
     uint8_t *memory = m3_GetMemory(vm->module,&memory_size,0);
@@ -274,15 +318,49 @@ static int deliver_input(EkVm *vm, const EvilKeyAppInput *input) {
     }
     return 1;
 }
-int ek_vm_init(EkVm *vm, const EvilKeyAppInput *input) {
+static void measurement(EkVm *vm){
+    if(!vm->host.measurement)return;
+    uint32_t token=0,gas=vm->last_call_gas;
+    if(vm->measurement_invalid)token=UINT32_MAX;
+    else if(vm->measurement_function){
+        /* Separate telemetry budget, restore app call counters exactly. */
+        i64 limit=vm->runtime->gasLimit,remaining=vm->runtime->gasRemaining;
+        M3Result result=m3_SetResourceLimit(vm->runtime,c_m3Limit_GasUnits,16384);
+        if(!result)result=m3_Call(vm->measurement_function,0,NULL);
+        if(!result){const void *returns[]={&token};result=m3_GetResults(vm->measurement_function,1,returns);}
+        vm->runtime->gasLimit=limit;vm->runtime->gasRemaining=remaining;
+        if(result){vm->measurement_invalid=1;token=UINT32_MAX;}
+    }
+    size_t size=0;m3_GetMemory(vm->module,&size,0);
+    vm->host.measurement(vm->host.user,token,gas,(uint32_t)size);
+}
+static uint32_t profile_elapsed(uint64_t start,uint64_t end) {
+    uint64_t elapsed=end>=start?end-start:0;
+    return elapsed>UINT32_MAX?UINT32_MAX:(uint32_t)elapsed;
+}
+static int execute_call(EkVm *vm,IM3Function function,const EvilKeyAppInput *input) {
     uint32_t output;
-    return deliver_input(vm,input) &&
-           call_u32(vm,vm->init_function,&output) && apply_output(vm,output);
+    if(!deliver_input(vm,input))return 0;
+    const int profile=vm->host.clock && vm->host.execution_profile;
+    uint64_t start=profile?vm->host.clock(vm->host.user):0;
+    int ok=call_u32(vm,function,&output);
+    uint64_t end=profile?vm->host.clock(vm->host.user):0;
+    uint32_t guest_us=profile_elapsed(start,end),output_us=0;
+    if(ok) {
+        measurement(vm);
+        start=profile?vm->host.clock(vm->host.user):0;
+        ok=apply_output(vm,output);
+        end=profile?vm->host.clock(vm->host.user):0;
+        output_us=profile_elapsed(start,end);
+    }
+    if(profile)vm->host.execution_profile(vm->host.user,guest_us,output_us);
+    return ok;
+}
+int ek_vm_init(EkVm *vm, const EvilKeyAppInput *input) {
+    return execute_call(vm,vm->init_function,input);
 }
 int ek_vm_step(EkVm *vm, const EvilKeyAppInput *input) {
-    uint32_t output;
-    return deliver_input(vm,input) &&
-           call_u32(vm,vm->step_function,&output) && apply_output(vm,output);
+    return execute_call(vm,vm->step_function,input);
 }
 void ek_vm_close(EkVm *vm) {
     if (!vm) return;

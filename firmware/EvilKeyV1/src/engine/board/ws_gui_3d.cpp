@@ -9,6 +9,7 @@
 #include "../jet/Renderer.hpp"
 #include "../jet/OpaqueUI.hpp"
 #include "../../apps/ek_render_parallel.h"
+#include "../../apps/ek_pixel_accel.h"
 #include "esp_heap_caps.h"
 #ifndef WS_3D_HOST
 #include "esp_timer.h"
@@ -90,8 +91,9 @@ struct V { float x,y,z; V operator-(V b) const { return {x-b.x,y-b.y,z-b.z}; } }
 V *transformed_tile;
 uint64_t micros_now() {
 #ifndef WS_3D_HOST
-    return esp_timer_get_time();
+    return detail_profile?esp_timer_get_time():0;
 #else
+    if(!detail_profile)return 0;
     return std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
 #endif
@@ -407,7 +409,8 @@ void rasterize_band(void *opaque) {
         if(left>right){for(int y=top/SAMPLE;y<(top+tile_rows)/SAMPLE;++y)clear_old(y,side,-1);continue;}
         for(int y=top/SAMPLE;y<(top+tile_rows)/SAMPLE;++y)clear_old(y,left/SAMPLE,right/SAMPLE);
         left=(left/SAMPLE)*SAMPLE;right=std::min(wide-1,(right/SAMPLE+1)*SAMPLE-1);
-        for(int y=0;y<tile_rows;y++)memset(depth_buffer+y*wide+left,255,(right-left+1)*sizeof(uint16_t));
+        for(int y=0;y<tile_rows;y++)if(!ek_pixel_accel_fill(depth_buffer+y*wide+left,(size_t)(right-left+1),0xffff))
+            memset(depth_buffer+y*wide+left,255,(right-left+1)*sizeof(uint16_t));
         for(unsigned word=0;word<(triangle_count+31)/32;word++){
             uint32_t pending=active[word];
             while(pending){const unsigned bit=unsigned(__builtin_ctz(pending));pending&=~(uint32_t(1)<<bit);const unsigned i=word*32+bit;
@@ -514,9 +517,9 @@ extern "C" bool ws_gui_3d_render(unsigned channel,uint16_t phase,uint32_t accent
     if(status_icon)phase=0;
     const int16_t pose_depth=status_icon?0:transition_depth;
     *out={images[channel],uint16_t(side),uint16_t(side),generations[channel]};
-    if(valid[channel]&&last_phase[channel]==phase&&last_accent[channel]==accent&&last_icon[channel]==icon&&last_depth[channel]==pose_depth){channel_stats[channel].cache_hits++;return true;}
+    if(valid[channel]&&last_phase[channel]==phase&&last_accent[channel]==accent&&last_icon[channel]==icon&&last_depth[channel]==pose_depth){if(detail_profile)channel_stats[channel].cache_hits++;return true;}
     uint64_t start=micros_now();stats.triangles=0;rendering_channel=channel;
-    frame_detail=detail_profile || (channel_stats[channel].frames%8==0);
+    frame_detail=detail_profile;
     triangle_count=0;triangle_overflow=false;
     float t=phase*2*PI/256;
     Painter p(side,status_icon?0:.40f*sinf(t)+pose_depth*.001f,
@@ -537,10 +540,12 @@ extern "C" bool ws_gui_3d_render(unsigned channel,uint16_t phase,uint32_t accent
         bounds.y0=std::min(bounds.y0,58);bounds.y1=std::max(bounds.y1,72);
     }
     last_phase[channel]=phase;last_accent[channel]=accent;last_icon[channel]=icon;last_depth[channel]=pose_depth;valid[channel]=true;
+    if(detail_profile){
     stats.frames++;stats.last_us=uint32_t(micros_now()-start);stats.peak_us=std::max(stats.peak_us,stats.last_us);
     auto &cs=channel_stats[channel];cs.last_us=stats.last_us;cs.peak_us=std::max(cs.peak_us,cs.last_us);
     cs.detail_sample=frame_detail;if(frame_detail)++cs.detail_samples;
     cs.triangles=triangle_count;timings[channel][cs.frames%32]=cs.last_us;cs.frames++;
+    }
     ++generations[channel];out->generation=generations[channel];
     return true;
 }
@@ -580,6 +585,7 @@ extern "C" ws_gui_3d_presentation_stats_t ws_gui_3d_presentation_stats(void){
     collect_frames();auto result=presentation_stats;percentiles(presentation_timings,presentation_count,result.p50_us,result.p95_us);return result;
 }
 extern "C" uint32_t ws_gui_3d_frame_begin(uint32_t start){
+    if(!detail_profile)return 0;
     collect_frames();
     if(++next_frame_id==0)++next_frame_id;
     FRAME_LOCK();frame_stamps[next_frame_id%4]={next_frame_id,start,0,0,0,0,0,0,false,false,true};FRAME_UNLOCK();

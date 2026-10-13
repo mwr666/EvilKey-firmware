@@ -15,6 +15,13 @@ esp_err_t ws_panel_flush_async(uint16_t x1,uint16_t y1,uint16_t x2,uint16_t y2,
                                ws_panel_flush_done_cb_t done,void *done_ctx);
 /* Waits only when a color DMA transaction is still in flight. */
 esp_err_t ws_panel_wait_idle(uint32_t timeout_ms);
+/* Sole display owner; one aligned window followed by contiguous native strips.
+ * SRAM belongs to DMA until done. Ordinary panel writes cannot interleave. */
+esp_err_t ws_panel_stream_begin(uint16_t x1,uint16_t y1,uint16_t x2,uint16_t y2);
+esp_err_t ws_panel_stream_write(uint16_t y,unsigned rows,const uint16_t *pixels,
+                               size_t pixel_count,ws_panel_flush_done_cb_t done,void *ctx);
+esp_err_t ws_panel_stream_end(void);
+esp_err_t ws_panel_stream_abort(void);
 esp_err_t ws_panel_brightness(uint8_t brightness);
 /* Display task only; keeps the touch controller and USB running. */
 esp_err_t ws_panel_set_enabled(bool enabled);

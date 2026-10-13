@@ -1,7 +1,12 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later
- * Bounded native rasterizer for ABI5 builtin scenes, independent of GUI Jet.
+ * Bounded native rasterizer for ABI5 scenes, independent of GUI Jet.
  * Native triangles with flat lighting, near clipping, screen clipping, depth
- * test and deterministic 2x reconstruction. No guest geometry or addresses. */
+ * test and deterministic 2x reconstruction. No guest pointers. */
+#if defined(ARDUINO_ARCH_ESP32) && defined(__GNUC__) && !defined(__clang__)
+/* Strict floating point; no fast-math. Only this bounded renderer changes
+ * optimization level. SDK, VM and GUI compilation flags remain unchanged. */
+#pragma GCC optimize ("O3")
+#endif
 #include "ek_scene3d.h"
 #include "ek_render_parallel.h"
 #include <math.h>
@@ -11,19 +16,27 @@
 #endif
 typedef struct {float x,y,z;} V;
 typedef struct {float x,y,d;} P;
+typedef struct {V world,view;P projected;uint32_t key;} MeshVertex;
+_Static_assert(sizeof(MeshVertex)==40,"bounded mesh cache entry");
 typedef struct {P a,b,c;uint16_t colour;} RasterPrimitive;
 _Static_assert(sizeof(RasterPrimitive)==40,"bounded prepared primitive");
 enum {RASTER_BATCH_CAPACITY=320};
 typedef struct {RasterPrimitive *items;unsigned count;} RasterBatch;
 struct EkScene3D {
     EvilKey3DScene scene;
+    const EkAssets *assets;
     /* Depth and colour share one aligned PSRAM transaction/cache line. */
     uint32_t pixels[2][EK_SCENE_SCRATCH_PIXELS];
     RasterPrimitive prepared[RASTER_BATCH_CAPACITY];
-    unsigned committed,cached_w,cached_h,rw,rh;
+    MeshVertex *mesh_cache; /* Persistent internal hot cache, private to caller. */
+    uint32_t mesh_generation;
+    unsigned committed,cached_w,cached_h,rw,rh,cached_flags;
     EkSceneProfile profile;
 };
-_Static_assert(sizeof(EkScene3D)<=192*1024,"bounded packed PSRAM context");
+_Static_assert(sizeof(EkScene3D)+32*sizeof(MeshVertex)<=192*1024,"bounded packed PSRAM context");
+size_t ek_scene3d_allocation_bytes(const EkScene3D *ctx){
+    return ctx?sizeof(EkScene3D)+32*sizeof(MeshVertex):0;
+}
 /* Hot state is on the existing Apps stack, not repeatedly fetched from PSRAM. */
 typedef struct {uint32_t used,status;} SharedWork;
 typedef struct {uint16_t rgb565,flags;} HotMaterial;
@@ -36,7 +49,7 @@ typedef struct {
     uint32_t *pixels;
     HotMaterial materials[8];
     EkSceneProfile *profile;
-    SharedWork *shared;RasterBatch *batch;uint8_t first_row,row_step,projection,row_clock_phase;
+    SharedWork *shared;RasterBatch *batch;uint8_t first_row,row_step,projection,row_clock_phase,face_clock_phase;
 } Frame;
 _Static_assert(sizeof(Frame)<=256,"Scene3D hot frame stack bound");
 static V v(float x,float y,float z){V a={x,y,z};return a;}
@@ -77,7 +90,8 @@ static int expired(Frame *r){
 }
 static int raster_row_expired(Frame *r){
     /* At most eight bounded rows between clock polls; cancellation every row.
-     * Object/primitive/batch/final commit gates still read the actual clock. */
+     * Object/batch/final commit gates read the actual clock; geometry and
+     * prepared primitives additionally poll at least every eight entries. */
     if((r->row_clock_phase++&7u)==0)return expired(r);
     return cancelled(r)||r->stats.status!=EVILKEY_3D_OK;
 }
@@ -95,14 +109,43 @@ static int reserve_span(Frame *r,unsigned tests){
     }else if(tests>EK_SCENE_MAX_PIXEL_TESTS-r->stats.pixel_tests){r->stats.status=EVILKEY_3D_WORK_LIMIT;return 0;}
     r->stats.pixel_tests+=tests;return 1;
 }
+#ifdef EK_SCENE_CACHE_ALLOC_TEST
+static unsigned test_cache_failure,test_live_contexts;
+void ek_scene3d_test_fail_cache(unsigned fail){test_cache_failure=fail;}
+unsigned ek_scene3d_test_live_contexts(void){return test_live_contexts;}
+#endif
 EkScene3D *ek_scene3d_create(void){
 #if defined(ARDUINO_ARCH_ESP32)
-    return (EkScene3D*)heap_caps_calloc(1,sizeof(EkScene3D),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    EkScene3D *r=heap_caps_calloc(1,sizeof(EkScene3D),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
 #else
-    return (EkScene3D*)calloc(1,sizeof(EkScene3D));
+    EkScene3D *r=calloc(1,sizeof(EkScene3D));
+#endif
+    if(!r)return NULL;
+#ifdef EK_SCENE_CACHE_ALLOC_TEST
+    ++test_live_contexts;
+    if(!test_cache_failure)
+#endif
+#if defined(ARDUINO_ARCH_ESP32)
+    r->mesh_cache=heap_caps_calloc(32,sizeof(MeshVertex),MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT);
+#else
+    r->mesh_cache=calloc(32,sizeof(MeshVertex));
+#endif
+    if(!r->mesh_cache){
+#ifdef EK_SCENE_CACHE_ALLOC_TEST
+        --test_live_contexts;
+#endif
+        free(r);return NULL;
+    }
+    return r;
+}
+void ek_scene3d_destroy(EkScene3D *r){
+    if(!r)return;
+    free(r->mesh_cache);free(r);
+#ifdef EK_SCENE_CACHE_ALLOC_TEST
+    --test_live_contexts;
 #endif
 }
-void ek_scene3d_destroy(EkScene3D *r){free(r);}
+void ek_scene3d_set_assets(EkScene3D *r,const EkAssets *assets){if(r)r->assets=assets;}
 EkSceneProfile ek_scene3d_profile(const EkScene3D *r){
     EkSceneProfile empty={0};return r?r->profile:empty;
 }
@@ -171,8 +214,13 @@ static void clipped_screen(Frame *r,P a,P b,P c,uint16_t colour){
     if(a.x>=0&&a.x<=r->rw&&b.x>=0&&b.x<=r->rw&&c.x>=0&&c.x<=r->rw&&
        a.y>=0&&a.y<=r->rh&&b.y>=0&&b.y<=r->rh&&c.y>=0&&c.y<=r->rh){raster(r,a,b,c,colour);return;}
     P storage[2][12];storage[0][0]=a;storage[0][1]=b;storage[0][2]=c;
+    /* Convex clipping cannot cross a half-plane containing the original
+     * triangle. Skipping that identity pass preserves vertex and fan order. */
+    unsigned outside=(a.x<0||b.x<0||c.x<0)|((a.x>r->rw||b.x>r->rw||c.x>r->rw)<<1)|
+        ((a.y<0||b.y<0||c.y<0)<<2)|((a.y>r->rh||b.y>r->rh||c.y>r->rh)<<3);
     unsigned n=3,src=0;
     for(unsigned side=0;side<4;side++){
+        if(!(outside&(1u<<side)))continue;
         unsigned count=0;float bound=side<2?(float)r->rw:(float)r->rh;
         P previous=storage[src][n-1];float pd=distance(previous,side,bound);
         for(unsigned i=0;i<n;i++){
@@ -186,38 +234,57 @@ static void clipped_screen(Frame *r,P a,P b,P c,uint16_t colour){
         }
         if(count<3)return;src=1-src;n=count;
     }
-    for(unsigned i=1;i+1<n && !expired(r);i++)raster(r,storage[src][0],storage[src][i],storage[src][i+1],colour);
+    for(unsigned i=1;i+1<n && !cancelled(r) && r->stats.status==EVILKEY_3D_OK;i++)raster(r,storage[src][0],storage[src][i],storage[src][i+1],colour);
 }
-static void triangle(Frame *r,V a,V b,V c,HotMaterial mat){
-    if(expired(r))return;
+static P project_vertex(const Frame *r,V q){
+    float scale=r->projection?r->factor/q.z:r->factor;
+    return (P){r->rw*.5f+q.x*scale,r->rh*.5f-q.y*scale,r->projection?16384.f/q.z:65535.f-q.z*256.f};
+}
+static void triangle_view(Frame *r,V a,V b,V c,const V *view,const P *projected,HotMaterial mat){
+    if((r->face_clock_phase++&7u)==0){if(expired(r))return;}
+    else if(cancelled(r)||r->stats.status!=EVILKEY_3D_OK)return;
+    unsigned n=0;P p[4];
+    if(view[0].z>=.25f&&view[1].z>=.25f&&view[2].z>=.25f){
+        for(unsigned i=0;i<3;i++)p[i]=projected?projected[i]:project_vertex(r,view[i]);n=3;
+        /* Identical to screen/raster rejection, before costly shading. Do not
+         * test quantized area before screen clipping: clipping changes rounding. */
+        if((p[0].x<0&&p[1].x<0&&p[2].x<0)||(p[0].y<0&&p[1].y<0&&p[2].y<0)||
+           (p[0].x>r->rw&&p[1].x>r->rw&&p[2].x>r->rw)||(p[0].y>r->rh&&p[1].y>r->rh&&p[2].y>r->rh))return;
+        if(p[0].x>=0&&p[0].x<=r->rw&&p[1].x>=0&&p[1].x<=r->rw&&p[2].x>=0&&p[2].x<=r->rw&&
+           p[0].y>=0&&p[0].y<=r->rh&&p[1].y>=0&&p[1].y<=r->rh&&p[2].y>=0&&p[2].y<=r->rh&&
+           !edge((int)(p[0].x*16),(int)(p[0].y*16),(int)(p[1].x*16),(int)(p[1].y*16),(int)(p[2].x*16),(int)(p[2].y*16)))return;
+    }else{
+        V near_poly[4];V prev=view[2];float pd=prev.z-.25f;
+        for(unsigned i=0;i<3;i++){
+            V q=view[i];float qd=q.z-.25f;
+            if((pd>=0)!=(qd>=0))near_poly[n++]=add(prev,mul(sub(q,prev),pd/(pd-qd)));
+            if(qd>=0)near_poly[n++]=q;prev=q;pd=qd;
+        }
+        if(n<3)return;
+        for(unsigned i=0;i<n;i++)p[i]=project_vertex(r,near_poly[i]);
+    }
     V normal=cross(sub(b,a),sub(c,a));float length=dot(normal,normal);
     if(length<1e-12f)return;
-    V light=v(-.35f,.86f,.37f);float intensity=dot(normal,light)/sqrtf(length);
-    /* Two-sided solids, stable brighter roof and visible walls. */
-    intensity=fabsf(intensity);uint16_t colour=mat.flags?mat.rgb565:shade(mat.rgb565,.34f+.66f*intensity);
-    V world[3]={a,b,c},near_poly[4];unsigned n=0;
-    for(unsigned i=0;i<3;i++){
-        V d=sub(world[i],r->eye);world[i]=v(dot(d,r->right),dot(d,r->up),dot(d,r->forward));
-    }
-    V prev=world[2];float pd=prev.z-.25f;
-    for(unsigned i=0;i<3;i++){
-        V q=world[i];float qd=q.z-.25f;
-        if((pd>=0)!=(qd>=0))near_poly[n++]=add(prev,mul(sub(q,prev),pd/(pd-qd)));
-        if(qd>=0)near_poly[n++]=q;prev=q;pd=qd;
-    }
-    if(n<3)return;
-    P p[4];
-    for(unsigned i=0;i<n;i++){
-        V q=near_poly[i];float scale=r->projection?r->factor/q.z:r->factor;
-        p[i]=(P){r->rw*.5f+q.x*scale,r->rh*.5f-q.y*scale,r->projection?16384.f/q.z:65535.f-q.z*256.f};
+    uint16_t colour=mat.rgb565;
+    if(!mat.flags){
+        V light=v(-.35f,.86f,.37f);float intensity=dot(normal,light)/sqrtf(length);
+        /* Preserve the lit-material expression and its rounding order. */
+        intensity=fabsf(intensity);colour=shade(mat.rgb565,.34f+.66f*intensity);
     }
     for(unsigned i=1;i+1<n;i++)clipped_screen(r,p[0],p[i],p[i+1],colour);
 }
+static V camera_vertex(const Frame *r,V world){
+    V d=sub(world,r->eye);return v(dot(d,r->right),dot(d,r->up),dot(d,r->forward));
+}
+static void triangle(Frame *r,V a,V b,V c,HotMaterial mat){
+    V view[3]={camera_vertex(r,a),camera_vertex(r,b),camera_vertex(r,c)};
+    triangle_view(r,a,b,c,view,NULL,mat);
+}
 static V transformed(V a,const EvilKey3DObject *o,const float *cs){
     a=v(a.x*o->scale[0]/256.f,a.y*o->scale[1]/256.f,a.z*o->scale[2]/256.f);
-    a=v(a.x,a.y*cs[0]-a.z*cs[1],a.y*cs[1]+a.z*cs[0]);
-    a=v(a.x*cs[2]+a.z*cs[3],a.y,-a.x*cs[3]+a.z*cs[2]);
-    a=v(a.x*cs[4]-a.y*cs[5],a.x*cs[5]+a.y*cs[4],a.z);
+    if(o->rotation[0])a=v(a.x,a.y*cs[0]-a.z*cs[1],a.y*cs[1]+a.z*cs[0]);
+    if(o->rotation[1])a=v(a.x*cs[2]+a.z*cs[3],a.y,-a.x*cs[3]+a.z*cs[2]);
+    if(o->rotation[2])a=v(a.x*cs[4]-a.y*cs[5],a.x*cs[5]+a.y*cs[4],a.z);
     return add(a,v(o->position[0]/256.f,o->position[1]/256.f,o->position[2]/256.f));
 }
 static void face(Frame *r,const EvilKey3DObject *o,const float *cs,V a,V b,V c){
@@ -244,14 +311,107 @@ static void object(Frame *r,const EvilKey3DObject *o){
         }
     }
 }
+static void mesh_rotation(const EvilKey3DObject *o,float cs[6]){
+    for(unsigned k=0;k<3;k++){
+        if(!o->rotation[k]){cs[2*k]=1;cs[2*k+1]=0;}
+        else{float angle=o->rotation[k]*.0001745329252f;cs[2*k]=cosf(angle);cs[2*k+1]=sinf(angle);}
+    }
+}
+static uint32_t mesh_generation(EkScene3D *ctx){
+    if(++ctx->mesh_generation>65535u){
+        for(unsigned i=0;i<32;i++)ctx->mesh_cache[i].key=0;
+        ctx->mesh_generation=1;
+    }
+    return ctx->mesh_generation<<16;
+}
+#ifdef EK_MESH_CACHE_TEST
+static unsigned mesh_hits,mesh_misses;
+void ek_scene3d_test_cache_stats(unsigned *hits,unsigned *misses){*hits=mesh_hits;*misses=mesh_misses;mesh_hits=mesh_misses=0;}
+void ek_scene3d_test_cache_wrap(EkScene3D *ctx){ctx->mesh_generation=65535u;}
+size_t ek_scene3d_test_context_size(void){return sizeof(EkScene3D)+32*sizeof(MeshVertex);}
+#endif
+typedef struct {float scale[3],position[3];} MeshTransform;
+static MeshTransform mesh_transform(const EvilKey3DObject *o){
+    MeshTransform t;
+    for(unsigned k=0;k<3;k++){t.scale[k]=o->scale[k]/256.f;t.position[k]=o->position[k]/256.f;}
+    return t;
+}
+static V transformed_mesh(V a,const EvilKey3DObject *o,const float *cs,const MeshTransform *t){
+    /* Power-of-two scaling is exact throughout validated Q15/Q8.8 bounds.
+     * Keep all rotation and translation operations in the original order. */
+    a=v(a.x*t->scale[0],a.y*t->scale[1],a.z*t->scale[2]);
+    if(o->rotation[0])a=v(a.x,a.y*cs[0]-a.z*cs[1],a.y*cs[1]+a.z*cs[0]);
+    if(o->rotation[1])a=v(a.x*cs[2]+a.z*cs[3],a.y,-a.x*cs[3]+a.z*cs[2]);
+    if(o->rotation[2])a=v(a.x*cs[4]-a.y*cs[5],a.x*cs[5]+a.y*cs[4],a.z);
+    return add(a,v(t->position[0],t->position[1],t->position[2]));
+}
+static const MeshVertex *mesh_vertex(Frame *r,const EvilKey3DObject *o,const uint8_t *points,const float *cs,const MeshTransform *transform,MeshVertex *cache,uint32_t generation,unsigned index){
+    MeshVertex *entry=&cache[index&31u];uint32_t key=generation|index;
+    if(entry->key!=key){
+        const uint8_t *pt=points+index*6;
+        entry->world=transformed_mesh(v((int16_t)ekm_u16(pt)/32768.f,(int16_t)ekm_u16(pt+2)/32768.f,(int16_t)ekm_u16(pt+4)/32768.f),o,cs,transform);
+        entry->view=camera_vertex(r,entry->world);
+        if(entry->view.z>=.25f)entry->projected=project_vertex(r,entry->view);
+        entry->key=key;
+#ifdef EK_MESH_CACHE_TEST
+        ++mesh_misses;
+#endif
+    }
+#ifdef EK_MESH_CACHE_TEST
+    else ++mesh_hits;
+#endif
+    return entry;
+}
+static void mesh_object(Frame *r,const EvilKey3DObject *o,const EkAsset *asset,const float cs[6],const MeshTransform *transform,MeshVertex *cache,uint32_t generation,unsigned first,unsigned count){
+    const uint8_t *points=asset->rgb565+20,*tri=points+asset->mesh_vertices*6+first*8;
+    for(unsigned i=0;i<count&&r->stats.status==EVILKEY_3D_OK&&!cancelled(r);i++,tri+=8){
+        V p[3],view[3];P projected[3];for(unsigned k=0;k<3;k++){
+            const MeshVertex *entry=mesh_vertex(r,o,points,cs,transform,cache,generation,ekm_u16(tri+k*2));
+            /* Copy now: another corner can map to this same cache slot. */
+            p[k]=entry->world;view[k]=entry->view;projected[k]=entry->projected;
+        }
+        unsigned role=tri[6],mat=role?(o->reserved2[0]>>((role-1)*4))&15:o->material;
+        triangle_view(r,p[0],p[1],p[2],view,projected,r->materials[mat]);
+    }
+}
 /* Burst copies use the SDK's aligned memory routines; separate helpers keep
  * these bounded rows off the stack during geometry/raster recursion. */
 static void __attribute__((noinline)) clear_pixels(uint32_t *pixels,unsigned count,uint16_t background){
+    if(!background){memset(pixels,0,count*sizeof(*pixels));return;}
     uint32_t block[32];for(unsigned i=0;i<32;i++)block[i]=background;
     while(count){unsigned n=count<32?count:32;memcpy(pixels,block,n*sizeof(*pixels));pixels+=n;count-=n;}
 }
+/* Scratch and expanded pairs stay in bounded stack SRAM. Copy only visible
+ * runs: each destination row keeps its own background through every hole. */
+static void __attribute__((noinline)) reconstruct_transparent(const uint32_t *front,
+    uint16_t *dst,unsigned stride,unsigned x,unsigned y,unsigned w,unsigned h,unsigned rw){
+    uint32_t cells[64],pairs[64];
+    for(unsigned line=0;line<h;line+=2){
+        const uint32_t *in=front+(line/2)*rw;
+        uint16_t *out=dst+(y+line)*stride+x;
+        for(unsigned block=0;block<w/2;block+=64){
+            unsigned count=w/2-block;if(count>64)count=64;
+            memcpy(cells,in+block,count*sizeof(*cells));
+            for(unsigned col=0;col<count;){
+                if(!(cells[col]>>16)){++col;continue;}
+                unsigned first=col;
+                do {
+                    uint32_t c=cells[col]&0xffffu;pairs[col]=c|(c<<16);++col;
+                }while(col<count && (cells[col]>>16));
+                size_t bytes=(col-first)*sizeof(*pairs);
+                memcpy(out+(block+first)*2,pairs+first,bytes);
+                memcpy(out+stride+(block+first)*2,pairs+first,bytes);
+            }
+        }
+    }
+}
 static void __attribute__((noinline)) reconstruct(const uint32_t *front,uint16_t *dst,
-    unsigned stride,unsigned x,unsigned y,unsigned w,unsigned h,unsigned rw,int cached,uint16_t background){
+    unsigned stride,unsigned x,unsigned y,unsigned w,unsigned h,unsigned rw,int cached,uint16_t background,int transparent){
+    if(transparent){
+        if(!cached)return;
+        reconstruct_transparent(front,dst,stride,x,y,w,h,rw);
+        return;
+    }
     uint32_t row[140];
     if(!cached)for(unsigned col=0;col<w/2;col++)row[col]=background|((uint32_t)background<<16);
     for(unsigned line=0;line<h;line+=2){
@@ -276,7 +436,9 @@ static void raster_band(void *data){
     /* Private clock and counters; only row-disjoint pixels are shared. */
     f.row_clock_phase=0;
     uint64_t start=sample_clock(&f);
-    for(unsigned i=0;i<j->batch->count&&!expired(&f);i++){
+    for(unsigned i=0;i<j->batch->count;i++){
+        if((i&7u)==0){if(expired(&f))break;}
+        else if(cancelled(&f)||f.stats.status!=EVILKEY_3D_OK)break;
         const RasterPrimitive *p=&j->batch->items[i];raster_pixels(&f,p->a,p->b,p->c,p->colour);
     }
     expired(&f);j->profile.raster_us=duration(sample_clock(&f),start);j->profile.stats=f.stats;
@@ -302,17 +464,17 @@ static void __attribute__((noinline)) flush_batch(Frame *f){
 
 typedef struct {
     const uint32_t *front;uint16_t *dst;unsigned stride,x,y,w,h,rw;
-    int cached;uint16_t background;
+    int cached;uint16_t background;int transparent;
 } CopyJob;
 static void copy_band(void *data){
-    CopyJob *j=data;reconstruct(j->front,j->dst,j->stride,j->x,j->y,j->w,j->h,j->rw,j->cached,j->background);
+    CopyJob *j=data;reconstruct(j->front,j->dst,j->stride,j->x,j->y,j->w,j->h,j->rw,j->cached,j->background,j->transparent);
 }
 static inline EkSceneStats __attribute__((always_inline)) render_private(EkScene3D *r,const uint8_t *scene,uint16_t *dst,
     unsigned stride,unsigned x,unsigned y,unsigned w,unsigned h,EkSceneClock clock,void *user){
     EkSceneStats bad={EVILKEY_3D_NO_MEMORY,0,0,0};
     if(!r || w<2 || h<2 || w>280 || h>320 || (w&1) || (h&1))return bad;
     if((!dst || !scene || stride<280 || x+w>280 || y+h>456 ||
-       !ek_scene3d_validate(scene,sizeof(EvilKey3DScene))))return bad;
+       !ek_scene3d_validate_assets(scene,sizeof(EvilKey3DScene),r->assets)))return bad;
     /* Queue admission precedes the unchanged timed compute window. Helpers
      * never acquire this mutex; release after joined pre-copy completion. */
     
@@ -330,10 +492,11 @@ static inline EkSceneStats __attribute__((always_inline)) render_private(EkScene
     unsigned pixels=f->rw*f->rh;uint16_t background=r->scene.background;
     unsigned middle=f->rh/2;
     if(parallel){
-        ClearJob jobs[2]={{f->pixels,middle*f->rw,background},{f->pixels+middle*f->rw,pixels-middle*f->rw,background}};
+        uint16_t clear_colour=(r->scene.flags&EVILKEY_3D_TRANSPARENT_BACKGROUND)?0:background;
+        ClearJob jobs[2]={{f->pixels,middle*f->rw,clear_colour},{f->pixels+middle*f->rw,pixels-middle*f->rw,clear_colour}};
         
         ek_render_parallel(clear_band,&jobs[0],&jobs[1]);
-    }else {clear_pixels(f->pixels,pixels,background);}
+    }else {clear_pixels(f->pixels,pixels,(r->scene.flags&EVILKEY_3D_TRANSPARENT_BACKGROUND)?0:background);}
     uint64_t cleared=sample_clock(f);profile.clear_us=duration(cleared,f->started);
     EvilKey3DCamera camera=r->scene.camera;EvilKey3DCamera *c=&camera;
     f->projection=c->projection;
@@ -349,31 +512,44 @@ static inline EkSceneStats __attribute__((always_inline)) render_private(EkScene
         SharedWork shared={0,EVILKEY_3D_OK};f->shared=&shared;
         RasterBatch batch={r->prepared,0};f->batch=&batch;
         for(unsigned i=0;i<count&&!expired(f);i++){
-            EvilKey3DObject o=r->scene.objects[i];unsigned faces=ek3_faces(o.model);
-            /* Near clip <=2 fans, each screen clip <=5 fans per source face. */
-            unsigned reservation=faces*10;
-            if(batch.count>RASTER_BATCH_CAPACITY-reservation)flush_batch(f);
-            if(expired(f))break;
-            f->stats.triangles+=faces;object(f,&o);
+            EvilKey3DObject o=r->scene.objects[i];
+            const EkAsset *asset=(o.model&0x8000u)?ek3_asset(r->assets,o.model&0x7fffu):NULL;
+            unsigned faces=asset?asset->mesh_triangles:ek3_faces(o.model);
+            f->stats.triangles+=faces;
+            float cs[6];MeshTransform transform;uint32_t generation=0;if(asset){mesh_rotation(&o,cs);transform=mesh_transform(&o);generation=mesh_generation(r);}
+            for(unsigned first=0;first<faces&&!expired(f);){
+                unsigned n=faces-first;if(n>32)n=32;
+                unsigned available=(RASTER_BATCH_CAPACITY-batch.count)/10;
+                if(n>available){
+                    if(asset&&available)n=available;
+                    else flush_batch(f);
+                }
+                if(expired(f))break;
+                if(asset)mesh_object(f,&o,asset,cs,&transform,r->mesh_cache,generation,first,n);else object(f,&o);
+                first+=n;
+            }
         }
         if(!expired(f))flush_batch(f);
         expired(f);f->batch=NULL;f->shared=NULL;
     }else for(unsigned i=0;i<count && !expired(f);i++){
         EvilKey3DObject o=r->scene.objects[i];
-        f->stats.triangles+=ek3_faces(o.model);object(f,&o);
+        const EkAsset *asset=(o.model&0x8000u)?ek3_asset(r->assets,o.model&0x7fffu):NULL;
+        unsigned faces=asset?asset->mesh_triangles:ek3_faces(o.model);f->stats.triangles+=faces;
+        if(asset){float cs[6];mesh_rotation(&o,cs);MeshTransform transform=mesh_transform(&o);uint32_t generation=mesh_generation(r);mesh_object(f,&o,asset,cs,&transform,r->mesh_cache,generation,0,faces);}else object(f,&o);
     }
-    if(!expired(f)){r->committed=1-r->committed;r->cached_w=f->rw;r->cached_h=f->rh;}
+    if(!expired(f)){r->committed=1-r->committed;r->cached_w=f->rw;r->cached_h=f->rh;r->cached_flags=r->scene.flags;}
     uint64_t geometry=sample_clock(f);profile.geometry_us=duration(geometry,setup);
     ek_render_frame_end(admitted);
     /* Reconstruct once per pair of rows; last completed frame on abort. */
     int cached=r->cached_w==f->rw&&r->cached_h==f->rh;
+    int transparent=((cached?r->cached_flags:r->scene.flags)&EVILKEY_3D_TRANSPARENT_BACKGROUND)!=0;
     
     if(parallel){
-        CopyJob jobs[2]={{r->pixels[r->committed],dst,stride,x,y,w,middle*2,f->rw,cached,background},
-            {r->pixels[r->committed]+middle*f->rw,dst,stride,x,y+middle*2,w,h-middle*2,f->rw,cached,background}};
+        CopyJob jobs[2]={{r->pixels[r->committed],dst,stride,x,y,w,middle*2,f->rw,cached,background,transparent},
+            {r->pixels[r->committed]+middle*f->rw,dst,stride,x,y+middle*2,w,h-middle*2,f->rw,cached,background,transparent}};
         
         ek_render_parallel(copy_band,&jobs[0],&jobs[1]);
-    }else reconstruct(r->pixels[r->committed],dst,stride,x,y,w,h,f->rw,cached,background);
+    }else reconstruct(r->pixels[r->committed],dst,stride,x,y,w,h,f->rw,cached,background,transparent);
     uint64_t end=sample_clock(f);profile.reconstruct_us=duration(end,geometry);
     if(clock)f->stats.elapsed_us=duration(end,f->started);
     profile.stats=f->stats;r->profile=profile;

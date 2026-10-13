@@ -42,6 +42,20 @@ static void batch_timing(void){
     f.rw=f.rh=8;f.pixels=pixels;f.profile=&p;f.shared=&work;f.stats.status=EVILKEY_3D_OK;f.clock=clock_read;f.clock_user=&c;
     RasterJob job={&f,&batch,0,{0}};raster_band(&job);
     printf("12 no-row primitives: %u clock reads\n",c.calls);fflush(stdout);
-    assert(c.calls==15&&job.profile.clock_calls==15&&job.profile.raster_us==0&&job.profile.stats.status==EVILKEY_3D_OK);
+    assert(c.calls==5&&job.profile.clock_calls==5&&job.profile.raster_us==0&&job.profile.stats.status==EVILKEY_3D_OK);
 }
-int main(int argc,char **argv){(void)argv;if(argc>1){batch_timing();return 0;}rows(0,0);rows(2,0);rows(0,1);batch_timing();late_commit();puts("PASS bounded row polling, shared cancellation and late pre-commit timeout rollback");return 0;}
+static void faces(void){
+    EkSceneProfile p={0};SharedWork work={0,EVILKEY_3D_OK};Clock c={0};Frame f={0};
+    f.profile=&p;f.shared=&work;f.stats.status=EVILKEY_3D_OK;f.clock=clock_read;f.clock_user=&c;
+    V view[3]={{0,0,0},{1,0,0},{0,1,0}};
+    for(unsigned i=0;i<24;i++)triangle_view(&f,view[0],view[1],view[2],view,NULL,(HotMaterial){0,1});
+    assert(c.calls==3&&f.stats.status==EVILKEY_3D_OK);
+    __atomic_store_n(&work.status,EVILKEY_3D_TIMEOUT,__ATOMIC_RELEASE);
+    triangle_view(&f,view[0],view[1],view[2],view,NULL,(HotMaterial){0,1});
+    assert(f.stats.status==EVILKEY_3D_TIMEOUT);
+    work.status=EVILKEY_3D_OK;f.stats.status=EVILKEY_3D_OK;f.face_clock_phase=0;c=(Clock){0,2,0,NULL};
+    for(unsigned i=0;i<9;i++)triangle_view(&f,view[0],view[1],view[2],view,NULL,(HotMaterial){0,1});
+    assert(c.calls==2&&f.stats.status==EVILKEY_3D_TIMEOUT);
+    puts("24 no-raster source faces:3clock reads; cancel each face; next8face gate expires");
+}
+int main(int argc,char **argv){(void)argv;if(argc>1){batch_timing();return 0;}rows(0,0);rows(2,0);rows(0,1);faces();batch_timing();late_commit();puts("PASS bounded8face/8primitive/8row polling, shared cancellation and late pre-commit timeout rollback");return 0;}

@@ -12,6 +12,7 @@
 #include "ws_panel.h"
 #include "ws_pins.h"
 #include "ws_gui_3d.h"
+#include "../../EvilKeyV1/src/apps/ek_render_parallel.h"
 #include "esp_timer.h"
 #include <stdint.h>
 #include "driver/gpio.h"
@@ -27,6 +28,10 @@ static volatile bool s_pending;
 static ws_panel_flush_done_cb_t s_flush_done;
 static void *s_flush_ctx;
 static bool s_usable;
+static struct {
+    uint16_t width,next_y,end_y;
+    bool active,first;
+} s_stream;
 
 #define WS_PANEL_MAX_PIXELS ((size_t)WS_LCD_WIDTH*(size_t)WS_LCD_STRIP_ROWS)
 #define TRY(expr) do { esp_err_t e_=(expr); if(e_!=ESP_OK) return e_; } while(0)
@@ -48,6 +53,8 @@ static bool color_done(esp_lcd_panel_io_handle_t io,
      * display owner can otherwise recycle that context while ISR still reads it. */
     s_pending=false;
     xSemaphoreGiveFromISR(s_done,&awakened);
+    /* Pinned IDF's SPI post callback discards our returned bool. */
+    if(awakened==pdTRUE)portYIELD_FROM_ISR();
     
     return awakened==pdTRUE;
 }
@@ -61,9 +68,10 @@ esp_err_t ws_panel_wait_idle(uint32_t timeout_ms)
         (void)xSemaphoreTake(s_done,0);
         return ESP_OK;
     }
-    const uint64_t start=esp_timer_get_time();
+    const bool profile=ek_render_diagnostics_enabled();
+    const uint64_t start=profile?esp_timer_get_time():0;
     const BaseType_t completed=xSemaphoreTake(s_done,pdMS_TO_TICKS(timeout_ms));
-    ws_gui_3d_record_panel_wait((uint32_t)(esp_timer_get_time()-start));
+    if(profile)ws_gui_3d_record_panel_wait((uint32_t)(esp_timer_get_time()-start));
     if(completed!=pdTRUE) {
         s_usable=false;
         return ESP_ERR_TIMEOUT;
@@ -82,10 +90,12 @@ static esp_err_t one(uint8_t cmd,uint8_t data)
 
 esp_err_t ws_panel_init(void)
 {
+    if(s_pending || s_stream.active) return ESP_ERR_INVALID_STATE;
     s_usable=false;
     s_pending=false;
     s_flush_done=NULL;
     s_flush_ctx=NULL;
+    s_stream.active=false;
     s_done=xSemaphoreCreateBinary();
     if(!s_done) return ESP_ERR_NO_MEM;
     const spi_bus_config_t bus={
@@ -134,7 +144,7 @@ esp_err_t ws_panel_init(void)
 
 esp_err_t ws_panel_brightness(uint8_t brightness)
 {
-    if(!s_usable) return ESP_ERR_INVALID_STATE;
+    if(!s_usable || s_stream.active) return ESP_ERR_INVALID_STATE;
     esp_err_t err=ws_panel_wait_idle(500U);
     if(err==ESP_OK) err=one(0x51,brightness);
     if(err!=ESP_OK) s_usable=false;
@@ -145,7 +155,7 @@ esp_err_t ws_panel_brightness(uint8_t brightness)
  * sleep. I2C touch stays active. Call only from the display task after DMA. */
 esp_err_t ws_panel_set_enabled(bool enabled)
 {
-    if(!s_usable) return ESP_ERR_INVALID_STATE;
+    if(!s_usable || s_stream.active) return ESP_ERR_INVALID_STATE;
     esp_err_t err=ws_panel_wait_idle(500U);
     if(err==ESP_OK) err=command(enabled?0x29:0x28,NULL,0);
     if(err!=ESP_OK) s_usable=false;
@@ -157,7 +167,7 @@ esp_err_t ws_panel_flush_async(uint16_t x1,uint16_t y1,uint16_t x2,uint16_t y2,
                                const uint16_t *pixels,size_t pixel_count,
                                ws_panel_flush_done_cb_t done,void *done_ctx)
 {
-    if(!s_usable) return ESP_ERR_INVALID_STATE;
+    if(!s_usable || s_stream.active) return ESP_ERR_INVALID_STATE;
     if(!pixels || !done || x2<x1 || y2<y1 || x2>=WS_LCD_WIDTH || y2>=WS_LCD_HEIGHT)
         return ESP_ERR_INVALID_ARG;
     const size_t width=(size_t)x2-(size_t)x1+1U;
@@ -197,5 +207,70 @@ esp_err_t ws_panel_flush_async(uint16_t x1,uint16_t y1,uint16_t x2,uint16_t y2,
         }
     }
     if(err!=ESP_OK) s_usable=false;
+    return err;
+}
+
+/* A single address window preserves the controller's RAM pointer across
+ * 2C then 3C transactions. No framebuffer or additional DMA allocation. */
+esp_err_t ws_panel_stream_begin(uint16_t x1,uint16_t y1,uint16_t x2,uint16_t y2)
+{
+    if(!s_usable || s_stream.active) return ESP_ERR_INVALID_STATE;
+    if(x2<x1 || y2<y1 || x2>=WS_LCD_WIDTH || y2>=WS_LCD_HEIGHT ||
+       (x1&1U) || (y1&1U) || !(x2&1U) || !(y2&1U))
+        return ESP_ERR_INVALID_ARG;
+    esp_err_t err=ws_panel_wait_idle(500U);
+    if(err!=ESP_OK) return err;
+    unsigned px0=x1+WS_LCD_X_OFFSET,px1=x2+WS_LCD_X_OFFSET;
+    unsigned py0=y1+WS_LCD_Y_OFFSET,py1=y2+WS_LCD_Y_OFFSET;
+    uint8_t xs[]={px0>>8,px0&255,px1>>8,px1&255};
+    uint8_t ys[]={py0>>8,py0&255,py1>>8,py1&255};
+    err=command(0x2A,xs,sizeof(xs));
+    if(err==ESP_OK) err=command(0x2B,ys,sizeof(ys));
+    if(err!=ESP_OK){s_usable=false;return err;}
+    s_stream.width=x2-x1+1U;
+    s_stream.next_y=y1;s_stream.end_y=y2+1U;
+    s_stream.first=true;s_stream.active=true;
+    return ESP_OK;
+}
+
+esp_err_t ws_panel_stream_write(uint16_t y,unsigned rows,const uint16_t *pixels,
+                               size_t pixel_count,ws_panel_flush_done_cb_t done,void *ctx)
+{
+    if(!s_usable || !s_stream.active) return ESP_ERR_INVALID_STATE;
+    if(!pixels || !done || y!=s_stream.next_y || !rows || (rows&1U) ||
+       rows>(unsigned)s_stream.end_y-s_stream.next_y)
+        return ESP_ERR_INVALID_ARG;
+    const size_t needed=(size_t)s_stream.width*rows;
+    if(pixel_count!=needed || needed>WS_PANEL_MAX_PIXELS || (needed&1U))
+        return ESP_ERR_INVALID_SIZE;
+    esp_err_t err=ws_panel_wait_idle(500U);
+    if(err!=ESP_OK) return err;
+    (void)xSemaphoreTake(s_done,0);
+    s_flush_done=done;s_flush_ctx=ctx;s_pending=true;
+    err=esp_lcd_panel_io_tx_color(s_io,s_stream.first?0x32002C00:0x32003C00,
+                                pixels,needed*2U);
+    if(err!=ESP_OK){
+        s_pending=false;s_flush_done=NULL;s_flush_ctx=NULL;s_usable=false;
+        return err;
+    }
+    s_stream.next_y+=rows;s_stream.first=false;
+    return ESP_OK;
+}
+
+esp_err_t ws_panel_stream_end(void)
+{
+    if(!s_stream.active) return ESP_ERR_INVALID_STATE;
+    esp_err_t err=ws_panel_wait_idle(500U);
+    if(err==ESP_OK && s_stream.next_y!=s_stream.end_y) err=ESP_ERR_INVALID_STATE;
+    s_stream.active=false;
+    return err;
+}
+
+esp_err_t ws_panel_stream_abort(void)
+{
+    /* A latched DMA failure forbids further reuse/operations until reboot.
+     * Do not reset s_usable or invent completion after a timeout. */
+    esp_err_t err=ws_panel_wait_idle(500U);
+    s_stream.active=false;
     return err;
 }

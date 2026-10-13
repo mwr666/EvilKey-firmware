@@ -24,6 +24,9 @@
 #define LV_MEM_POOL_INCLUDE "esp_heap_caps.h"
 #define LV_MEM_POOL_ALLOC(size) heap_caps_malloc((size), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
 #define LV_MEM_BUF_MAX_NUM 16
+/* Use the ESP-IDF/ROM burst routines for PSRAM image rows. Pixel values and
+ * byte order remain unchanged; the GUI still owns all masking/composition. */
+#define LV_MEMCPY_MEMSET_STD 1
 
 #define LV_DISP_DEF_REFR_PERIOD 30
 #define LV_INDEV_DEF_READ_PERIOD 30

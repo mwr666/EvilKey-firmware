@@ -38,6 +38,15 @@ typedef struct {
     uint16_t abi_version; /* 0 -> legacy ABI4, package-selected 4 or 5 */
     EkSceneStats (*scene3d)(void *user, const uint8_t *scene,
         unsigned x,unsigned y,unsigned width,unsigned height);
+    /* Optional zero-import app_measurement export. UINT32_MAX invalidates
+     * telemetry only; absence does not change legacy execution. */
+    void (*measurement)(void *user,uint32_t token,uint32_t gas,uint32_t memory);
+    /* Optional firmware wall-clock profiling, no guest-visible imports. */
+    uint64_t (*clock)(void *user);
+    void (*execution_profile)(void *user,uint32_t guest_us,uint32_t output_us);
+    void (*execution_detail)(void *user,uint32_t validation_us,uint32_t draw_us,uint32_t present_us);
+    /* Internal bounded profiling: rect/opaque/key/text wall-time per output. */
+    void (*execution_draw)(void *user,const uint32_t groups_us[4]);
 } EkVmHost;
 
 typedef struct {
@@ -47,6 +56,8 @@ typedef struct {
     IM3Function init_function;
     IM3Function step_function;
     IM3Function input_function;
+    IM3Function measurement_function;
+    uint32_t measurement_invalid,last_call_gas,draw_profile_tick;
     uint32_t input_offset;
     uint32_t save_status;
     EkSceneStats scene_stats;

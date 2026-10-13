@@ -2,11 +2,13 @@
 
 /* Publish startup and descriptor ownership with explicit release/acquire
  * operations. Completion semaphores never consume caller task notifications. */
-static uint32_t started, ready, enabled = 1;
+static uint32_t started, ready, enabled = 1, diagnostics;
 static EkRenderFrameStats frame_stats;
 _Static_assert(sizeof(EkRenderFrameStats)==40,"bounded graphics admission snapshot");
 #define LOAD(p) __atomic_load_n((p), __ATOMIC_ACQUIRE)
 #define STORE(p,v) __atomic_store_n((p), (v), __ATOMIC_RELEASE)
+void ek_render_diagnostics_enable(bool value){STORE(&diagnostics,value?1u:0u);}
+bool ek_render_diagnostics_enabled(void){return LOAD(&diagnostics)!=0;}
 
 #if defined(ESP_PLATFORM)
 #include "esp_attr.h"
@@ -28,8 +30,11 @@ typedef struct {
 static DRAM_ATTR Worker workers[2];
 static DRAM_ATTR StaticSemaphore_t frame_mutex_storage;
 static SemaphoreHandle_t frame_mutex;
+static UBaseType_t frame_saved_priority;
+static bool frame_boosted;
 _Static_assert(sizeof(workers) + sizeof(started) + sizeof(ready) + sizeof(enabled)
                + sizeof(frame_mutex_storage) + sizeof(frame_mutex) + sizeof(frame_stats)
+               + sizeof(frame_saved_priority) + sizeof(frame_boosted) + sizeof(diagnostics)
                <= 10u * 1024u, "render executor internal static budget");
 static uint64_t frame_now(void){return (uint64_t)esp_timer_get_time();}
 static bool frame_take(bool wait){return xSemaphoreTake(frame_mutex,wait?portMAX_DELAY:0)==pdTRUE;}
@@ -44,9 +49,9 @@ static void worker_loop(void *arg) {
         
         w->work(w->arg);
         
-        __atomic_fetch_add(&w->jobs, 1u, __ATOMIC_RELAXED);
+        if(ek_render_diagnostics_enabled())__atomic_fetch_add(&w->jobs, 1u, __ATOMIC_RELAXED);
         /* ESP-IDF reports this high-water mark in bytes, unlike vanilla RTOS. */
-        STORE(&w->stack_free, (uint32_t)uxTaskGetStackHighWaterMark(NULL));
+        if(ek_render_diagnostics_enabled())STORE(&w->stack_free, (uint32_t)uxTaskGetStackHighWaterMark(NULL));
         STORE(&w->pending, 0);
         
         xSemaphoreGive(w->done);
@@ -69,7 +74,7 @@ void ek_render_workers_start(void) {
         Worker *w = &workers[i];
         w->task = xTaskCreateStaticPinnedToCore(worker_loop,
             i ? "render_core1" : "render_core0", EK_WORKER_STACK_BYTES,
-            w, 1, w->stack, &w->tcb, (BaseType_t)i);
+            w, 2, w->stack, &w->tcb, (BaseType_t)i);
         if (!w->task) {
             for (unsigned j = 0; j < i; ++j) vTaskDelete(workers[j].task);
             return;
@@ -136,7 +141,7 @@ static DWORD WINAPI worker_loop(LPVOID arg) {
         
         w->work(w->arg);
         
-        __atomic_fetch_add(&w->jobs, 1u, __ATOMIC_RELAXED);
+        if(ek_render_diagnostics_enabled())__atomic_fetch_add(&w->jobs, 1u, __ATOMIC_RELAXED);
         STORE(&w->pending, 0);
         
         ReleaseSemaphore(w->done, 1, NULL);
@@ -217,21 +222,38 @@ void ek_render_worker_stats(EkRenderWorkerStats *out) {
 }
 bool ek_render_frame_begin(unsigned client){
     if(client>1||!LOAD(&frame_stats.ready))return false;
-    uint64_t begin=frame_now();
+#if defined(ESP_PLATFORM)
+    /* Capture before mutex priority inheritance; restore the original base
+     * priority after joined native compute, never an inherited priority. */
+    UBaseType_t previous=uxTaskPriorityGet(NULL);
+#endif
+    const bool profile=ek_render_diagnostics_enabled();
+    uint64_t begin=profile?frame_now():0;
     if(!frame_take(false)){
-        __atomic_fetch_add(&frame_stats.contentions[client],1u,__ATOMIC_RELAXED);
+        if(profile)__atomic_fetch_add(&frame_stats.contentions[client],1u,__ATOMIC_RELAXED);
         while(!frame_take(true)){}
     }
+    if(profile){
     uint64_t elapsed=frame_now()-begin;
     uint32_t wait=(uint32_t)(elapsed>UINT32_MAX?UINT32_MAX:elapsed);
     __atomic_fetch_add(&frame_stats.acquisitions[client],1u,__ATOMIC_RELAXED);
     STORE(&frame_stats.wait_last_us[client],wait);
     if(wait>LOAD(&frame_stats.wait_peak_us[client]))STORE(&frame_stats.wait_peak_us[client],wait);
+    }
     STORE(&frame_stats.owner,client+1);
+#if defined(ESP_PLATFORM)
+    frame_boosted=client==EK_RENDER_FRAME_NATIVE && previous<2;
+    frame_saved_priority=previous;
+    if(frame_boosted)vTaskPrioritySet(NULL,2);
+#endif
     return true;
 }
 void ek_render_frame_end(bool owned){
     if(!owned)return;
+#if defined(ESP_PLATFORM)
+    if(frame_boosted)vTaskPrioritySet(NULL,frame_saved_priority);
+    frame_boosted=false;
+#endif
     STORE(&frame_stats.owner,0);frame_give();
 }
 void ek_render_frame_stats(EkRenderFrameStats *out){

@@ -1,19 +1,17 @@
-# Validation — firmware 0.7.5
+# Validation — firmware 0.7.6
 
-[Release notes](RELEASE_0.7.5.md) identify the exact accepted image and the
-software checks completed before release. [RELEASE_CURRENT.json](../RELEASE_CURRENT.json)
-records its size, SHA-256, ABI versions, compiler profile and hardware scope.
+[Release notes](RELEASE_0.7.6.md) and [RELEASE_CURRENT.json](../RELEASE_CURRENT.json)
+identify the released BIN, source, ABI versions and supported hardware.
+The exact image passed application/partition readback and protected-storage
+preservation on Waveshare PCB V1.0. No partition migration was required.
 
-The 2026-10-09 installation verified application readback and unchanged protected
-storage. The owner confirmed correct GUI, Apps and FIDO/PIN behavior on PCB V1.0.
-This is acceptance of the published BIN, not automatic acceptance of rebuilt images.
+Source export checks cover generated-file/SDK integrity, UTF-8, documentation
+links, release checksums and component/license separation. Software checks
+do not extend the hardware compatibility or production security scope.
+A rebuild creates a new artifact; verify its hash and behavior before use.
 
-The public source export is checked for generated-file/SDK integrity, UTF-8,
-documentation links, release checksums and component/license separation.
-No new full Arduino build from this split public checkout is claimed.
+Current source uses Arduino-ESP32 3.3.12 with Os. The separate
+[native app qualification](ABI5_QUALIFICATION.md) describes scene limits.
 
 PCB V1.1, battery/Wi-Fi operation, sustained concurrent CTAP load, long-duration
-endurance and production security hardening remain unqualified. Native 3D app
-performance requires its own [app qualification](ABI5_QUALIFICATION.md).
-
-[0.6.1 historical release notes](RELEASE_0.6.1.md) describe the earlier artifact.
+endurance and production security hardening remain unqualified.

@@ -8,7 +8,7 @@ ROOT=Path(__file__).resolve().parents[2]
 def build_objects(zig=None,gxx=None,defines=()):
     build=ROOT/'firmware/build/jet';build.mkdir(parents=True,exist_ok=True)
     vendor=ROOT/'firmware/third_party/jet';port=ROOT/'firmware/templates/port'
-    sources=[*sorted(vendor.glob('*.cpp')),port/'ws_gui_3d.cpp',ROOT/'firmware/EvilKeyV1/src/apps/ek_render_parallel.c']
+    sources=[*sorted(vendor.glob('*.cpp')),port/'ws_gui_3d.cpp',ROOT/'firmware/EvilKeyV1/src/apps/ek_render_parallel.c',ROOT/'firmware/EvilKeyV1/src/apps/ek_pixel_accel.c']
     objects=[]
     for source in sources:
         obj=build/(source.stem+'.o');objects.append(obj)

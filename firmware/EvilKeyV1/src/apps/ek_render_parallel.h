@@ -9,6 +9,8 @@ typedef void (*EkRenderWork)(void *);
 typedef struct {
     uint32_t ready, enabled, jobs[2], stack_free[2];
 } EkRenderWorkerStats;
+void ek_render_diagnostics_enable(bool enabled);
+bool ek_render_diagnostics_enabled(void);
 void ek_render_workers_start(void);
 bool ek_render_workers_ready(void);
 void ek_render_parallel_enable(bool enabled);

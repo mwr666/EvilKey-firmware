@@ -541,13 +541,14 @@ static bool settings_apply_action(ws_settings_action_t action,ws_settings_t *set
         /* Presentation telemetry only. No NVS write, USB role change or
          * security-state transition is attached to this control. */
         s_diagnostics_enabled=!s_diagnostics_enabled;
+        ek_apps_diagnostics_enable(s_diagnostics_enabled);
         s_poll_gap_max=0;
         portENTER_CRITICAL(&s_lock);s_render_ms_max=0;portEXIT_CRITICAL(&s_lock);
         v->diagnostics_enabled=s_diagnostics_enabled;
         ws_screen_power_wake(&s_screen,now);
         return false;
     case WS_SETTINGS_ACTION_DIAGNOSTICS_SAVE:
-        ek_apps_diagnostics_export_request();
+        if(s_diagnostics_enabled)ek_apps_diagnostics_export_request();
         ws_screen_power_wake(&s_screen,now);
         return false;
     case WS_SETTINGS_ACTION_AIR_MOUSE_TRANSPORT:
@@ -1258,17 +1259,16 @@ static bool ws_display_step(ws_display_cache_t *cache)
         /* DISPOFF preserves display RAM access. Render the new frame while dark
          * before enabling the display, so an old approval/PIN screen never flashes. */
         if(redraw) {
-            uint32_t started=now_ms();
+            uint32_t started=view.diagnostics_enabled?now_ms():0;
             
-            bool admitted=ek_render_frame_begin(EK_RENDER_FRAME_DISPLAY);
-            
+            /* LVGL scopes admission to compute; DMA may overlap native. */
             err=ws_lvgl_render(&view);
-            
-            ek_render_frame_end(admitted);
+            if(view.diagnostics_enabled){
             uint32_t duration=now_ms()-started;
             portENTER_CRITICAL(&s_lock);
             if(duration>s_render_ms_max)s_render_ms_max=duration;
             portEXIT_CRITICAL(&s_lock);
+            }
         }
         if(err==ESP_OK && cache->off) err=ws_panel_set_enabled(true);
         uint8_t bright=view.brightness?view.brightness:CONFIG_WS_V1_BRIGHTNESS;
@@ -1305,19 +1305,7 @@ static void display_task(void *arg)
         /* Absolute-time phases retain the same animation period. Rendering
          * consumes the frame budget instead of adding an 8ms delay afterward.
          * Input/authentication polling remains in its independent board task. */
-        uint32_t frame_ms=50U;
-        if(cache.valid) {
-            const ws_ui_snapshot_t *v=&cache.last;
-            if((v->settings_transition!=0U && v->settings_transition!=255U) ||
-               (v->screensaver_transition!=0U && v->screensaver_transition!=255U) ||
-               (v->launcher_transition!=0U && v->launcher_transition!=255U) ||
-               v->settings_page_offset!=0 || v->launcher_page_offset!=0)
-                frame_ms=8U;
-            else if(v->screensaver_open)
-                frame_ms=8U;
-            else if(v->settings_animation && v->state!=WS_UI_PIN)
-                frame_ms=8U;
-        }
+        uint32_t frame_ms=ws_ui_display_period(cache.valid?&cache.last:NULL);
         /* JET images have their own 33ms gate in LVGL; cheap decoration and
          * navigation retain the 8ms cadence and their original durations. */
         deadline+=frame_ms;
@@ -1387,7 +1375,7 @@ void ws_board_start_display(void)
     s_panel_ok=err==ESP_OK;
     portEXIT_CRITICAL(&s_lock);
     if(err!=ESP_OK)ESP_LOGE(TAG,"AMOLED/LVGL init: %s; touch/PIN unavailable",esp_err_to_name(err));
-    if(err==ESP_OK && xTaskCreate(display_task,"ws_display",8192,NULL,1,NULL)!=pdPASS) {
+    if(err==ESP_OK && xTaskCreatePinnedToCore(display_task,"ws_display",8192,NULL,1,NULL,1)!=pdPASS) {
         portENTER_CRITICAL(&s_lock);s_panel_ok=false;portEXIT_CRITICAL(&s_lock);
         ESP_LOGE(TAG,"Cannot start AMOLED task; touch/PIN unavailable");
     }
