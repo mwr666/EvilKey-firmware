@@ -14,6 +14,7 @@ def main():
       ('gui',[t/'test_gui_ui1.c',p/'ws_ui.c'],'board_stubs'),
       ('board',[t/'test_board_ui1.c',p/'ws_pinpad.c',p/'ws_presence.c',p/'ws_ui.c',p/'ws_settings_codec.c',p/'ws_controls.c'],'board_stubs'),
       ('panel',[t/'test_panel_ui1.c',p/'ws_ui.c'],'panel_stubs'),
+      ('panel_stale',[root/'tests/test_panel_stale_completion.c'],'panel_stubs'),
       ('local_uv_binding',[t/'test_local_uv_binding.c'],'board_stubs'),
     ]
     for name in ['settings_store','manager_auth','manager_drive_state','usb_tool_state']:

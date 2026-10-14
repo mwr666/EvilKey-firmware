@@ -3,7 +3,7 @@
 import argparse,subprocess,os
 from pathlib import Path
 p=argparse.ArgumentParser();compiler=p.add_mutually_exclusive_group(required=True)
-compiler.add_argument('--zig');compiler.add_argument('--gxx');p.add_argument('--rings-only',action='store_true');p.add_argument('--scene-profile-only',action='store_true');p.add_argument('--app-strips-only',action='store_true');a=p.parse_args()
+compiler.add_argument('--zig');compiler.add_argument('--gxx');p.add_argument('--rings-only',action='store_true');p.add_argument('--scene-profile-only',action='store_true');p.add_argument('--app-strips-only',action='store_true');p.add_argument('--wait-abort-only',action='store_true');a=p.parse_args()
 root=Path(__file__).resolve().parents[3];here=Path(__file__).parent
 renderer=root/'firmware/build/launcher-renderer.c'
 renderer.parent.mkdir(exist_ok=True)
@@ -25,6 +25,17 @@ rsp=root/'firmware/build/launcher-lvgl.rsp'
 rsp.write_text('\n'.join('"'+arg.replace('\\','/').replace('"','\\"')+'"' for arg in cmd[len(command):]),encoding='utf-8')
 r=subprocess.run([*command,'@'+str(rsp)],capture_output=True,text=True)
 if r.returncode:print(r.stderr);raise SystemExit(r.returncode)
+if a.wait_abort_only:
+    subprocess.run([str(out),'--wait-contract'],check=True,timeout=3,cwd=root)
+    for mode, flags in [('double',{}),('single',{'EVILKEY_TEST_SINGLE':'1'}),
+                        ('staging',{'EVILKEY_TEST_DIRECT_FAIL':'3','EVILKEY_TEST_STAGING':'1'}),
+                        ('rotation',{'EVILKEY_TEST_BLE_PAD':'1'})]:
+        env=os.environ.copy()
+        for key in ('EVILKEY_TEST_SINGLE','EVILKEY_TEST_DIRECT_FAIL','EVILKEY_TEST_STAGING','EVILKEY_TEST_BLE_PAD'):
+            env.pop(key,None)
+        env.update(flags);print('DMA FAULT MODE',mode,flush=True)
+        subprocess.run([str(out),'--wait-abort'],check=True,timeout=3,cwd=root,env=env)
+    raise SystemExit(0)
 if a.app_strips_only:
     for mode,flags in [('direct64',{}),('direct16',{'EVILKEY_TEST_STAGING':'1'}),('staging16',{'EVILKEY_TEST_DIRECT_FAIL':'3','EVILKEY_TEST_STAGING':'1'}),('single16',{'EVILKEY_TEST_SINGLE':'1','EVILKEY_TEST_STAGING':'1'})]:
         env=os.environ.copy()

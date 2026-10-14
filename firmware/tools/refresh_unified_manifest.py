@@ -15,8 +15,8 @@ source = template.read_text(encoding="utf-8")
 old = '#include "pf_firmware_version.h"'
 assert source.count(old) == 1
 target.write_text('#include "../../pf_build_config.h"\n' +
-                  source.replace(old, '#include "../../pf_firmware_version.h"'),
-                  encoding="utf-8")
+                  source.replace(old, '#include "../../pf_firmware_version.h"').replace('../../EvilKeyV1/src/apps/','../../apps/'),
+                  encoding="utf-8", newline="\n")
 board_source = (fw / "templates/port/ws_board.c").read_text(encoding="utf-8")
 for previous, generated in (
     ('#include "pf_engine_api.h"', '#include "../../pf_engine_api.h"'),
@@ -25,15 +25,21 @@ for previous, generated in (
     assert board_source.count(previous) == 1
     board_source = board_source.replace(previous, generated)
 (engine / "board/ws_board.c").write_text(
-    '#include "../../pf_build_config.h"\n' + board_source, encoding="utf-8")
+    '#include "../../pf_build_config.h"\n' + board_source.replace('../../EvilKeyV1/src/apps/','../../apps/'), encoding="utf-8", newline="\n")
 ui_source = (fw / "templates/port/ws_ui.c").read_text(encoding="utf-8")
 (engine / "board/ws_ui.c").write_text(
-    '#include "../../pf_build_config.h"\n' + ui_source, encoding="utf-8")
+    '#include "../../pf_build_config.h"\n' + ui_source, encoding="utf-8", newline="\n")
 shutil.copy2(fw / "templates/port/ws_ui.h", engine / "board/ws_ui.h")
 shutil.copy2(fw / "templates/port/ws_ui_layout.h", engine / "board/ws_ui_layout.h")
 shutil.copy2(fw / "templates/port/ws_unified_logo_assets.h",
              engine / "board/ws_unified_logo_assets.h")
-shutil.copy2(fw / "templates/port/ws_panel.c", engine / "board/ws_panel.c")
+(engine / "board/ws_panel.c").write_text(
+    '#include "../../pf_build_config.h"\n' +
+    (fw / "templates/port/ws_panel.c").read_text(encoding="utf-8").replace(
+        "../../EvilKeyV1/src/apps/", "../../apps/"), encoding="utf-8", newline="\n")
+shutil.copy2(fw / "templates/port/ws_panel.h", engine / "board/ws_panel.h")
+for name in ("lv_refr.c", "lv_refr.h"):
+    shutil.copy2(fw / "templates/lvgl_patches" / name, engine / "lvgl/src/core" / name)
 hid_path = engine / "sdk/src/usb/hid/hid.c"
 hid = hid_path.read_text(encoding="utf-8")
 if "if (pf_air_mouse_role()) return;" not in hid:
@@ -45,15 +51,17 @@ if "if (pf_air_mouse_role()) return;" not in hid:
     hid = hid.replace(old,
         "    /* The mouse-only role cannot accept CTAP packets. */\n"
         "    if (pf_air_mouse_role()) return;\n" + old)
-    hid_path.write_text(hid, encoding="utf-8")
+    hid_path.write_text(hid, encoding="utf-8", newline="\n")
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 for rel in ("board/ws_lvgl.c", "board/ws_unified_logo_assets.h", "board/ws_board.c",
             "board/ws_panel.c", "board/ws_ui.c", "board/ws_ui.h", "board/ws_ui_layout.h",
-            "sdk/src/usb/hid/hid.c"):
-    manifest["generated_sha256"][rel] = hashlib.sha256((engine / rel).read_bytes()).hexdigest()
+            "sdk/src/usb/hid/hid.c", "board/ws_panel.h", "lvgl/src/core/lv_refr.c", "lvgl/src/core/lv_refr.h"):
+    raw = (engine / rel).read_bytes().replace(b"\r\n", b"\n")
+    (engine / rel).write_bytes(raw)
+    manifest["generated_sha256"][rel] = hashlib.sha256(raw).hexdigest()
 version_source=(fw/'EvilKeyV1/src/pf_firmware_version.h').read_text()
 version='.'.join(re.search(r'^#define\s+PF_FIRMWARE_VERSION_'+part+r'\s+(\d+)',version_source,re.M).group(1)
                  for part in ('MAJOR','MINOR','PATCH'))
 manifest["port_version"] = version
-manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8", newline="\n")
 print("Updated generated manifest for EvilKey "+version)

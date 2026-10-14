@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.1 - 2026-10-14
+
+- Bounded/yielding display completion wait and actual DMA ownership checks.
+- Safe refresh abort without reusing a pending transfer buffer.
+- Both PCB images passed preserving readback and owner UI/Race lap retests.
+- Existing board/ABI/rendering/storage contracts retained.
+
+[Release details](docs/RELEASE_0.8.1.md).
+
 ## 0.8.0 - 2026-10-14
 
 - Separate PCB V1/V1.1 profiles and revision selection before build/COM.

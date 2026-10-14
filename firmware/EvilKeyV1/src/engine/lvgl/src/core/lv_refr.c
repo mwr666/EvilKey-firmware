@@ -74,6 +74,7 @@ static void call_flush_cb(lv_disp_drv_t * drv, const lv_area_t * area, lv_color_
  *  STATIC VARIABLES
  **********************/
 static uint32_t px_num;
+static bool refr_abort_requested; /* EvilKey bounded transport failure */
 static lv_disp_t * disp_refr; /*Display being refreshed*/
 
 #if LV_USE_PERF_MONITOR
@@ -108,6 +109,11 @@ void _lv_refr_init(void)
 #if LV_USE_MEM_MONITOR
     mem_monitor_init(&mem_monitor);
 #endif
+}
+
+void lv_refr_abort(void)
+{
+    refr_abort_requested = true;
 }
 
 void lv_refr_now(lv_disp_t * disp)
@@ -286,6 +292,7 @@ void _lv_refr_set_disp_refreshing(lv_disp_t * disp)
 void _lv_disp_refr_timer(lv_timer_t * tmr)
 {
     REFR_TRACE("begin");
+    refr_abort_requested = false;
 
     uint32_t start = lv_tick_get();
     volatile uint32_t elaps = 0;
@@ -607,7 +614,7 @@ static void refr_invalid_areas(void)
     disp_refr->driver->draw_buf->last_part = 0;
     disp_refr->rendering_in_progress = true;
 
-    for(i = 0; i < disp_refr->inv_p; i++) {
+    for(i = 0; i < disp_refr->inv_p && !refr_abort_requested; i++) {
         /*Refresh the unjoined areas*/
         if(disp_refr->inv_area_joined[i] == 0) {
 
@@ -663,7 +670,7 @@ static void refr_area(const lv_area_t * area_p)
     lv_coord_t row;
     lv_coord_t row_last = 0;
     lv_area_t sub_area;
-    for(row = area_p->y1; row + max_row - 1 <= y2; row += max_row) {
+    for(row = area_p->y1; row + max_row - 1 <= y2 && !refr_abort_requested; row += max_row) {
         /*Calc. the next y coordinates of draw_buf*/
         sub_area.x1 = area_p->x1;
         sub_area.x2 = area_p->x2;
@@ -679,7 +686,7 @@ static void refr_area(const lv_area_t * area_p)
     }
 
     /*If the last y coordinates are not handled yet ...*/
-    if(y2 != row_last) {
+    if(y2 != row_last && !refr_abort_requested) {
         /*Calc. the next y coordinates of draw_buf*/
         sub_area.x1 = area_p->x1;
         sub_area.x2 = area_p->x2;
@@ -697,19 +704,22 @@ static void refr_area_part(lv_draw_ctx_t * draw_ctx)
 {
     lv_disp_draw_buf_t * draw_buf = lv_disp_get_draw_buf(disp_refr);
 
-    if(draw_ctx->init_buf)
-        draw_ctx->init_buf(draw_ctx);
-
     /* Below the `area_p` area will be redrawn into the draw buffer.
      * In single buffered mode wait here until the buffer is freed.
      * In full double buffered mode wait here while the buffers are swapped and a buffer becomes available*/
     bool full_sized = draw_buf->size == (uint32_t)disp_refr->driver->hor_res * disp_refr->driver->ver_res;
-    if((draw_buf->buf1 && !draw_buf->buf2) ||
-       (draw_buf->buf1 && draw_buf->buf2 && full_sized)) {
+    bool wait_before_draw = (draw_buf->buf1 && !draw_buf->buf2) ||
+                           (draw_buf->buf1 && draw_buf->buf2 && full_sized);
+    if(wait_before_draw) {
         while(draw_buf->flushing) {
             if(disp_refr->driver->wait_cb) disp_refr->driver->wait_cb(disp_refr->driver);
+            if(refr_abort_requested) return;
         }
 
+    }
+    if(refr_abort_requested) return;
+    if(draw_ctx->init_buf) draw_ctx->init_buf(draw_ctx);
+    if(wait_before_draw) {
         /*If the screen is transparent initialize it when the flushing is ready*/
 #if LV_COLOR_SCREEN_TRANSP
         if(disp_refr->driver->screen_transp) {
@@ -1207,7 +1217,7 @@ static void draw_buf_rotate(lv_area_t * area, lv_color_t * color_p)
 
         /*Rotate the screen in chunks, flushing after each one*/
         lv_coord_t row = 0;
-        while(row < area_h) {
+        while(row < area_h && !refr_abort_requested) {
             lv_coord_t height = LV_MIN(max_row, area_h - row);
             draw_buf->flushing = 1;
             if((row == 0) && (area_h >= area_w)) {
@@ -1252,6 +1262,7 @@ static void draw_buf_rotate(lv_area_t * area, lv_color_t * color_p)
             /*FIXME: Rotation forces legacy behavior where rendering and flushing are done serially*/
             while(draw_buf->flushing) {
                 if(drv->wait_cb) drv->wait_cb(drv);
+                if(refr_abort_requested) break;
             }
             color_p += area_w * height;
             row += height;
@@ -1278,9 +1289,11 @@ static void draw_buf_flush(lv_disp_t * disp)
     if(draw_buf->buf1 && draw_buf->buf2 && !full_sized) {
         while(draw_buf->flushing) {
             if(disp_refr->driver->wait_cb) disp_refr->driver->wait_cb(disp_refr->driver);
+            if(refr_abort_requested) return;
         }
     }
 
+    if(refr_abort_requested) return;
     draw_buf->flushing = 1;
 
     if(disp_refr->driver->draw_buf->last_area && disp_refr->driver->draw_buf->last_part) draw_buf->flushing_last = 1;
@@ -1297,6 +1310,8 @@ static void draw_buf_flush(lv_disp_t * disp)
             call_flush_cb(disp->driver, draw_ctx->buf_area, draw_ctx->buf);
         }
     }
+
+    if(refr_abort_requested) return;
 
     /*If there are 2 buffers swap them. With direct mode swap only on the last area*/
     if(draw_buf->buf1 && draw_buf->buf2 && (!disp->driver->direct_mode || flushing_last)) {

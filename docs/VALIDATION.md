@@ -1,26 +1,23 @@
-# Validation - firmware 0.8.0
+# Validation - firmware 0.8.1
 
-[Release notes](RELEASE_0.8.0.md) and [RELEASE_CURRENT.json](../RELEASE_CURRENT.json)
-identify the exact PCB V1 and V1.1 release images and supported ABI versions.
-Both images passed application/partition readback and unchanged nvs, wsdev,
-part0 and otadata digests, followed by functional checks of version, interface,
-FIDO/PIN, usual functions and data availability. V1.1 includes IMU/Gamepad after
-BLE connection. Confirmed V1.1 compatibility begins with this release.
+[Release notes](RELEASE_0.8.1.md) and [RELEASE_CURRENT.json](../RELEASE_CURRENT.json)
+identify the exact PCB V1 and V1.1 release images. Both passed full builds,
+linked NVS erase guards, application/table readback and unchanged protected
+nvs, otadata, part0 and wsdev digests. SD was not accessed during installation.
+The owner confirmed UI startup and several Race laps without freezes on each
+board. Exact duration/FPS and new credential authentication were not measured.
 
-Host checks cover both PCB profiles, linked storage guards, preserving/fresh
-installer cancellation and failure, artifact identity and packaging rejection.
-They also cover Gamepad, USB/BLE AirMouse, Settings and Apps IMU paths. Software
-checks, readback and physical functional checks establish different facts.
+Host checks cover normal/missing/late/stale display completion, buffer ownership,
+healthy rendering paths, both PCB profiles, storage guards, preserving/fresh
+installer cancellation/failure and packaging rejection. Public source checks
+cover generated LF hashes, locked overlay integration, SDK, documentation
+links, component separation and exact release images. Rebuilds require their
+own artifact validation; source export does not promise identical binaries.
 
-Source export checks cover generated LF hashes, SDK, encoding/links, public
-packaging and component/license separation. Rebuilding creates a new artifact;
-verify its identity and behavior before use. The exact published BINs retain
-their recorded acceptance rather than inheriting it from a version label.
+V1.1 compatibility begins with 0.8.0; its [notes](RELEASE_0.8.0.md) preserve the
+previous broader functional scope. Firmware remains a development configuration:
+no Secure Boot/flash/NVS provisioning, FIDO certification, physical-extraction
+resistance, quantitative performance or long-duration endurance claim is added.
+The V1 enclosure and historical videos keep their existing labels.
 
-Long-duration endurance, sustained concurrent CTAP loads, battery/Wi-Fi and
-console/XInput compatibility remain unqualified. Firmware remains a development
-configuration, without a new security-hardening or FIDO-certification claim.
-V1.1 firmware support does not qualify the printed V1 enclosure fit. Historical
-video and performance conditions remain unchanged.
-
-See [native app qualification](ABI5_QUALIFICATION.md) for rendering limits.
+See [native app qualification](ABI5_QUALIFICATION.md) for retained rendering limits.

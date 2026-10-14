@@ -17,6 +17,10 @@ esp_err_t ws_panel_flush_async(uint16_t x1,uint16_t y1,uint16_t x2,uint16_t y2,
                                ws_panel_flush_done_cb_t done,void *done_ctx);
 /* Waits only when a color DMA transaction is still in flight. */
 esp_err_t ws_panel_wait_idle(uint32_t timeout_ms);
+/* Same bounded wait; outer LVGL callback owns timing attribution. */
+esp_err_t ws_panel_wait_idle_unprofiled(uint32_t timeout_ms);
+/* Query only: never acknowledges, cancels or releases an in-flight DMA. */
+bool ws_panel_dma_pending(void);
 /* Sole display owner; one aligned window followed by contiguous native strips.
  * SRAM belongs to DMA until done. Ordinary panel writes cannot interleave. */
 esp_err_t ws_panel_stream_begin(uint16_t x1,uint16_t y1,uint16_t x2,uint16_t y2);

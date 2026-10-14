@@ -146,8 +146,8 @@ class ArduinoLayoutTests(unittest.TestCase):
         self.assertNotIn("approach_u8(", ui)
         self.assertNotIn("tool_led_red.label", ui)
         self.assertNotIn("tool_led_green.label", ui)
-        self.assertNotIn('"  •  LED R"', ui)
-        self.assertNotIn('"  •  LED G"', ui)
+        self.assertNotIn('"  â€˘  LED R"', ui)
+        self.assertNotIn('"  â€˘  LED G"', ui)
         self.assertNotIn("lv_obj_invalidate(ui.tool_led_group)", ui)
 
     def test_r15_read_write_enable_has_directional_pin_gate_and_legacy_pin_migration(self):
@@ -210,7 +210,8 @@ class ArduinoLayoutTests(unittest.TestCase):
             stage = base / "stage"
             stage.mkdir()
             generated = {}
-            PREPARE.vendor_lvgl(lvgl, stage, generated, apply_rgb565_overlay=False)
+            PREPARE.vendor_lvgl(lvgl, stage, generated, apply_rgb565_overlay=False,
+                                apply_refresh_abort_overlay=False)
             self.assertTrue((stage / "lvgl/lvgl.h").is_file())
             self.assertTrue((stage / "lvgl/src/minimal.c").is_file())
             self.assertFalse((stage / "lvgl/lv_version.h").exists())

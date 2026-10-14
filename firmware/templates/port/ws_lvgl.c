@@ -137,6 +137,7 @@ static lv_color_t *s_rotation_dma;
 static size_t s_rotation_bytes;
 static uint32_t s_draw_pixels;
 static esp_err_t s_flush_error=ESP_OK;
+static esp_err_t s_transport_fault=ESP_OK;
 static bool s_ready;
 static bool s_3d_available;
 static lv_img_dsc_t s_3d_sources[WS_3D_CHANNELS];
@@ -636,15 +637,26 @@ static void icon_show_only(hero_icon_id_t id)
     for(unsigned i=0;i<ICON_COUNT;++i) hidden(ui.icons[i].root,i!=(unsigned)id);
 }
 
+static void flush_failure(lv_disp_drv_t *drv,esp_err_t error)
+{
+    if(s_flush_error==ESP_OK)s_flush_error=error;
+    /* Do not release a live DMA buffer or its callback stamp on timeout. */
+    if(ws_panel_dma_pending()){if(s_transport_fault==ESP_OK)s_transport_fault=error;}
+    else lv_disp_flush_ready(drv);
+    lv_refr_abort();
+}
 static void flush_wait(lv_disp_drv_t *drv)
 {
-    
     uint32_t start=diagnostics_now();
-    /* Same active wait as LVGL8.4's default; measure it once without changing
-     * DMA ownership, scheduling or the existing completion/error policy. */
-    while(drv->draw_buf->flushing) {}
+    if(drv->draw_buf->flushing){
+        esp_err_t error=ws_panel_wait_idle_unprofiled(500U);
+        if(error!=ESP_OK)flush_failure(drv,error);
+        else if(drv->draw_buf->flushing){
+            /* Transport proved idle: recover a missing LVGL acknowledgement. */
+            lv_disp_flush_ready(drv);
+        }
+    }
     ws_gui_3d_record_lvgl_wait(diagnostics_now()-start);
-    
 }
 static void flush_done(void *ctx)
 {
@@ -760,11 +772,11 @@ static void flush_cb(lv_disp_drv_t *drv,const lv_area_t *area,lv_color_t *px)
 {
     if(!area || !px) {
         s_flush_error=ESP_ERR_INVALID_ARG;
-        lv_disp_flush_ready(drv);
+        flush_failure(drv,s_flush_error);
         return;
     }
     esp_err_t pending=ws_panel_wait_idle(500U);
-    if(pending!=ESP_OK){s_flush_error=pending;lv_disp_flush_ready(drv);return;}
+    if(pending!=ESP_OK){s_flush_error=pending;flush_failure(drv,s_flush_error);return;}
     frame_flush_t *stamp=&s_frame_flush[s_frame_flush_slot++&1U];
     *stamp=(frame_flush_t){drv,s_frame_id,lv_disp_flush_is_last(drv)};
     const int32_t w=area->x2-area->x1+1;
@@ -772,12 +784,12 @@ static void flush_cb(lv_disp_drv_t *drv,const lv_area_t *area,lv_color_t *px)
     if(w<=0 || h<=0 || area->x1<0 || area->y1<0 ||
        area->x2>=WS_LCD_WIDTH || area->y2>=WS_LCD_HEIGHT) {
         s_flush_error=ESP_ERR_INVALID_ARG;
-        lv_disp_flush_ready(drv);
+        flush_failure(drv,s_flush_error);
         return;
     }
     if(s_staging[0]) {
         esp_err_t idle=ws_panel_wait_idle(500U);
-        if(idle!=ESP_OK){s_flush_error=idle;lv_disp_flush_ready(drv);return;}
+        if(idle!=ESP_OK){s_flush_error=idle;flush_failure(drv,s_flush_error);return;}
         /* Full-width, even address windows are guaranteed by the rounder.
          * Alternate scratch ownership: submit N only after N-1 completed;
          * copy into the other strip while N-1 is still being transmitted. */
@@ -789,7 +801,7 @@ static void flush_cb(lv_disp_drv_t *drv,const lv_area_t *area,lv_color_t *px)
                 (uint16_t)area->x2,(uint16_t)(area->y1+row+rows-1),
                 (const uint16_t *)s_staging[slot],(size_t)w*rows,
                 last?flush_done:staging_done,last?stamp:NULL);
-            if(err!=ESP_OK){s_flush_error=err;lv_disp_flush_ready(drv);return;}
+            if(err!=ESP_OK){s_flush_error=err;flush_failure(drv,s_flush_error);return;}
             ws_gui_3d_frame_flush(s_frame_id,(uint32_t)((size_t)w*rows*2U));
             row+=rows;
         }
@@ -802,12 +814,12 @@ static void flush_cb(lv_disp_drv_t *drv,const lv_area_t *area,lv_color_t *px)
         const size_t bytes=(size_t)w*(size_t)h*sizeof(*px);
         if((area->x1&1) || (area->y1&1) || !(area->x2&1) || !(area->y2&1)) {
             s_flush_error=ESP_ERR_INVALID_ARG;
-            lv_disp_flush_ready(drv);return;
+            flush_failure(drv,s_flush_error);return;
         }
         esp_err_t idle=ws_panel_wait_idle(500U);
         if(idle!=ESP_OK || !s_rotation_dma || bytes>s_rotation_bytes) {
             s_flush_error=idle!=ESP_OK?idle:ESP_ERR_INVALID_SIZE;
-            lv_disp_flush_ready(drv);return;
+            flush_failure(drv,s_flush_error);return;
         }
         memcpy(s_rotation_dma,px,bytes);
         px=s_rotation_dma;
@@ -820,7 +832,7 @@ static void flush_cb(lv_disp_drv_t *drv,const lv_area_t *area,lv_color_t *px)
     if(err!=ESP_OK) {
         if(s_flush_error==ESP_OK) s_flush_error=err;
         /* No DMA owns this buffer when queueing failed. */
-        lv_disp_flush_ready(drv);
+        flush_failure(drv,s_flush_error);
     }
 }
 
@@ -3100,6 +3112,7 @@ static __attribute__((noinline)) void diagnostics_report(const ws_ui_snapshot_t 
 esp_err_t ws_lvgl_render(const ws_ui_snapshot_t *v)
 {
     if(!s_ready || !v) return ESP_ERR_INVALID_STATE;
+    if(s_transport_fault!=ESP_OK)return s_transport_fault;
     s_diagnostics_active=v->diagnostics_enabled;
     ws_gui_3d_profile(s_diagnostics_active);
     static uint32_t captured_request;

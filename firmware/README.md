@@ -1,4 +1,4 @@
-# EvilKey firmware 0.8.0
+# EvilKey firmware 0.8.1
 
 Arduino firmware for the Waveshare ESP32-S3 Touch AMOLED 1.64 **PCB V1 / V1.1**:
 FIDO2, LVGL, Apps on microSD, BLE Gamepad, USB/BLE AirMouse, Manager Drive
@@ -8,8 +8,8 @@ Start with **[EvilKey.cmd](../EvilKey.cmd)**:
 **7** builds the BIN, **11** builds and flashes with NVS preservation checks.
 See [Build and flash](../docs/BUILD_AND_FLASH.md) and
 [installation information](INSTALLATION_INFORMATION.md).
-The current source builds firmware 0.8.0.
-See [release notes](../docs/RELEASE_0.8.0.md). Previous versions are recorded in the release history.
+The current source builds firmware 0.8.1.
+See [release notes](../docs/RELEASE_0.8.1.md). Previous versions are recorded in the release history.
 
 From Home: right for screensaver, left for Apps, then left for Settings.
 With no compatible apps, left opens Settings directly. Gamepad appears above
@@ -38,7 +38,7 @@ The device GUI is part of this AGPLv3 firmware.
 ## Native scenes for apps
 
 Native bounded scene rendering is available to zero-import `.ekapp` apps.
-Firmware 0.8.0 supports this API. Existing Apps presentation,
+Firmware 0.8.1 supports this API. Existing Apps presentation,
 exit profile, GUI Jet icons, partition layout and NVS behavior are retained.
 The model SDK supports independent indexed meshes loaded from microSD.
 Individual apps still require controls, save and sustained-session checks.

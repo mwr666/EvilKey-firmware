@@ -418,7 +418,8 @@ def validate_output(engine: Path) -> None:
 
 
 def vendor_lvgl(lvgl_root: Path, stage: Path, generated: dict[str, str],
-                apply_rgb565_overlay: bool = True) -> None:
+                apply_rgb565_overlay: bool = True,
+                apply_refresh_abort_overlay: bool = True) -> None:
     """Vendor the exact locked LVGL tree required by the Arduino sketch.
 
     LVGL v8.4.0 exposes its version macros from the repository-root ``lvgl.h``.
@@ -452,6 +453,15 @@ def vendor_lvgl(lvgl_root: Path, stage: Path, generated: dict[str, str],
             if actual_hash != expected_hash:
                 raise RuntimeError(f"Locked LVGL {name} changed; RGB565 overlay needs review")
             shutil.copy2(ROOT / "templates" / "lvgl_patches" / name, target)
+
+    if apply_refresh_abort_overlay:
+        # Ownership-safe bounded refresh abort, based on the locked LVGL8.4 sources.
+        abort_hashes = json.loads((ROOT / "templates/lvgl_patches/refresh_abort_upstream.json").read_text())
+        for name, expected_hash in abort_hashes.items():
+            target = lvgl_dest / "src/core" / name
+            if hashlib.sha256(target.read_bytes()).hexdigest() != expected_hash:
+                raise RuntimeError(f"Locked LVGL {name} changed; refresh abort overlay needs review")
+            shutil.copy2(ROOT / "templates/lvgl_patches" / name, target)
 
     copied = [stage / "lv_conf.h", lvgl_dest / "lvgl.h"]
     copied += sorted((lvgl_dest / "src").rglob("*"))
@@ -517,15 +527,15 @@ def prepare(cache: Path, offline: bool) -> None:
             for p in root.glob("*"):
                 if p.is_file() and p.name.upper().startswith(("LICENSE", "LICENCE", "COPYING", "NOTICE")):
                     shutil.copy2(p, license_dir / (name + "_" + p.name))
-        manifest = {"profile": "arduino-v1-development", "port_version": "0.8.0", "arduino_core": "3.3.12-recommended;3.3.11-supported",
+        manifest = {"profile": "arduino-v1-development", "supported_board_revisions": ["v1", "v1.1"], "port_version": "0.8.1", "arduino_core": "3.3.12-recommended;3.3.11-supported",
                     "revisions": {name: sha for name, (_, sha) in REPOS.items()},
                     "translation_units": len(list(dest.rglob("*.c"))), "generated_sha256": generated,
                     "integrated_changes": ["C1", "S2", "LVGL_R5", "LVGL_R8_PREMIUM", "M1", "ARDUINO_HEADER_R1", "USB_TOOL_R26", "USB_TOOL_R27_HAK5", "USB_TOOL_R28_RAM_OPT", "PSRAM_DUCKY3_R29", "HAK5_AUTO_SYNC_R30", "HAK5_WINDOWS_IO_R31", "DUCKY3_ARCH_R32", "DUCKY3_OS_FIX_R33", "DUCKY3_HOST_OS_R34", "DUCKY3_COMPAT_ARCH_R35", "STAGE8A_8B_R35", "LOOT_INDEX_R35", "HAK5_LIBRARY_AUDIT_R35", "USB_TOOL_SAFE_AUTO_DETACH_R36", "CRYSTAL_SCREENSAVER_R37", "CRYSTAL_CONTRAST_R38"],
-                    "package_revision": "EVILKEY_0_8_0_BOARD_REVISIONS",
+                    "package_revision": "EVILKEY_0_8_1_DISPLAY_WAIT",
                     "external_usbd_stack_bytes_required": 16384,
                     "validation": "source-generation checks only; not a hardware certification"}
-        (ROOT / "EvilKeyV1/GENERATED_MANIFEST.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-        ready.write_text("#pragma once\n#define PF_ENGINE_GENERATED 1\n#define PF_DEVICE_PROFILE_PATCH 1\n#define PF_LOCAL_UV_PATCH 1\n", encoding="utf-8")
+        (ROOT / "EvilKeyV1/GENERATED_MANIFEST.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8", newline="\n")
+        ready.write_text("#pragma once\n#define PF_ENGINE_GENERATED 1\n#define PF_DEVICE_PROFILE_PATCH 1\n#define PF_LOCAL_UV_PATCH 1\n", encoding="utf-8", newline="\n")
         print(f"\nPrepared {len(list(dest.rglob('*.c')))} C translation units including pinned LVGL 8.4.0.")
         print("Open EvilKeyV1/EvilKeyV1.ino in Arduino IDE. Nothing was flashed.")
     except BaseException:

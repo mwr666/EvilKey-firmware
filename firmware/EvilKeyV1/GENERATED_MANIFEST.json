@@ -1,6 +1,6 @@
 {
   "profile": "arduino-v1-development",
-  "port_version": "0.8.0",
+  "port_version": "0.8.1",
   "arduino_core": "3.3.12-recommended;3.3.11-supported",
   "revisions": {
     "fido": "fc7c60e9b45338fe815a43bb228d234322e48d97",
@@ -25,13 +25,13 @@
     "board/ws_gui_theme.h": "c25dc5b8e476f8c80d486852d2899a791c1f114ca602b5859d4555b45fd0cc27",
     "board/ws_local_uv.h": "f3fd4b3d55a26cd8ae00c61b7c5f875193641fe90d4332678a56edc2235dbbe9",
     "board/ws_logo_assets.h": "2449840c04782655552bb870fe7945593f949921b0f8332f216a2d4948f90e1f",
-    "board/ws_lvgl.c": "ded12a2e4b6b2f047aa61f5e4717e012aaa6ee1e10ed45f0cc0236ef8aba6f16",
+    "board/ws_lvgl.c": "063dbc6f5d91bdf1f31ea0e78ad37b4f8bd412db79bf549cda30654d08d18b0e",
     "board/ws_lvgl.h": "9c718a1eeffee6d86d04a914018b404724f2011d4786a05fe4bf38842676b1de",
     "board/ws_manager_config.h": "b03bf4db9f4140090aae0b508a2028d0fbcaf6fd1cdab6126c52ea45b575194c",
     "board/ws_manager_drive_state.c": "2a424aa160c179bd325dd564ee8d0b26e515b4420ed255b97efc2ee9662ae3c4",
     "board/ws_manager_drive_state.h": "82e6083fa30678bfe0eb0b1c27cf5f40a723c08ab5eb75ce8722b474b84266ad",
-    "board/ws_panel.c": "46a22ce8c5c540ed00638c7deadddaac5b03eb7dd4b06e1b4a8f3cd8e5ff88c0",
-    "board/ws_panel.h": "b02d63d14611f477f4956707a54eb4790733d003cbfe21776328e65aa1c3e5ca",
+    "board/ws_panel.c": "d0b800ce9039d689829e9c5aa32b5db5df62d1fc7d6a5bca3d3707c84a47f43c",
+    "board/ws_panel.h": "28b534394480ba192ceda35fb0c091e8346cfb6bbe41114b793383e27fd0b98e",
     "board/ws_pinpad.c": "056f2755e4cc7e40e596c3445ca33e15fdb6f384982fc59cc1154db817aee878",
     "board/ws_pinpad.h": "0bafb66f391176fbb1ca519d30056a414c4f900e6635887fab1230bb80f6bf65",
     "board/ws_pins.h": "ee29bd162858f22e26133f04279c90a54b239b7e871779a5e6c0ebf77d158bd5",
@@ -481,8 +481,8 @@
     "lvgl/src/core/lv_obj_style_gen.h": "9317c91f8072eef12b10c2383148ca108667d83a4ee6f98d37dedc8216e9dc64",
     "lvgl/src/core/lv_obj_tree.c": "eaac6b4fccc9c477d237b18d8b01103e69371ffdefab9d2685de539418a75d6e",
     "lvgl/src/core/lv_obj_tree.h": "d841965e5093493189895dfc0f0682f0d2d6e40905a7204c9bb9dc14b7177501",
-    "lvgl/src/core/lv_refr.c": "6aca7ff57a634d5a220465feccee749dd22890c3f2d9748b6f690c4b6105eb70",
-    "lvgl/src/core/lv_refr.h": "e5bce21ae5175f5c2ed622039aac59a594531878b28be17381f55d535079eebd",
+    "lvgl/src/core/lv_refr.c": "c977feaecb635da90d7a541a6cd2887bfaac22343bd05917435b1654451ad5c4",
+    "lvgl/src/core/lv_refr.h": "f07b60c99efc017e3f7236ab13342ec11ba6f662aa1be284229665cb1f734ca0",
     "lvgl/src/core/lv_theme.c": "90877775a9f5f6d3eaf65fba6b75e0c18628e952dfc00c3e79ebaf6526ce4983",
     "lvgl/src/core/lv_theme.h": "951f83d283f01c6f4c2bf1cf6f2aa30f16c068d63dcf5aee5b6c93cb5903764a",
     "lvgl/src/draw/arm2d/lv_draw_arm2d.mk": "7c5ab95a37ecfbaca3587ea7b3d85bb52656889350eabc9fc689de5c868f08f2",
@@ -899,12 +899,16 @@
     "CRYSTAL_SCREENSAVER_R37",
     "CRYSTAL_CONTRAST_R38"
   ],
-  "package_revision": "EVILKEY_0_8_0_BOARD_REVISIONS",
+  "package_revision": "EVILKEY_0_8_1_DISPLAY_WAIT",
   "external_usbd_stack_bytes_required": 16384,
   "validation": "source-generation checks only; not a hardware certification",
   "jet": {
     "repository": "https://github.com/CubeCoders/Jet",
     "commit": "c56dfc0c012ba7a09a6e49b4123340ec24981441",
     "license": "MIT"
-  }
+  },
+  "supported_board_revisions": [
+    "v1",
+    "v1.1"
+  ]
 }

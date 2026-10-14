@@ -56,6 +56,10 @@ void _lv_refr_init(void);
  */
 void lv_refr_now(lv_disp_t * disp);
 
+/** Abort the current refresh after a driver fault without releasing DMA ownership.
+ * Called only by the sole refresh task from its wait/flush callback. */
+void lv_refr_abort(void);
+
 /**
  * Redrawn on object an all its children using the passed draw context
  * @param draw  pointer to an initialized draw context

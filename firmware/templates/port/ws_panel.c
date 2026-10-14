@@ -60,7 +60,13 @@ static bool color_done(esp_lcd_panel_io_handle_t io,
     return awakened==pdTRUE;
 }
 
-esp_err_t ws_panel_wait_idle(uint32_t timeout_ms)
+bool ws_panel_dma_pending(void)
+{
+    /* Sole display caller; ISR publishes idle only after consuming context. */
+    return s_pending;
+}
+
+static esp_err_t wait_idle(uint32_t timeout_ms,bool record_wait)
 {
     if(!s_usable) return ESP_ERR_INVALID_STATE;
     if(!s_pending) {
@@ -69,15 +75,33 @@ esp_err_t ws_panel_wait_idle(uint32_t timeout_ms)
         (void)xSemaphoreTake(s_done,0);
         return ESP_OK;
     }
-    const bool profile=ek_render_diagnostics_enabled();
-    const uint64_t start=profile?esp_timer_get_time():0;
-    const BaseType_t completed=xSemaphoreTake(s_done,pdMS_TO_TICKS(timeout_ms));
+    const bool profile=record_wait&&ek_render_diagnostics_enabled();
+    const uint64_t start=esp_timer_get_time();
+    const uint64_t budget=(uint64_t)timeout_ms*1000U;
+    /* A token can be left over from an earlier ISR. Ownership, not the token,
+     * proves idle. Spurious wakes share one deadline instead of renewing it. */
+    while(s_pending){
+        uint64_t elapsed=(uint64_t)esp_timer_get_time()-start;
+        if(elapsed>=budget)break;
+        uint32_t remaining=(uint32_t)((budget-elapsed+999U)/1000U);
+        if(xSemaphoreTake(s_done,pdMS_TO_TICKS(remaining))!=pdTRUE)break;
+    }
     if(profile)ws_gui_3d_record_panel_wait((uint32_t)(esp_timer_get_time()-start));
-    if(completed!=pdTRUE) {
+    if(s_pending) {
         s_usable=false;
         return ESP_ERR_TIMEOUT;
     }
     return ESP_OK;
+}
+
+esp_err_t ws_panel_wait_idle(uint32_t timeout_ms)
+{
+    return wait_idle(timeout_ms,true);
+}
+esp_err_t ws_panel_wait_idle_unprofiled(uint32_t timeout_ms)
+{
+    /* The LVGL adapter attributes this same wait once in its outer callback. */
+    return wait_idle(timeout_ms,false);
 }
 
 static esp_err_t command(uint8_t cmd, const void *data, size_t bytes)
